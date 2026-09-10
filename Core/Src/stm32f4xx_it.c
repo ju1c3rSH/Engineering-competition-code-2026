@@ -364,7 +364,6 @@ void UART4_IRQHandler(void)
       __HAL_UART_CLEAR_IDLEFLAG(&huart4); 
       HAL_UART_DMAStop(&huart4);   
       UART4_RX_STA = RXbuffer4_size - __HAL_DMA_GET_COUNTER(huart4.hdmarx);  
-      Rxbuffer4[UART4_RX_STA] = 0;
       Uart4_task();
       UART4_RX_STA |= 0X8000; 
 			memset(Rxbuffer4,0,RXbuffer4_size);

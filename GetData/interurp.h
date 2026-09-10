@@ -1,4 +1,4 @@
-#ifndef __INTERURP_H__
+ï»¿#ifndef __INTERURP_H__
 #define __INTERURP_H__
 
 #include "main.h"
@@ -10,7 +10,7 @@
 #include "stdio.h"
 #include "Control_Car.h"
 
-//´®¿ÚÊı¾İ´æ´¢Êı×é
+//ä¸²å£æ•°æ®å­˜å‚¨æ•°ç»„
 #define RXbuffer1_size     8
 #define RXbuffer2_size     10
 #define RXbuffer3_size     44
@@ -29,14 +29,7 @@ extern uint8_t Rxbuffer3_2[RXbuffer3_size];
 extern uint8_t Rxbuffer6_2[RXbuffer6_size];
 extern uint8_t Rxbuffer4_2[RXbuffer4_size];
 
-
-typedef struct 
-{
-	uint8_t Boss_State;      //0x01:Æô¶¯  0x00:Í£Ö¹  ¿ØÖÆĞ¡³µµ½´ïÈÎÎñÇøºó×öÍêÈÎÎñºóÊÇ·ñÊ¹ÄÜËÙ¶È
-	uint8_t Boss_State_Last;
-	uint8_t WC_PIT_R;        //½ÓÊÕµ½µÄ¿ÓÎ»
-	
-}U4_R_data;
+extern __IO uint16_t UART4_RX_STA;    /* stm32f4xx_it.c: æœ¬æ¬¡ IDLE çªå‘å­—èŠ‚æ•° */
 
 
 
@@ -45,8 +38,6 @@ void Uart3_task(void);
 void Uart4_task(void);
 void Uart6_task(void);
 void Uart2_task(void);
-void Control_Emm_Angle(void);
-void Usart4_send(void);       						 //Ä³Ò»¿ÌÖ»Ö´ĞĞÒ»´Î
 
 
 

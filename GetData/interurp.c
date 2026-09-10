@@ -1,4 +1,5 @@
-#include "interurp.h"
+ï»¿#include "interurp.h"
+#include "protocol.h"
 
 int16_t YawL = 0;
 int16_t YawH = 0;
@@ -22,11 +23,9 @@ uint8_t Rxbuffer3_2[RXbuffer3_size] = {0};
 uint8_t Rxbuffer6_2[RXbuffer6_size] = {0};
 uint8_t Rxbuffer4_2[RXbuffer4_size] = {0};
 
-U4_R_data U4_R_Data;
-extern Parameter_TypeDef_Car Car_data;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-	if(htim->Instance == TIM4)      //10ms¶¨Ê±Æ÷
+	if(htim->Instance == TIM4)      //10mså®šæ—¶å™¨
 	{
 		Car_Control();
 	}
@@ -35,68 +34,154 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		Emm_Pos_Control(Car_data.Motor_Angle);
 	}
 }
-uint8_t Usart4_send_Buffer[3] = {0};
-uint8_t success_flag = 0;
-void Usart4_send()         						 //Ä³Ò»¿ÌÖ»Ö´ĞĞÒ»´Î
+
+/* ================== UART4 ================== */
+#define CAR_ACK_EN   1        /* æ”¶åˆ°åŒ…åæ˜¯å¦è¿”å›ACKå¸§ */
+
+static Protocol_Parser_t uart4_parser;
+static uint8_t uart4_body[16];
+static uint8_t evt_seq = 1;
+
+void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason)
 {
-	//ÓëÉÏ²¿·ÖÖ÷¿ØÍ¨ĞÅÊı¾İ´¦Àí
-	Usart4_send_Buffer[0] = 0x55;
-	Usart4_send_Buffer[1] = 0x01;
-	Usart4_send_Buffer[2] = 0x45;
-	HAL_UART_Transmit_DMA(&huart4, Usart4_send_Buffer, sizeof(Usart4_send_Buffer));
+	static uint8_t txbuf[16];
+	uint8_t p[10];
+	uint16_t n;
+	uint8_t i;
+
+	p[0] = evt_seq++;
+	p[1] = CAR_DATA_ID_EVT;
+	p[2] = event;
+	p[3] = echo;
+	p[4] = reason;
+	for (i = 5u; i < 10u; i++)
+	{
+		p[i] = 0u;
+	}
+	n = Protocol_EncodeFrame(txbuf, sizeof(txbuf), 0x24u, p, 10u);
+	if (n != 0u)
+	{
+		HAL_UART_Transmit_DMA(&huart4, txbuf, n);
+	}
+}
+
+static void Car_Ack_Send(uint8_t sub_echo, uint8_t status)
+{
+#if CAR_ACK_EN
+	static uint8_t txbuf[16];
+	uint8_t p[3];
+	uint16_t n;
+
+	p[0] = CAR_DATA_ID_CTRL;
+	p[1] = sub_echo;
+	p[2] = status;
+	n = Protocol_EncodeFrame(txbuf, sizeof(txbuf), 0x21u, p, 3u);
+	if (n != 0u)
+	{
+		HAL_UART_Transmit_DMA(&huart4, txbuf, n);
+	}
+#else
+	(void)sub_echo;
+	(void)status;
+#endif
+}
+
+static void Car_Nack_Send(uint8_t reason)
+{
+	static uint8_t txbuf[16];
+	uint8_t p[2];
+	uint16_t n;
+
+	p[0] = CAR_DATA_ID_CTRL;
+	p[1] = reason;
+	n = Protocol_EncodeFrame(txbuf, sizeof(txbuf), 0x22u, p, 2u);
+	if (n != 0u)
+	{
+		HAL_UART_Transmit_DMA(&huart4, txbuf, n);
+	}
+}
+
+static void Uart4_OnFrame(void *ctx, uint8_t type, const uint8_t *payload, uint8_t plen)
+{
+	(void)ctx;
+
+	if (type == 0x23u)                 /* CMD_STOP(é€šç”¨) -> æ€¥åœ */
+	{
+		Car_Ack_Send(CAR_SUB_REQ_STOP, 0x01u);
+		Car_Nav_MailPush(CAR_SUB_REQ_STOP, 0u, 0u);
+		return;
+	}
+	if (type != 0x20u || plen < 2u || payload[0] != CAR_DATA_ID_CTRL)
+	{
+		Car_Nack_Send(0x01u);
+		return;
+	}
+
+	switch (payload[1])
+	{
+	case CAR_SUB_REQ_NAV:              /* arg: nav_id, gear */
+		if (plen >= 4u && payload[2] < CAR_NAV_ID_COUNT && payload[3] <= 3u)
+		{
+			Car_Ack_Send(CAR_SUB_REQ_NAV, 0x01u);
+			Car_Nav_MailPush(CAR_SUB_REQ_NAV, payload[2], payload[3]);
+		}
+		else
+		{
+			Car_Nack_Send(0x01u);
+		}
+		break;
+
+	case CAR_SUB_REQ_STOP:             /* æ€¥åœ: å‚æ•°å¿½ç•¥ */
+		Car_Ack_Send(CAR_SUB_REQ_STOP, 0x01u);
+		Car_Nav_MailPush(CAR_SUB_REQ_STOP, 0u, 0u);
+		break;
+
+	case CAR_SUB_REQ_TURNTABLE:        /* arg: pit 0~3 */
+		if (plen >= 3u && payload[2] <= 3u)
+		{
+			Car_Ack_Send(CAR_SUB_REQ_TURNTABLE, 0x01u);
+			Car_Nav_MailPush(CAR_SUB_REQ_TURNTABLE, payload[2], 0u);
+		}
+		else
+		{
+			Car_Nack_Send(0x01u);
+		}
+		break;
+
+	case CAR_SUB_GYRO_ZERO:            /* é™€èºä»ªç½®é›¶: é¡»è½¦é™æ­¢(åŸç‚¹ä¸Šç”µæµç¨‹) */
+		Car_Ack_Send(CAR_SUB_GYRO_ZERO, 0x01u);
+		Car_Nav_MailPush(CAR_SUB_GYRO_ZERO, 0u, 0u);
+		break;
+
+	default:
+		Car_Nack_Send(0x01u);
+		break;
+	}
 }
 
 void Uart4_task()
 {
-		for (uint8_t i = 0; i < 8; i++)
-		{
-			if(Rxbuffer4[i] == 0x55 && Rxbuffer4[(i+3)%8] == 0x45)
-			{
-				if(Rxbuffer4[(i+1)%8] == 0x01)
-				{
-					U4_R_Data.Boss_State = 0x01;   //Æô¶¯
-				}
-				else if(Rxbuffer4[(i+1)%8] == 0x00)
-				{
-					U4_R_Data.Boss_State = 0x00;   //Í£Ö¹
-				}
-				U4_R_Data.WC_PIT_R = Rxbuffer4[(i+2)%8];      //½ÓÊÕ¿ÓÎ»
-				
-				break;
-			}
-		}
-		U4_R_Data.Boss_State_Last = U4_R_Data.Boss_State;
-}
-
-void Control_Emm_Angle()         //¿ÓÎ»´¦ÀíºóµÃµ½×ªÅÌµÄĞı×ª½Ç¶È
-{
-	switch(U4_R_Data.WC_PIT_R)
-	{
-		case 0: break;
-		
-		case 1: Car_data.Motor_Angle = 90 + 33;
-					break;
-		case 2: Car_data.Motor_Angle = 90;
-					break;
-		case 3: Car_data.Motor_Angle = 90 - 33;
-					break;
-	}
+	/* IDLE ä¸­æ–­æ—¶ Rxbuffer4[0..UART4_RX_STA-1] ä¸ºæœ¬æ¬¡çªå‘ï¼Œæ•´å—å–‚å…¥è§£æå™¨ */
+	Protocol_ParserFeedBlock(&uart4_parser, Rxbuffer4, (uint8_t)UART4_RX_STA);
 }
 
 void UART_Task_Init(void)
-{ 
+{
 	  HAL_UART_Receive_DMA(&huart2, Rxbuffer2, RXbuffer2_size);
-	__HAL_UART_ENABLE_IT(&huart2, UART_IT_IDLE); 
+	__HAL_UART_ENABLE_IT(&huart2, UART_IT_IDLE);
 	  HAL_UART_Receive_DMA(&huart3, Rxbuffer3, RXbuffer3_size);
-	__HAL_UART_ENABLE_IT(&huart3, UART_IT_IDLE); 
+	__HAL_UART_ENABLE_IT(&huart3, UART_IT_IDLE);
 	  HAL_UART_Receive_DMA(&huart6, Rxbuffer6, RXbuffer6_size);
-	__HAL_UART_ENABLE_IT(&huart6, UART_IT_IDLE); 
+	__HAL_UART_ENABLE_IT(&huart6, UART_IT_IDLE);
 		HAL_UART_Receive_DMA(&huart4, Rxbuffer4, RXbuffer4_size);
 	__HAL_UART_ENABLE_IT(&huart4, UART_IT_IDLE);
+
+	Protocol_ParserInit(&uart4_parser, uart4_body, sizeof(uart4_body), 0);
+	uart4_parser.on_frame = Uart4_OnFrame;
 }
 void Uart3_task()
 {
-		/*¼ìË÷²¢½â°ühwt101*/
+		/*æ£€ç´¢å¹¶è§£åŒ…hwt101*/
 		for(uint8_t i = 0; i<22; i++)
 		{
 			if(Rxbuffer3[i] == 0x55 && Rxbuffer3[(i+1)%22] == 0x53)
@@ -116,10 +201,9 @@ void Uart3_task()
 }
 void Uart2_task()
 {
-		//µ÷ÊÔÊı¾İ´¦Àí
+		//è°ƒè¯•æ•°æ®å¤„ç†
 }
 void Uart6_task()
 {
-		//²½½øµç»úÊı¾İ´¦Àí
+		//æ­¥è¿›ç”µæœºæ•°æ®å¤„ç†
 }
-
