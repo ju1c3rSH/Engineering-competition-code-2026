@@ -10,8 +10,8 @@
       <TargetName>panzer</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
-      <pArmCC>6230000::V6.23::ARMCLANG</pArmCC>
-      <pCCUsed>6230000::V6.23::ARMCLANG</pCCUsed>
+      <pArmCC>6240000::V6.24::ARMCLANG</pArmCC>
+      <pCCUsed>6240000::V6.24::ARMCLANG</pCCUsed>
       <uAC6>1</uAC6>
       <TargetOption>
         <TargetCommonOption>
@@ -341,7 +341,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F405xx</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../GetData;../Emm_V5</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../GetData;../Emm_V5;../Motion</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -722,6 +722,76 @@
               <FileName>Control_Car.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\GetData\Control_Car.h</FilePath>
+            </File>
+            <File>
+              <FileName>protocol.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GetData\protocol.c</FilePath>
+            </File>
+            <File>
+              <FileName>protocol.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\GetData\protocol.h</FilePath>
+            </File>
+            <File>
+              <FileName>Car_Sense.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GetData\Car_Sense.c</FilePath>
+            </File>
+            <File>
+              <FileName>Car_Sense.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\GetData\Car_Sense.h</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Motion</GroupName>
+          <Files>
+            <File>
+              <FileName>mf_motion.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Motion\mf_motion.c</FilePath>
+            </File>
+            <File>
+              <FileName>mf_path.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Motion\mf_path.c</FilePath>
+            </File>
+            <File>
+              <FileName>mf_odom.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Motion\mf_odom.c</FilePath>
+            </File>
+            <File>
+              <FileName>mf_kinematics.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Motion\mf_kinematics.c</FilePath>
+            </File>
+            <File>
+              <FileName>mf_pid.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Motion\mf_pid.c</FilePath>
+            </File>
+            <File>
+              <FileName>mf_motion.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Motion\mf_motion.h</FilePath>
+            </File>
+            <File>
+              <FileName>mf_path.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Motion\mf_path.h</FilePath>
+            </File>
+            <File>
+              <FileName>mf_types.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Motion\mf_types.h</FilePath>
+            </File>
+            <File>
+              <FileName>mf_config.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Motion\mf_config.h</FilePath>
             </File>
           </Files>
         </Group>

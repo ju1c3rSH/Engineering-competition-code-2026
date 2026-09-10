@@ -28,6 +28,13 @@
 "panzer\pid.o"
 "panzer\interurp.o"
 "panzer\control_car.o"
+"panzer\protocol.o"
+"panzer\car_sense.o"
+"panzer\mf_motion.o"
+"panzer\mf_path.o"
+"panzer\mf_odom.o"
+"panzer\mf_kinematics.o"
+"panzer\mf_pid.o"
 "panzer\emm_v5.o"
 --library_type=microlib --strict --scatter "panzer\panzer.sct"
 --summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
