@@ -1,4 +1,4 @@
-#ifndef __EMM_V5_H
+ï»¿#ifndef __EMM_V5_H
 #define __EMM_V5_H
 
 #include "usart.h"
@@ -7,49 +7,49 @@
 #include "stdbool.h"
 #include "stdint.h"
 /**********************************************************
-***	Emm_V5.0²½½ø±Õ»·¿ØÖÆÀı³Ì
-***	±àĞ´×÷Õß£ºZHANGDATOU
-***	¼¼ÊõÖ§³Ö£ºÕÅ´óÍ·±Õ»·ËÅ·ş
-***	ÌÔ±¦µêÆÌ£ºhttps://zhangdatou.taobao.com
-***	CSDN²©¿Í£ºhttp s://blog.csdn.net/zhangdatou666
-***	qq½»Á÷Èº£º262438510
+***	Emm_V5.0æ­¥è¿›é—­ç¯æ§åˆ¶ä¾‹ç¨‹
+***	ç¼–å†™ä½œè€…ï¼šZHANGDATOU
+***	æŠ€æœ¯æ”¯æŒï¼šå¼ å¤§å¤´é—­ç¯ä¼ºæœ
+***	æ·˜å®åº—é“ºï¼šhttps://zhangdatou.taobao.com
+***	CSDNåšå®¢ï¼šhttp s://blog.csdn.net/zhangdatou666
+***	qqäº¤æµç¾¤ï¼š262438510
 **********************************************************/
 
 #define		ABS(x)		((x) > 0 ? (x) : -(x)) 
 
 typedef enum {
-	S_VER   = 0,			/* ¶ÁÈ¡¹Ì¼ş°æ±¾ºÍ¶ÔÓ¦µÄÓ²¼ş°æ±¾ */
-	S_RL    = 1,			/* ¶ÁÈ¡¶ÁÈ¡Ïàµç×èºÍÏàµç¸Ğ */
-	S_PID   = 2,			/* ¶ÁÈ¡PID²ÎÊı */
-	S_VBUS  = 3,			/* ¶ÁÈ¡×ÜÏßµçÑ¹ */
-	S_CPHA  = 5,			/* ¶ÁÈ¡ÏàµçÁ÷ */
-	S_ENCL  = 7,			/* ¶ÁÈ¡¾­¹ıÏßĞÔ»¯Ğ£×¼ºóµÄ±àÂëÆ÷Öµ */
-	S_TPOS  = 8,			/* ¶ÁÈ¡µç»úÄ¿±êÎ»ÖÃ½Ç¶È */
-	S_VEL   = 9,			/* ¶ÁÈ¡µç»úÊµÊ±×ªËÙ */
-	S_CPOS  = 10,			/* ¶ÁÈ¡µç»úÊµÊ±Î»ÖÃ½Ç¶È */
-	S_PERR  = 11,			/* ¶ÁÈ¡µç»úÎ»ÖÃÎó²î½Ç¶È */
-	S_FLAG  = 13,			/* ¶ÁÈ¡Ê¹ÄÜ/µ½Î»/¶Â×ª×´Ì¬±êÖ¾Î» */
-	S_Conf  = 14,			/* ¶ÁÈ¡Çı¶¯²ÎÊı */
-	S_State = 15,			/* ¶ÁÈ¡ÏµÍ³×´Ì¬²ÎÊı */
-	S_ORG   = 16,     /* ¶ÁÈ¡ÕıÔÚ»ØÁã/»ØÁãÊ§°Ü×´Ì¬±êÖ¾Î» */
+	S_VER   = 0,			/* è¯»å–å›ºä»¶ç‰ˆæœ¬å’Œå¯¹åº”çš„ç¡¬ä»¶ç‰ˆæœ¬ */
+	S_RL    = 1,			/* è¯»å–è¯»å–ç›¸ç”µé˜»å’Œç›¸ç”µæ„Ÿ */
+	S_PID   = 2,			/* è¯»å–PIDå‚æ•° */
+	S_VBUS  = 3,			/* è¯»å–æ€»çº¿ç”µå‹ */
+	S_CPHA  = 5,			/* è¯»å–ç›¸ç”µæµ */
+	S_ENCL  = 7,			/* è¯»å–ç»è¿‡çº¿æ€§åŒ–æ ¡å‡†åçš„ç¼–ç å™¨å€¼ */
+	S_TPOS  = 8,			/* è¯»å–ç”µæœºç›®æ ‡ä½ç½®è§’åº¦ */
+	S_VEL   = 9,			/* è¯»å–ç”µæœºå®æ—¶è½¬é€Ÿ */
+	S_CPOS  = 10,			/* è¯»å–ç”µæœºå®æ—¶ä½ç½®è§’åº¦ */
+	S_PERR  = 11,			/* è¯»å–ç”µæœºä½ç½®è¯¯å·®è§’åº¦ */
+	S_FLAG  = 13,			/* è¯»å–ä½¿èƒ½/åˆ°ä½/å µè½¬çŠ¶æ€æ ‡å¿—ä½ */
+	S_Conf  = 14,			/* è¯»å–é©±åŠ¨å‚æ•° */
+	S_State = 15,			/* è¯»å–ç³»ç»ŸçŠ¶æ€å‚æ•° */
+	S_ORG   = 16,     /* è¯»å–æ­£åœ¨å›é›¶/å›é›¶å¤±è´¥çŠ¶æ€æ ‡å¿—ä½ */
 }SysParams_t;
 
 
 /**********************************************************
-*** ×¢Òâ£ºÃ¿¸öº¯ÊıµÄ²ÎÊıµÄ¾ßÌåËµÃ÷£¬Çë²éÔÄ¶ÔÓ¦º¯ÊıµÄ×¢ÊÍËµÃ÷
+*** æ³¨æ„ï¼šæ¯ä¸ªå‡½æ•°çš„å‚æ•°çš„å…·ä½“è¯´æ˜ï¼Œè¯·æŸ¥é˜…å¯¹åº”å‡½æ•°çš„æ³¨é‡Šè¯´æ˜
 **********************************************************/
-void Emm_V5_Reset_CurPos_To_Zero(uint8_t addr); // ½«µ±Ç°Î»ÖÃÇåÁã
-void Emm_V5_Reset_Clog_Pro(uint8_t addr); // ½â³ı¶Â×ª±£»¤
-void Emm_V5_Read_Sys_Params(uint8_t addr, SysParams_t s); // ¶ÁÈ¡²ÎÊı
-void Emm_V5_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode); // ·¢ËÍÃüÁîĞŞ¸Ä¿ª»·/±Õ»·¿ØÖÆÄ£Ê½
-void Emm_V5_En_Control(uint8_t addr, bool state, bool snF); // µç»úÊ¹ÄÜ¿ØÖÆ
-void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bool snF); // ËÙ¶ÈÄ£Ê½¿ØÖÆ
-void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint32_t clk, bool raF, bool snF); // Î»ÖÃÄ£Ê½¿ØÖÆ
-void Emm_V5_Stop_Now(uint8_t addr, bool snF); // ÈÃµç»úÁ¢¼´Í£Ö¹ÔË¶¯
-void Emm_V5_Synchronous_motion(uint8_t addr); // ´¥·¢¶à»úÍ¬²½¿ªÊ¼ÔË¶¯
-void Emm_V5_Origin_Set_O(uint8_t addr, bool svF); // ÉèÖÃµ²È¦»ØÁãµÄÁãµãÎ»ÖÃ
-void Emm_V5_Origin_Modify_Params(uint8_t addr, bool svF, uint8_t o_mode, uint8_t o_dir, uint16_t o_vel, uint32_t o_tm, uint16_t sl_vel, uint16_t sl_ma, uint16_t sl_ms, bool potF); // ĞŞ¸Ä»ØÁã²ÎÊı
-void Emm_V5_Origin_Trigger_Return(uint8_t addr, uint8_t o_mode, bool snF); // ·¢ËÍÃüÁî´¥·¢»ØÁã
-void Emm_V5_Origin_Interrupt(uint8_t addr); // Ç¿ÖÆÖĞ¶Ï²¢ÍË³ö»ØÁã
+void Emm_V5_Reset_CurPos_To_Zero(uint8_t addr); // å°†å½“å‰ä½ç½®æ¸…é›¶
+void Emm_V5_Reset_Clog_Pro(uint8_t addr); // è§£é™¤å µè½¬ä¿æŠ¤
+void Emm_V5_Read_Sys_Params(uint8_t addr, SysParams_t s); // è¯»å–å‚æ•°
+void Emm_V5_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode); // å‘é€å‘½ä»¤ä¿®æ”¹å¼€ç¯/é—­ç¯æ§åˆ¶æ¨¡å¼
+void Emm_V5_En_Control(uint8_t addr, bool state, bool snF); // ç”µæœºä½¿èƒ½æ§åˆ¶
+void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bool snF); // é€Ÿåº¦æ¨¡å¼æ§åˆ¶
+void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint32_t clk, bool raF, bool snF); // ä½ç½®æ¨¡å¼æ§åˆ¶
+void Emm_V5_Stop_Now(uint8_t addr, bool snF); // è®©ç”µæœºç«‹å³åœæ­¢è¿åŠ¨
+void Emm_V5_Synchronous_motion(uint8_t addr); // è§¦å‘å¤šæœºåŒæ­¥å¼€å§‹è¿åŠ¨
+void Emm_V5_Origin_Set_O(uint8_t addr, bool svF); // è®¾ç½®æŒ¡åœˆå›é›¶çš„é›¶ç‚¹ä½ç½®
+void Emm_V5_Origin_Modify_Params(uint8_t addr, bool svF, uint8_t o_mode, uint8_t o_dir, uint16_t o_vel, uint32_t o_tm, uint16_t sl_vel, uint16_t sl_ma, uint16_t sl_ms, bool potF); // ä¿®æ”¹å›é›¶å‚æ•°
+void Emm_V5_Origin_Trigger_Return(uint8_t addr, uint8_t o_mode, bool snF); // å‘é€å‘½ä»¤è§¦å‘å›é›¶
+void Emm_V5_Origin_Interrupt(uint8_t addr); // å¼ºåˆ¶ä¸­æ–­å¹¶é€€å‡ºå›é›¶
 
 #endif

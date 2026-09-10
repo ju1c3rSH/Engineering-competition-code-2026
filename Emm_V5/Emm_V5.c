@@ -1,67 +1,67 @@
-#include "Emm_V5.h"
+﻿#include "Emm_V5.h"
 
 #define Uart_Emm  huart6
 /**********************************************************
-***	Emm_V5.0�����ջ���������
-***	��д���ߣ�ZHANGDATOU
-***	����֧�֣��Ŵ�ͷ�ջ��ŷ�
-***	�Ա����̣�https://zhangdatou.taobao.com
-***	CSDN���ͣ�http s://blog.csdn.net/zhangdatou666
-***	qq����Ⱥ��262438510
+***	Emm_V5.0步进闭环控制例程
+***	编写作者：ZHANGDATOU
+***	技术支持：张大头闭环伺服
+***	淘宝店铺：https://zhangdatou.taobao.com
+***	CSDN博客：http s://blog.csdn.net/zhangdatou666
+***	qq交流群：262438510
 **********************************************************/
 
 uint8_t rxb[20] = {0};
 /**
-  * @brief    ����ǰλ������
-  * @param    addr  �������ַ
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    将当前位置清零
+  * @param    addr  ：电机地址
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_Reset_CurPos_To_Zero(uint8_t addr)
 {
   memset(&rxb , 0 , sizeof(rxb));
-  // װ������
-  rxb[0] =  addr;                       // ��ַ
-  rxb[1] =  0x0A;                       // ������
-  rxb[2] =  0x6D;                       // ������
-  rxb[3] =  0x6B;                       // У���ֽ�
+  // 装载命令
+  rxb[0] =  addr;                       // 地址
+  rxb[1] =  0x0A;                       // 功能码
+  rxb[2] =  0x6D;                       // 辅助码
+  rxb[3] =  0x6B;                       // 校验字节
   
-  // ��������
+  // 发送命令
 	HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 4);
 }
 
 /**
-  * @brief    �����ת����
-  * @param    addr  �������ַ
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    解除堵转保护
+  * @param    addr  ：电机地址
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_Reset_Clog_Pro(uint8_t addr)
 {
   memset(&rxb , 0 , sizeof(rxb));
   
-  // װ������
-  rxb[0] =  addr;                       // ��ַ
-  rxb[1] =  0x0E;                       // ������
-  rxb[2] =  0x52;                       // ������
-  rxb[3] =  0x6B;                       // У���ֽ�
+  // 装载命令
+  rxb[0] =  addr;                       // 地址
+  rxb[1] =  0x0E;                       // 功能码
+  rxb[2] =  0x52;                       // 辅助码
+  rxb[3] =  0x6B;                       // 校验字节
   
-  // ��������
+  // 发送命令
   HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 4);
 }
 
 /**
-  * @brief    ��ȡϵͳ����
-  * @param    addr  �������ַ
-  * @param    s     ��ϵͳ��������
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    读取系统参数
+  * @param    addr  ：电机地址
+  * @param    s     ：系统参数类型
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_Read_Sys_Params(uint8_t addr, SysParams_t s)
 {
   memset(&rxb , 0 , sizeof(rxb));
   uint8_t i = 0;
-  // װ������
-  rxb[i] = addr; ++i;                   // ��ַ
+  // 装载命令
+  rxb[i] = addr; ++i;                   // 地址
 
-  switch(s)                             // ������
+  switch(s)                             // 功能码
   {
     case S_VER  : rxb[i] = 0x1F; ++i; break;
     case S_RL   : rxb[i] = 0x20; ++i; break;
@@ -80,264 +80,264 @@ void Emm_V5_Read_Sys_Params(uint8_t addr, SysParams_t s)
     default: break;
   }
 
-  rxb[i] = 0x6B; ++i;                   // У���ֽ�
+  rxb[i] = 0x6B; ++i;                   // 校验字节
   
-  // ��������
+  // 发送命令
   HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, i);
 }
 
 /**
-  * @brief    �޸Ŀ���/�ջ�����ģʽ
-  * @param    addr     �������ַ
-  * @param    svF      ���Ƿ�洢��־��falseΪ���洢��trueΪ�洢
-  * @param    ctrl_mode������ģʽ����Ӧ��Ļ�ϵ�P_Pul�˵�����0�ǹر������������ţ�1�ǿ���ģʽ��2�Ǳջ�ģʽ��3����En�˿ڸ���Ϊ��Ȧ��λ�����������ţ�Dir�˿ڸ���Ϊ��λ����ߵ�ƽ����
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    修改开环/闭环控制模式
+  * @param    addr     ：电机地址
+  * @param    svF      ：是否存储标志，false为不存储，true为存储
+  * @param    ctrl_mode：控制模式（对应屏幕上的P_Pul菜单），0是关闭脉冲输入引脚，1是开环模式，2是闭环模式，3是让En端口复用为多圈限位开关输入引脚，Dir端口复用为到位输出高电平功能
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode)
 {
   memset(&rxb , 0 , sizeof(rxb));
   
-  // װ������
-  rxb[0] =  addr;                       // ��ַ
-  rxb[1] =  0x46;                       // ������
-  rxb[2] =  0x69;                       // ������
-  rxb[3] =  svF;                        // �Ƿ�洢��־��falseΪ���洢��trueΪ�洢
-  rxb[4] =  ctrl_mode;                  // ����ģʽ����Ӧ��Ļ�ϵ�P_Pul�˵�����0�ǹر������������ţ�1�ǿ���ģʽ��2�Ǳջ�ģʽ��3����En�˿ڸ���Ϊ��Ȧ��λ�����������ţ�Dir�˿ڸ���Ϊ��λ����ߵ�ƽ����
-  rxb[5] =  0x6B;                       // У���ֽ�
+  // 装载命令
+  rxb[0] =  addr;                       // 地址
+  rxb[1] =  0x46;                       // 功能码
+  rxb[2] =  0x69;                       // 辅助码
+  rxb[3] =  svF;                        // 是否存储标志，false为不存储，true为存储
+  rxb[4] =  ctrl_mode;                  // 控制模式（对应屏幕上的P_Pul菜单），0是关闭脉冲输入引脚，1是开环模式，2是闭环模式，3是让En端口复用为多圈限位开关输入引脚，Dir端口复用为到位输出高电平功能
+  rxb[5] =  0x6B;                       // 校验字节
   
-  // ��������
+  // 发送命令
   HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 6);
 }
 
 /**
-  * @brief    ʹ���źſ���
-  * @param    addr  �������ַ
-  * @param    state ��ʹ��״̬     ��trueΪʹ�ܵ����falseΪ�رյ��
-  * @param    snF   �����ͬ����־ ��falseΪ�����ã�trueΪ����
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    使能信号控制
+  * @param    addr  ：电机地址
+  * @param    state ：使能状态     ，true为使能电机，false为关闭电机
+  * @param    snF   ：多机同步标志 ，false为不启用，true为启用
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_En_Control(uint8_t addr, bool state, bool snF)
 {
   memset(&rxb , 0 , sizeof(rxb));
   
-  // װ������
-  rxb[0] =  addr;                       // ��ַ
-  rxb[1] =  0xF3;                       // ������
-  rxb[2] =  0xAB;                       // ������
-  rxb[3] =  (uint8_t)state;             // ʹ��״̬
-  rxb[4] =  snF;                        // ���ͬ���˶���־
-  rxb[5] =  0x6B;                       // У���ֽ�
+  // 装载命令
+  rxb[0] =  addr;                       // 地址
+  rxb[1] =  0xF3;                       // 功能码
+  rxb[2] =  0xAB;                       // 辅助码
+  rxb[3] =  (uint8_t)state;             // 使能状态
+  rxb[4] =  snF;                        // 多机同步运动标志
+  rxb[5] =  0x6B;                       // 校验字节
   
-  // ��������
+  // 发送命令
   HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 6);
 }
 
 /**
-  * @brief    �ٶ�ģʽ
-  * @param    addr�������ַ
-  * @param    dir ������       ��0ΪCW������ֵΪCCW
-  * @param    vel ���ٶ�       ����Χ0 - 5000RPM
-  * @param    acc �����ٶ�     ����Χ0 - 255��ע�⣺0��ֱ������
-  * @param    snF �����ͬ����־��falseΪ�����ã�trueΪ����
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    速度模式
+  * @param    addr：电机地址
+  * @param    dir ：方向       ，0为CW，其余值为CCW
+  * @param    vel ：速度       ，范围0 - 5000RPM
+  * @param    acc ：加速度     ，范围0 - 255，注意：0是直接启动
+  * @param    snF ：多机同步标志，false为不启用，true为启用
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bool snF)
 {
 	
 //  cmd[8] = {0};
 	memset(&rxb , 0 , sizeof(rxb));
-  // װ������
-  rxb[0] =  addr;                       // ��ַ
-  rxb[1] =  0xF6;                       // ������
-  rxb[2] =  dir;                        // ����
-  rxb[3] =  (uint8_t)(vel >> 8);        // �ٶ�(RPM)��8λ�ֽ�
-  rxb[4] =  (uint8_t)(vel >> 0);        // �ٶ�(RPM)��8λ�ֽ�
-  rxb[5] =  acc;                        // ���ٶȣ�ע�⣺0��ֱ������
-  rxb[6] =  snF;                        // ���ͬ���˶���־
-  rxb[7] =  0x6B;                       // У���ֽ�
+  // 装载命令
+  rxb[0] =  addr;                       // 地址
+  rxb[1] =  0xF6;                       // 功能码
+  rxb[2] =  dir;                        // 方向
+  rxb[3] =  (uint8_t)(vel >> 8);        // 速度(RPM)高8位字节
+  rxb[4] =  (uint8_t)(vel >> 0);        // 速度(RPM)低8位字节
+  rxb[5] =  acc;                        // 加速度，注意：0是直接启动
+  rxb[6] =  snF;                        // 多机同步运动标志
+  rxb[7] =  0x6B;                       // 校验字节
   
-  // ��������
+  // 发送命令
 //  HAL_UART_Transmit(&huart1, (uint8_t *)cmd, 8 , 1000);
   HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t*)rxb, 8);
 }
 
 /**
-  * @brief    λ��ģʽ
-  * @param    addr�������ַ
-  * @param    dir ������        ��0ΪCW������ֵΪCCW
-  * @param    vel ���ٶ�(RPM)   ����Χ0 - 5000RPM
-  * @param    acc �����ٶ�      ����Χ0 - 255��ע�⣺0��ֱ������
-  * @param    clk ��������      ����Χ0- (2^32 - 1)��
-  * @param    raF ����λ/���Ա�־��falseΪ����˶���trueΪ����ֵ�˶�
-  * @param    snF �����ͬ����־ ��falseΪ�����ã�trueΪ����
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    位置模式
+  * @param    addr：电机地址
+  * @param    dir ：方向        ，0为CW，其余值为CCW
+  * @param    vel ：速度(RPM)   ，范围0 - 5000RPM
+  * @param    acc ：加速度      ，范围0 - 255，注意：0是直接启动
+  * @param    clk ：脉冲数      ，范围0- (2^32 - 1)个
+  * @param    raF ：相位/绝对标志，false为相对运动，true为绝对值运动
+  * @param    snF ：多机同步标志 ，false为不启用，true为启用
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint32_t clk, bool raF, bool snF)
 {
 	memset(&rxb , 0 , sizeof(rxb));
 
-  // װ������
-  rxb[0]  =  addr;                      // ��ַ
-  rxb[1]  =  0xFD;                      // ������
-  rxb[2]  =  dir;                       // ����
-  rxb[3]  =  (uint8_t)(vel >> 8);       // �ٶ�(RPM)��8λ�ֽ�
-  rxb[4]  =  (uint8_t)(vel >> 0);       // �ٶ�(RPM)��8λ�ֽ� 
-  rxb[5]  =  acc;                       // ���ٶȣ�ע�⣺0��ֱ������
-  rxb[6]  =  (uint8_t)(clk >> 24);      // ������(bit24 - bit31)
-  rxb[7]  =  (uint8_t)(clk >> 16);      // ������(bit16 - bit23)
-  rxb[8]  =  (uint8_t)(clk >> 8);       // ������(bit8  - bit15)
-  rxb[9]  =  (uint8_t)(clk >> 0);       // ������(bit0  - bit7 )
-  rxb[10] =  raF;                       // ��λ/���Ա�־��falseΪ����˶���trueΪ����ֵ�˶�
-  rxb[11] =  snF;                       // ���ͬ���˶���־��falseΪ�����ã�trueΪ����
-  rxb[12] =  0x6B;                      // У���ֽ�
+  // 装载命令
+  rxb[0]  =  addr;                      // 地址
+  rxb[1]  =  0xFD;                      // 功能码
+  rxb[2]  =  dir;                       // 方向
+  rxb[3]  =  (uint8_t)(vel >> 8);       // 速度(RPM)高8位字节
+  rxb[4]  =  (uint8_t)(vel >> 0);       // 速度(RPM)低8位字节 
+  rxb[5]  =  acc;                       // 加速度，注意：0是直接启动
+  rxb[6]  =  (uint8_t)(clk >> 24);      // 脉冲数(bit24 - bit31)
+  rxb[7]  =  (uint8_t)(clk >> 16);      // 脉冲数(bit16 - bit23)
+  rxb[8]  =  (uint8_t)(clk >> 8);       // 脉冲数(bit8  - bit15)
+  rxb[9]  =  (uint8_t)(clk >> 0);       // 脉冲数(bit0  - bit7 )
+  rxb[10] =  raF;                       // 相位/绝对标志，false为相对运动，true为绝对值运动
+  rxb[11] =  snF;                       // 多机同步运动标志，false为不启用，true为启用
+  rxb[12] =  0x6B;                      // 校验字节
   
-  // ��������
+  // 发送命令
   HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 13);
 //  HAL_UART_Transmit(&huart1, (uint8_t *)rxb, 13 , 1000);
 }
 
 /**
-  * @brief    ����ֹͣ�����п���ģʽ��ͨ�ã�
-  * @param    addr  �������ַ
-  * @param    snF   �����ͬ����־��falseΪ�����ã�trueΪ����
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    立即停止（所有控制模式都通用）
+  * @param    addr  ：电机地址
+  * @param    snF   ：多机同步标志，false为不启用，true为启用
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_Stop_Now(uint8_t addr, bool snF)
 {
 	memset(&rxb , 0 , sizeof(rxb));
   
-  // װ������
-  rxb[0] =  addr;                       // ��ַ
-  rxb[1] =  0xFE;                       // ������
-  rxb[2] =  0x98;                       // ������
-  rxb[3] =  snF;                        // ���ͬ���˶���־
-  rxb[4] =  0x6B;                       // У���ֽ�
+  // 装载命令
+  rxb[0] =  addr;                       // 地址
+  rxb[1] =  0xFE;                       // 功能码
+  rxb[2] =  0x98;                       // 辅助码
+  rxb[3] =  snF;                        // 多机同步运动标志
+  rxb[4] =  0x6B;                       // 校验字节
   
-  // ��������
+  // 发送命令
   HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 5);
 }
 
 /**
-  * @brief    ���ͬ���˶�
-  * @param    addr  �������ַ
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    多机同步运动
+  * @param    addr  ：电机地址
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_Synchronous_motion(uint8_t addr)
 {
 	memset(&rxb , 0 , sizeof(rxb));
   
-  // װ������
-  rxb[0] =  addr;                       // ��ַ
-  rxb[1] =  0xFF;                       // ������
-  rxb[2] =  0x66;                       // ������
-  rxb[3] =  0x6B;                       // У���ֽ�
+  // 装载命令
+  rxb[0] =  addr;                       // 地址
+  rxb[1] =  0xFF;                       // 功能码
+  rxb[2] =  0x66;                       // 辅助码
+  rxb[3] =  0x6B;                       // 校验字节
   
-  // ��������
+  // 发送命令
   HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 4);
 }
 
 /**
-  * @brief    ���õ�Ȧ��������λ��
-  * @param    addr  �������ַ
-  * @param    svF   ���Ƿ�洢��־��falseΪ���洢��trueΪ�洢
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    设置单圈回零的零点位置
+  * @param    addr  ：电机地址
+  * @param    svF   ：是否存储标志，false为不存储，true为存储
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_Origin_Set_O(uint8_t addr, bool svF)
 {
 	memset(&rxb , 0 , sizeof(rxb));
   
-  // װ������
-  rxb[0] =  addr;                       // ��ַ
-  rxb[1] =  0x93;                       // ������
-  rxb[2] =  0x88;                       // ������
-  rxb[3] =  svF;                        // �Ƿ�洢��־��falseΪ���洢��trueΪ�洢
-  rxb[4] =  0x6B;                       // У���ֽ�
+  // 装载命令
+  rxb[0] =  addr;                       // 地址
+  rxb[1] =  0x93;                       // 功能码
+  rxb[2] =  0x88;                       // 辅助码
+  rxb[3] =  svF;                        // 是否存储标志，false为不存储，true为存储
+  rxb[4] =  0x6B;                       // 校验字节
   
-  // ��������
+  // 发送命令
   HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 5);
 }
 
 /**
-  * @brief    �޸Ļ������
-  * @param    addr  �������ַ
-  * @param    svF   ���Ƿ�洢��־��falseΪ���洢��trueΪ�洢
-  * @param    o_mode ������ģʽ��0Ϊ��Ȧ�ͽ����㣬1Ϊ��Ȧ������㣬2Ϊ��Ȧ����λ��ײ���㣬3Ϊ��Ȧ����λ���ػ���
-  * @param    o_dir  �����㷽��0ΪCW������ֵΪCCW
-  * @param    o_vel  �������ٶȣ���λ��RPM��ת/���ӣ�
-  * @param    o_tm   �����㳬ʱʱ�䣬��λ������
-  * @param    sl_vel ������λ��ײ������ת�٣���λ��RPM��ת/���ӣ�
-  * @param    sl_ma  ������λ��ײ�������������λ��Ma��������
-  * @param    sl_ms  ������λ��ײ������ʱ�䣬��λ��Ms�����룩
-  * @param    potF   ���ϵ��Զ��������㣬falseΪ��ʹ�ܣ�trueΪʹ��
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    修改回零参数
+  * @param    addr  ：电机地址
+  * @param    svF   ：是否存储标志，false为不存储，true为存储
+  * @param    o_mode ：回零模式，0为单圈就近回零，1为单圈方向回零，2为多圈无限位碰撞回零，3为多圈有限位开关回零
+  * @param    o_dir  ：回零方向，0为CW，其余值为CCW
+  * @param    o_vel  ：回零速度，单位：RPM（转/分钟）
+  * @param    o_tm   ：回零超时时间，单位：毫秒
+  * @param    sl_vel ：无限位碰撞回零检测转速，单位：RPM（转/分钟）
+  * @param    sl_ma  ：无限位碰撞回零检测电流，单位：Ma（毫安）
+  * @param    sl_ms  ：无限位碰撞回零检测时间，单位：Ms（毫秒）
+  * @param    potF   ：上电自动触发回零，false为不使能，true为使能
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_Origin_Modify_Params(uint8_t addr, bool svF, uint8_t o_mode, uint8_t o_dir, uint16_t o_vel, uint32_t o_tm, uint16_t sl_vel, uint16_t sl_ma, uint16_t sl_ms, bool potF)
 {
 	memset(&rxb , 0 , sizeof(rxb));
   
-  // װ������
-  rxb[0] =  addr;                       // ��ַ
-  rxb[1] =  0x4C;                       // ������
-  rxb[2] =  0xAE;                       // ������
-  rxb[3] =  svF;                        // �Ƿ�洢��־��falseΪ���洢��trueΪ�洢
-  rxb[4] =  o_mode;                     // ����ģʽ��0Ϊ��Ȧ�ͽ����㣬1Ϊ��Ȧ������㣬2Ϊ��Ȧ����λ��ײ���㣬3Ϊ��Ȧ����λ���ػ���
-  rxb[5] =  o_dir;                      // ���㷽��
-  rxb[6]  =  (uint8_t)(o_vel >> 8);     // �����ٶ�(RPM)��8λ�ֽ�
-  rxb[7]  =  (uint8_t)(o_vel >> 0);     // �����ٶ�(RPM)��8λ�ֽ� 
-  rxb[8]  =  (uint8_t)(o_tm >> 24);     // ���㳬ʱʱ��(bit24 - bit31)
-  rxb[9]  =  (uint8_t)(o_tm >> 16);     // ���㳬ʱʱ��(bit16 - bit23)
-  rxb[10] =  (uint8_t)(o_tm >> 8);      // ���㳬ʱʱ��(bit8  - bit15)
-  rxb[11] =  (uint8_t)(o_tm >> 0);      // ���㳬ʱʱ��(bit0  - bit7 )
-  rxb[12] =  (uint8_t)(sl_vel >> 8);    // ����λ��ײ������ת��(RPM)��8λ�ֽ�
-  rxb[13] =  (uint8_t)(sl_vel >> 0);    // ����λ��ײ������ת��(RPM)��8λ�ֽ� 
-  rxb[14] =  (uint8_t)(sl_ma >> 8);     // ����λ��ײ���������(Ma)��8λ�ֽ�
-  rxb[15] =  (uint8_t)(sl_ma >> 0);     // ����λ��ײ���������(Ma)��8λ�ֽ� 
-  rxb[16] =  (uint8_t)(sl_ms >> 8);     // ����λ��ײ������ʱ��(Ms)��8λ�ֽ�
-  rxb[17] =  (uint8_t)(sl_ms >> 0);     // ����λ��ײ������ʱ��(Ms)��8λ�ֽ�
-  rxb[18] =  potF;                      // �ϵ��Զ��������㣬falseΪ��ʹ�ܣ�trueΪʹ��
-  rxb[19] =  0x6B;                      // У���ֽ�
+  // 装载命令
+  rxb[0] =  addr;                       // 地址
+  rxb[1] =  0x4C;                       // 功能码
+  rxb[2] =  0xAE;                       // 辅助码
+  rxb[3] =  svF;                        // 是否存储标志，false为不存储，true为存储
+  rxb[4] =  o_mode;                     // 回零模式，0为单圈就近回零，1为单圈方向回零，2为多圈无限位碰撞回零，3为多圈有限位开关回零
+  rxb[5] =  o_dir;                      // 回零方向
+  rxb[6]  =  (uint8_t)(o_vel >> 8);     // 回零速度(RPM)高8位字节
+  rxb[7]  =  (uint8_t)(o_vel >> 0);     // 回零速度(RPM)低8位字节 
+  rxb[8]  =  (uint8_t)(o_tm >> 24);     // 回零超时时间(bit24 - bit31)
+  rxb[9]  =  (uint8_t)(o_tm >> 16);     // 回零超时时间(bit16 - bit23)
+  rxb[10] =  (uint8_t)(o_tm >> 8);      // 回零超时时间(bit8  - bit15)
+  rxb[11] =  (uint8_t)(o_tm >> 0);      // 回零超时时间(bit0  - bit7 )
+  rxb[12] =  (uint8_t)(sl_vel >> 8);    // 无限位碰撞回零检测转速(RPM)高8位字节
+  rxb[13] =  (uint8_t)(sl_vel >> 0);    // 无限位碰撞回零检测转速(RPM)低8位字节 
+  rxb[14] =  (uint8_t)(sl_ma >> 8);     // 无限位碰撞回零检测电流(Ma)高8位字节
+  rxb[15] =  (uint8_t)(sl_ma >> 0);     // 无限位碰撞回零检测电流(Ma)低8位字节 
+  rxb[16] =  (uint8_t)(sl_ms >> 8);     // 无限位碰撞回零检测时间(Ms)高8位字节
+  rxb[17] =  (uint8_t)(sl_ms >> 0);     // 无限位碰撞回零检测时间(Ms)低8位字节
+  rxb[18] =  potF;                      // 上电自动触发回零，false为不使能，true为使能
+  rxb[19] =  0x6B;                      // 校验字节
   
-  // ��������
+  // 发送命令
   HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 20);
 }
 
 /**
-  * @brief    ��������
-  * @param    addr   �������ַ
-  * @param    o_mode ������ģʽ��0Ϊ��Ȧ�ͽ����㣬1Ϊ��Ȧ������㣬2Ϊ��Ȧ����λ��ײ���㣬3Ϊ��Ȧ����λ���ػ���
-  * @param    snF   �����ͬ����־��falseΪ�����ã�trueΪ����
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    触发回零
+  * @param    addr   ：电机地址
+  * @param    o_mode ：回零模式，0为单圈就近回零，1为单圈方向回零，2为多圈无限位碰撞回零，3为多圈有限位开关回零
+  * @param    snF   ：多机同步标志，false为不启用，true为启用
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_Origin_Trigger_Return(uint8_t addr, uint8_t o_mode, bool snF)
 {
 	memset(&rxb , 0 , sizeof(rxb));
   
-  // װ������
-  rxb[0] =  addr;                       // ��ַ
-  rxb[1] =  0x9A;                       // ������
-  rxb[2] =  o_mode;                     // ����ģʽ��0Ϊ��Ȧ�ͽ����㣬1Ϊ��Ȧ������㣬2Ϊ��Ȧ����λ��ײ���㣬3Ϊ��Ȧ����λ���ػ���
-  rxb[3] =  snF;                        // ���ͬ���˶���־��falseΪ�����ã�trueΪ����
-  rxb[4] =  0x6B;                       // У���ֽ�
+  // 装载命令
+  rxb[0] =  addr;                       // 地址
+  rxb[1] =  0x9A;                       // 功能码
+  rxb[2] =  o_mode;                     // 回零模式，0为单圈就近回零，1为单圈方向回零，2为多圈无限位碰撞回零，3为多圈有限位开关回零
+  rxb[3] =  snF;                        // 多机同步运动标志，false为不启用，true为启用
+  rxb[4] =  0x6B;                       // 校验字节
   
-  // ��������
+  // 发送命令
   HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 5);
 }
 
 /**
-  * @brief    ǿ���жϲ��˳�����
-  * @param    addr  �������ַ
-  * @retval   ��ַ + ������ + ����״̬ + У���ֽ�
+  * @brief    强制中断并退出回零
+  * @param    addr  ：电机地址
+  * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_Origin_Interrupt(uint8_t addr)
 {
 	memset(&rxb , 0 , sizeof(rxb));
   
-  // װ������
-  rxb[0] =  addr;                       // ��ַ
-  rxb[1] =  0x9C;                       // ������
-  rxb[2] =  0x48;                       // ������
-  rxb[3] =  0x6B;                       // У���ֽ�
+  // 装载命令
+  rxb[0] =  addr;                       // 地址
+  rxb[1] =  0x9C;                       // 功能码
+  rxb[2] =  0x48;                       // 辅助码
+  rxb[3] =  0x6B;                       // 校验字节
   
-  // ��������
+  // 发送命令
   HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 5);
 }

@@ -1,10 +1,10 @@
-#include "PID.h"
+ï»¿#include "PID.h"
 
 float Position_PID(PID_TypeDef *PID,float Target)
 {
 	float k=0.9;
 	PID->Target = Target;
-	/*¼ÆËãÆ«²î*/
+	/*è®¡ç®—åå·®*/
 	PID->Error = PID->Current - PID->Target;
 	
 	while(PID->Error<-180)
@@ -17,10 +17,10 @@ float Position_PID(PID_TypeDef *PID,float Target)
 	}
 	
 	
-	/*µÍÍ¨ÂË²¨*/
+	/*ä½Žé€šæ»¤æ³¢*/
 	PID->Error = PID->Error*(1-k)+k * PID->Last_Error;
 	PID->I_Out+=PID->Error*PID->Ki;
-//	/*»ý·ÖÏÞ·ù*/
+//	/*ç§¯åˆ†é™å¹…*/
 	if(PID->I_Out > PID->I_Max)
 	{
 		PID->I_Out = PID->I_Max;
@@ -29,11 +29,11 @@ float Position_PID(PID_TypeDef *PID,float Target)
 	{
 		PID->I_Out = 0 - PID->I_Max;
 	}
-	/*Êä³ö¼ÆËã*/
+	/*è¾“å‡ºè®¡ç®—*/
 	PID->Out = PID->Kp*PID->Error+PID->I_Out+PID->Kd*(PID->Error-PID->Last_Error);
-	/*¼ÇÂ¼Êý¾Ý*/
+	/*è®°å½•æ•°æ®*/
 	PID->Last_Error = PID->Error;
-	/*Êä³öÏÞ·ù*/
+	/*è¾“å‡ºé™å¹…*/
 	if(PID->Out > PID->Out_Max)
 	{
 		PID->Out = PID->Out_Max;
@@ -49,7 +49,7 @@ float Position_PID(PID_TypeDef *PID,float Target)
 float Angle_PID(PID_TypeDef *PID,float Target,float groy)
 {
 	PID->Target = Target;
-	/*¼ÆËãÆ«²î*/
+	/*è®¡ç®—åå·®*/
 	PID->Error = PID->Current - PID->Target;
 	
 	while(PID->Error<-180)
@@ -61,11 +61,11 @@ float Angle_PID(PID_TypeDef *PID,float Target,float groy)
 		PID->Error = (PID->Error-360);
 	}
 	
-	/*Êä³ö¼ÆËã*/
+	/*è¾“å‡ºè®¡ç®—*/
 	PID->Out = PID->Kp*PID->Error+PID->Kd*groy;
-	/*¼ÇÂ¼Êý¾Ý*/
+	/*è®°å½•æ•°æ®*/
 	PID->Last_Error = PID->Error;
-	/*Êä³öÏÞ·ù*/
+	/*è¾“å‡ºé™å¹…*/
 	if(PID->Out > PID->Out_Max)
 	{
 		PID->Out = PID->Out_Max;

@@ -1,4 +1,4 @@
-#ifndef __PID_H
+ï»¿#ifndef __PID_H
 #define __PID_H
 
 #include "main.h"
@@ -20,7 +20,7 @@ typedef struct {
 	float Current;
 	uint8_t Clear;
 	
-	/*ÓÃ»§×Ô¼Ó*/
+	/*ç”¨æˆ·è‡ªåŠ */
 	
 	
 	

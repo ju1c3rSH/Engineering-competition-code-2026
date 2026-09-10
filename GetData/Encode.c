@@ -1,67 +1,67 @@
-#include "Encode.h"
+ï»¿#include "Encode.h"
 
 int Encode_count = 0;
 float speed_Record[SPEED_RECORD_NUM]={0};
 
-/****************È«¾Öµç»úÅäÖÃÊı×é****************/
+/****************å…¨å±€ç”µæœºé…ç½®æ•°ç»„****************/
 Motor_TypeDef motors[Motor_Count] = {
     {
-			.ID = Motor_0,               														  //µç»ú±àºÅ
-			.tim = TIM1,      																		  //±àÂëÆ÷µÄ¶¨Ê±Æ÷ÓÃÓÚ¼Ä´æÆ÷ÅäÖÃ£¬²»ÓÃÔÚ³õÊ¼»¯ÉÏ£»
-			.ccr = &TIM3->CCR1,       														  //PWMÍ¨µÀ
-			.Motor_Dir_GPIO_Port = Motor_Dir_1_GPIO_Port,					  //¿ØÖÆ·½Ïò¶Ë¿Ú
-			.Motor_Dir_Pin = Motor_Dir_1_Pin,       								//¿ØÖÆ·½ÏòÒı½ÅºÅ
-			.cnt = 0,         				  														//³õÊ¼»¯0ºÅµç»úµÄÂö³åÊı
-			.Parameter.Speed = 0,  		      				  							//µç»úËÙ¶È(×ªÃ¿Ãë)
-			.Parameter.Pos = 0,         				  									//µç»úÎ»ÖÃ
-			.Parameter.Tar_Speed = 0,   				  									//µç»úÄ¿±êËÙ¶È
-			.Parameter.Acc = 45.0f,																	//¼ÓËÙ¶È´óĞ¡
-			.Parameter.dt = 0.01f,																	//ÔÈ¼ÓËÙÊ±µÄ¼ä¸ô			
+			.ID = Motor_0,               														  //ç”µæœºç¼–å·
+			.tim = TIM1,      																		  //ç¼–ç å™¨çš„å®šæ—¶å™¨ç”¨äºå¯„å­˜å™¨é…ç½®ï¼Œä¸ç”¨åœ¨åˆå§‹åŒ–ä¸Šï¼›
+			.ccr = &TIM3->CCR1,       														  //PWMé€šé“
+			.Motor_Dir_GPIO_Port = Motor_Dir_1_GPIO_Port,					  //æ§åˆ¶æ–¹å‘ç«¯å£
+			.Motor_Dir_Pin = Motor_Dir_1_Pin,       								//æ§åˆ¶æ–¹å‘å¼•è„šå·
+			.cnt = 0,         				  														//åˆå§‹åŒ–0å·ç”µæœºçš„è„‰å†²æ•°
+			.Parameter.Speed = 0,  		      				  							//ç”µæœºé€Ÿåº¦(è½¬æ¯ç§’)
+			.Parameter.Pos = 0,         				  									//ç”µæœºä½ç½®
+			.Parameter.Tar_Speed = 0,   				  									//ç”µæœºç›®æ ‡é€Ÿåº¦
+			.Parameter.Acc = 45.0f,																	//åŠ é€Ÿåº¦å¤§å°
+			.Parameter.dt = 0.01f,																	//åŒ€åŠ é€Ÿæ—¶çš„é—´éš”			
 			
-			.Reduction_ratio = 30.0f,   														//µç»ú¼õËÙ±È
-			.Encoder_line_count = 500.0f,														//µç»ú±àÂëÆ÷ÏßÊı
+			.Reduction_ratio = 30.0f,   														//ç”µæœºå‡é€Ÿæ¯”
+			.Encoder_line_count = 500.0f,														//ç”µæœºç¼–ç å™¨çº¿æ•°
 			.Encoder_multiple = 4.0f,   
 			/*
-			±àÂëÆ÷»áÊä³öÁ½Â··½²¨ĞÅºÅ£¬Èç¹ûÖ»ÔÚÍ¨µÀAµÄÉÏÉıÑØ¼ÆÊı£¬ÄÇ¾ÍÊÇ1±¶Æµ£»
-			Í¨µÀAµÄÉÏÉı¡¢ÏÂ½µÑØ¼ÆÊı£¬ÄÇ¾ÍÊÇ2±¶Æµ£»
-			Èç¹ûÔÚÍ¨µÀA¡¢BµÄÉÏÉı¡¢ÏÂ½µÑØ¼ÆÊı£¬ÄÇ¾ÍÊÇ4±¶Æµ¡£
-			Ê¹ÓÃ±¶Æµ¿ÉÒÔ×î´ó³Ì¶ÈµØÀûÓÃÁ½Â·ĞÅºÅ£¬Ìá¸ß²âËÙµÄÁéÃô¶È¡£			
+			ç¼–ç å™¨ä¼šè¾“å‡ºä¸¤è·¯æ–¹æ³¢ä¿¡å·ï¼Œå¦‚æœåªåœ¨é€šé“Açš„ä¸Šå‡æ²¿è®¡æ•°ï¼Œé‚£å°±æ˜¯1å€é¢‘ï¼›
+			é€šé“Açš„ä¸Šå‡ã€ä¸‹é™æ²¿è®¡æ•°ï¼Œé‚£å°±æ˜¯2å€é¢‘ï¼›
+			å¦‚æœåœ¨é€šé“Aã€Bçš„ä¸Šå‡ã€ä¸‹é™æ²¿è®¡æ•°ï¼Œé‚£å°±æ˜¯4å€é¢‘ã€‚
+			ä½¿ç”¨å€é¢‘å¯ä»¥æœ€å¤§ç¨‹åº¦åœ°åˆ©ç”¨ä¸¤è·¯ä¿¡å·ï¼Œæé«˜æµ‹é€Ÿçš„çµæ•åº¦ã€‚			
 			*/
-			.speed_pid = {.Kp = 4000.0f, .Ki = 50, .Kd = 0, .I_Max = 1000, .Out_Max = PWM_ARR},//µç»úPID
+			.speed_pid = {.Kp = 4000.0f, .Ki = 50, .Kd = 0, .I_Max = 1000, .Out_Max = PWM_ARR},//ç”µæœºPID
     },
     {
-			.ID = Motor_1,               														  //µç»ú±àºÅ
-			.tim = TIM2,      																		  //±àÂëÆ÷µÄ¶¨Ê±Æ÷ÓÃÓÚ¼Ä´æÆ÷ÅäÖÃ£¬²»ÓÃÔÚ³õÊ¼»¯ÉÏ
-			.ccr = &TIM3->CCR2,       														  //PWMÍ¨µÀ
-			.Motor_Dir_GPIO_Port = Motor_Dir_2_GPIO_Port,					  //¿ØÖÆ·½Ïò¶Ë¿Ú
-			.Motor_Dir_Pin = Motor_Dir_2_Pin,       								//¿ØÖÆ·½ÏòÒı½ÅºÅ
-			.cnt = 0,         				  														//³õÊ¼»¯1ºÅµç»úµÄÂö³åÊı
-			.Parameter.Speed = 0,  		      				  							//µç»úËÙ¶È(×ªÃ¿Ãë)
-			.Parameter.Pos = 0,         				  									//µç»úÎ»ÖÃ
-			.Parameter.Tar_Speed = 0,   				  									//µç»úÄ¿±êËÙ¶È
-			.Parameter.Acc = 45.0f,																	//¼ÓËÙ¶È´óĞ¡
-			.Parameter.dt = 0.01f,																	//ÔÈ¼ÓËÙÊ±µÄ¼ä¸ô			
+			.ID = Motor_1,               														  //ç”µæœºç¼–å·
+			.tim = TIM2,      																		  //ç¼–ç å™¨çš„å®šæ—¶å™¨ç”¨äºå¯„å­˜å™¨é…ç½®ï¼Œä¸ç”¨åœ¨åˆå§‹åŒ–ä¸Š
+			.ccr = &TIM3->CCR2,       														  //PWMé€šé“
+			.Motor_Dir_GPIO_Port = Motor_Dir_2_GPIO_Port,					  //æ§åˆ¶æ–¹å‘ç«¯å£
+			.Motor_Dir_Pin = Motor_Dir_2_Pin,       								//æ§åˆ¶æ–¹å‘å¼•è„šå·
+			.cnt = 0,         				  														//åˆå§‹åŒ–1å·ç”µæœºçš„è„‰å†²æ•°
+			.Parameter.Speed = 0,  		      				  							//ç”µæœºé€Ÿåº¦(è½¬æ¯ç§’)
+			.Parameter.Pos = 0,         				  									//ç”µæœºä½ç½®
+			.Parameter.Tar_Speed = 0,   				  									//ç”µæœºç›®æ ‡é€Ÿåº¦
+			.Parameter.Acc = 45.0f,																	//åŠ é€Ÿåº¦å¤§å°
+			.Parameter.dt = 0.01f,																	//åŒ€åŠ é€Ÿæ—¶çš„é—´éš”			
 			
-			.Reduction_ratio = 30.0f,   														//µç»ú¼õËÙ±È
-			.Encoder_line_count = 500.0f,														//µç»ú±àÂëÆ÷ÏßÊı
+			.Reduction_ratio = 30.0f,   														//ç”µæœºå‡é€Ÿæ¯”
+			.Encoder_line_count = 500.0f,														//ç”µæœºç¼–ç å™¨çº¿æ•°
 			.Encoder_multiple = 4.0f,   
 			/*
-			±àÂëÆ÷»áÊä³öÁ½Â··½²¨ĞÅºÅ£¬Èç¹ûÖ»ÔÚÍ¨µÀAµÄÉÏÉıÑØ¼ÆÊı£¬ÄÇ¾ÍÊÇ1±¶Æµ£»
-			Í¨µÀAµÄÉÏÉı¡¢ÏÂ½µÑØ¼ÆÊı£¬ÄÇ¾ÍÊÇ2±¶Æµ£»
-			Èç¹ûÔÚÍ¨µÀA¡¢BµÄÉÏÉı¡¢ÏÂ½µÑØ¼ÆÊı£¬ÄÇ¾ÍÊÇ4±¶Æµ¡£
-			Ê¹ÓÃ±¶Æµ¿ÉÒÔ×î´ó³Ì¶ÈµØÀûÓÃÁ½Â·ĞÅºÅ£¬Ìá¸ß²âËÙµÄÁéÃô¶È¡£			
+			ç¼–ç å™¨ä¼šè¾“å‡ºä¸¤è·¯æ–¹æ³¢ä¿¡å·ï¼Œå¦‚æœåªåœ¨é€šé“Açš„ä¸Šå‡æ²¿è®¡æ•°ï¼Œé‚£å°±æ˜¯1å€é¢‘ï¼›
+			é€šé“Açš„ä¸Šå‡ã€ä¸‹é™æ²¿è®¡æ•°ï¼Œé‚£å°±æ˜¯2å€é¢‘ï¼›
+			å¦‚æœåœ¨é€šé“Aã€Bçš„ä¸Šå‡ã€ä¸‹é™æ²¿è®¡æ•°ï¼Œé‚£å°±æ˜¯4å€é¢‘ã€‚
+			ä½¿ç”¨å€é¢‘å¯ä»¥æœ€å¤§ç¨‹åº¦åœ°åˆ©ç”¨ä¸¤è·¯ä¿¡å·ï¼Œæé«˜æµ‹é€Ÿçš„çµæ•åº¦ã€‚			
 			*/
-			.speed_pid = {.Kp = 4000.0f, .Ki = 50, .Kd = 0, .I_Max = 1000, .Out_Max = PWM_ARR},//µç»úPID
+			.speed_pid = {.Kp = 4000.0f, .Ki = 50, .Kd = 0, .I_Max = 1000, .Out_Max = PWM_ARR},//ç”µæœºPID
     }
 };
 
 
-void Motor_Init(void)																					//³õÊ¼»¯µç»ú
+void Motor_Init(void)																					//åˆå§‹åŒ–ç”µæœº
 {
-	HAL_TIM_Encoder_Start(&ENCODER_TIM_1 , TIM_CHANNEL_ALL);    //ÆôÓÃ±àÂëÆ÷
-	HAL_TIM_Encoder_Start(&ENCODER_TIM_2 , TIM_CHANNEL_ALL);    //ÆôÓÃ±àÂëÆ÷
-	HAL_TIM_PWM_Start(&PWM_TIM , TIM_CHANNEL_1);								//ÆôÓÃPWM
-	HAL_TIM_PWM_Start(&PWM_TIM , TIM_CHANNEL_2);								//ÆôÓÃPWM
+	HAL_TIM_Encoder_Start(&ENCODER_TIM_1 , TIM_CHANNEL_ALL);    //å¯ç”¨ç¼–ç å™¨
+	HAL_TIM_Encoder_Start(&ENCODER_TIM_2 , TIM_CHANNEL_ALL);    //å¯ç”¨ç¼–ç å™¨
+	HAL_TIM_PWM_Start(&PWM_TIM , TIM_CHANNEL_1);								//å¯ç”¨PWM
+	HAL_TIM_PWM_Start(&PWM_TIM , TIM_CHANNEL_2);								//å¯ç”¨PWM
 	
 	TIM3->CCR1 = 0;
 	TIM3->CCR2 = 0;
@@ -71,7 +71,7 @@ void Motor_Init(void)																					//³õÊ¼»¯µç»ú
 	
 }
 
-// ¶ÁÈ¡±àÂëÆ÷Öµº¯Êı
+// è¯»å–ç¼–ç å™¨å€¼å‡½æ•°
 float Read_Encoder_Value(uint8_t motor_id) 
 {
 	if(motors[motor_id].tim -> CNT == 20000)
@@ -92,36 +92,36 @@ float Read_Encoder_Value(uint8_t motor_id)
 }
 void Gat_Motor_data(uint8_t motor_id)
 {
-	motors[motor_id].Parameter.encoder = Read_Encoder_Value(motor_id);								//»ñÈ¡±àÂëÆ÷Öµ
+	motors[motor_id].Parameter.encoder = Read_Encoder_Value(motor_id);								//è·å–ç¼–ç å™¨å€¼
 	motors[motor_id].Parameter.Speed = motors[motor_id].Parameter.encoder * 100.0f /(motors[motor_id].Encoder_line_count * motors[motor_id].Reduction_ratio * motors[motor_id].Encoder_multiple);
 	motors[motor_id].Parameter.Pos += motors[motor_id].Parameter.encoder /(motors[motor_id].Encoder_line_count * motors[motor_id].Reduction_ratio * motors[motor_id].Encoder_multiple);
 	motors[motor_id].Parameter.Filtered_speed = Speed_Low_Filter(motors[motor_id].Parameter.Speed,speed_Record);
 }
 
 /**
- * @brief ÔÈ¼ÓËÙ/¼õËÙ¿ØÖÆº¯Êı
- * @param accel ¼ÓËÙ¶È´óĞ¡£¨µ¥Î»ĞèÓëËÙ¶Èµ¥Î»Æ¥Åä£¬Èçm/s2£©
- * @param current_vel µ±Ç°ËÙ¶È£¨´ø·ûºÅ£©
- * @param target_vel Ä¿±êËÙ¶È£¨´ø·ûºÅ£©
- * @return ¼ÆËãºóµÄĞÂËÙ¶È£¨´ø·ûºÅ£©
+ * @brief åŒ€åŠ é€Ÿ/å‡é€Ÿæ§åˆ¶å‡½æ•°
+ * @param accel åŠ é€Ÿåº¦å¤§å°ï¼ˆå•ä½éœ€ä¸é€Ÿåº¦å•ä½åŒ¹é…ï¼Œå¦‚m/s2ï¼‰
+ * @param current_vel å½“å‰é€Ÿåº¦ï¼ˆå¸¦ç¬¦å·ï¼‰
+ * @param target_vel ç›®æ ‡é€Ÿåº¦ï¼ˆå¸¦ç¬¦å·ï¼‰
+ * @return è®¡ç®—åçš„æ–°é€Ÿåº¦ï¼ˆå¸¦ç¬¦å·ï¼‰
  */
 float speed_control(float accel, float current_vel, float target_vel, float DT) {
-    const float dt = DT; // Ê±¼ä¼ä¸ôÀıÈç10ms£¨0.01Ãë£©
+    const float dt = DT; // æ—¶é—´é—´éš”ä¾‹å¦‚10msï¼ˆ0.01ç§’ï¼‰
     float diff = target_vel - current_vel;
     
-    // Èç¹ûµ±Ç°ËÙ¶ÈÒÑµÈÓÚÄ¿±êËÙ¶È£¬Ö±½Ó·µ»ØÄ¿±êËÙ¶È
+    // å¦‚æœå½“å‰é€Ÿåº¦å·²ç­‰äºç›®æ ‡é€Ÿåº¦ï¼Œç›´æ¥è¿”å›ç›®æ ‡é€Ÿåº¦
     if (diff == 0.0f) {
         return target_vel;
     }
     
-    // ¼ÆËãÃ¿¸öÖÜÆÚ×î´óËÙ¶È±ä»¯Á¿
+    // è®¡ç®—æ¯ä¸ªå‘¨æœŸæœ€å¤§é€Ÿåº¦å˜åŒ–é‡
     float delta_v = accel * dt;
     
-    // Èç¹ûËÙ¶È²îĞ¡ÓÚ»òµÈÓÚ×î´ó±ä»¯Á¿£¬Ö±½Ó·µ»ØÄ¿±êËÙ¶È
+    // å¦‚æœé€Ÿåº¦å·®å°äºæˆ–ç­‰äºæœ€å¤§å˜åŒ–é‡ï¼Œç›´æ¥è¿”å›ç›®æ ‡é€Ÿåº¦
     if (fabsf(diff) <= delta_v) {
         return target_vel;
     } 
-    // ·ñÔò£¬¸ù¾İ·½Ïò¼ÓËÙ»ò¼õËÙ
+    // å¦åˆ™ï¼Œæ ¹æ®æ–¹å‘åŠ é€Ÿæˆ–å‡é€Ÿ
     else {
         if (diff > 0.0f) {
             return current_vel + delta_v;
@@ -137,21 +137,21 @@ int abs_int(int num)
 
 
 /*
- * ½øĞĞËÙ¶ÈµÄÆ½¾ùÂË²¨
- * ÊäÈëĞÂ²ÉÑùµ½µÄËÙ¶È£¬´æ·ÅËÙ¶ÈµÄÊı×é£¬
- * ·µ»ØÂË²¨ºóµÄËÙ¶È
+ * è¿›è¡Œé€Ÿåº¦çš„å¹³å‡æ»¤æ³¢
+ * è¾“å…¥æ–°é‡‡æ ·åˆ°çš„é€Ÿåº¦ï¼Œå­˜æ”¾é€Ÿåº¦çš„æ•°ç»„ï¼Œ
+ * è¿”å›æ»¤æ³¢åçš„é€Ÿåº¦
  */
 float Speed_Low_Filter(float new_Spe,float *speed_Record)
 {
     float sum = 0.0f;
-    for(uint16_t i=SPEED_RECORD_NUM-1;i>0;i--)//½«ÏÖÓĞÊı¾İºóÒÆÒ»Î»
+    for(uint16_t i=SPEED_RECORD_NUM-1;i>0;i--)//å°†ç°æœ‰æ•°æ®åç§»ä¸€ä½
     {
         speed_Record[i] = speed_Record[i-1];
         sum += speed_Record[i-1];
     }
-    speed_Record[0] = new_Spe;//µÚÒ»Î»ÊÇĞÂµÄÊı¾İ
+    speed_Record[0] = new_Spe;//ç¬¬ä¸€ä½æ˜¯æ–°çš„æ•°æ®
     sum += new_Spe;
-    return sum/SPEED_RECORD_NUM;//·µ»Ø¾ùÖµ
+    return sum/SPEED_RECORD_NUM;//è¿”å›å‡å€¼
 }
 
 

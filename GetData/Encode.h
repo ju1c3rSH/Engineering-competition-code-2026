@@ -1,4 +1,4 @@
-#ifndef _ENCODER_H_
+ï»¿#ifndef _ENCODER_H_
 #define _ENCODER_H_
 
 #include "main.h"
@@ -11,22 +11,22 @@
 #include "Control_Car.h"
 #include "stdint.h"
 
-//±àÂëÆ÷ARR×î´óÖµ
+//ç¼–ç å™¨ARRæœ€å¤§å€¼
 #define Encode_ARR 		65535
 
-// PWM¶¨Ê±Æ÷ARRÖµºê¶¨Òå
-#define PWM_ARR 1500  // 84MHzÊ±ÖÓ£¬10kHz PWMÆµÂÊ
+// PWMå®šæ—¶å™¨ARRå€¼å®å®šä¹‰
+#define PWM_ARR 1500  // 84MHzæ—¶é’Ÿï¼Œ10kHz PWMé¢‘ç‡
 
 
-//¶¨Ê±Æ÷ºÅ
+//å®šæ—¶å™¨å·
 #define ENCODER_TIM_1 htim1
 #define ENCODER_TIM_2 htim2
 #define PWM_TIM       htim3
 #define GAP_TIM       htim4
 
-#define SPEED_RECORD_NUM 100 //ÇóÆ½¾ùÖµÊı×é
+#define SPEED_RECORD_NUM 100 //æ±‚å¹³å‡å€¼æ•°ç»„
 
-// µç»úÊıÁ¿
+// ç”µæœºæ•°é‡
 enum Motor_name{
 
 	Motor_0,
@@ -34,7 +34,7 @@ enum Motor_name{
 	Motor_Count,
 };
 
-//µç»ú¹¤×÷Ê±µÄ¸÷ÏîÊı¾İ
+//ç”µæœºå·¥ä½œæ—¶çš„å„é¡¹æ•°æ®
 typedef struct{
 
 	float encoder;
@@ -47,7 +47,7 @@ typedef struct{
 	
 }Parameter_TypeDef;   
 
-// µç»ú¿ØÖÆ½á¹¹Ìå
+// ç”µæœºæ§åˆ¶ç»“æ„ä½“
 typedef struct {
 		TIM_TypeDef *tim;
 		volatile uint32_t *ccr;
@@ -59,12 +59,12 @@ typedef struct {
 		float Encoder_line_count;
 		float Encoder_multiple;
 		Parameter_TypeDef Parameter;
-    PID_TypeDef speed_pid;     // ËÙ¶ÈPID
+    PID_TypeDef speed_pid;     // é€Ÿåº¦PID
 } Motor_TypeDef;
 
-void Motor_Init(void);         //µç»ú³õÊ¼»¯
-int abs_int(int num);          //ÇóÆä¾ø¶ÔÖµ
-float Read_Encoder_Value(uint8_t motor_id);//¶ÁÈ¡±àÂëÆ÷Âö³å 
+void Motor_Init(void);         //ç”µæœºåˆå§‹åŒ–
+int abs_int(int num);          //æ±‚å…¶ç»å¯¹å€¼
+float Read_Encoder_Value(uint8_t motor_id);//è¯»å–ç¼–ç å™¨è„‰å†² 
 void Gat_Motor_data(uint8_t motor_id);
 float speed_control(float accel, float current_vel, float target_vel, float DT);
 float Speed_Low_Filter(float new_Spe,float *speed_Record);
