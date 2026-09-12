@@ -17,7 +17,7 @@
  *  */
 typedef mf_state_in_t CarSense_Snap_t;
 
-void CaSense_Sample(void);              /* 编码器+航向 -> 快照(seq+1) */
+void CarSense_Sample(void);             /* 采样编码器和航向数据，生成快照(seq+1) */
 const CarSense_Snap_t *CarSense_Get(void);
 void CarSense_Output(const mf_ctx_t *m); /* 框架轮输出 wheel[].out -> DIR+PWM */
 
