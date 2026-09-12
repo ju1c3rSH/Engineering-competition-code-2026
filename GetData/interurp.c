@@ -137,8 +137,8 @@ static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *p
 		Car_Nav_MailPush(CAR_SUB_REQ_STOP, 0u, 0u);
 		break;
 
-	case CAR_SUB_REQ_TURNTABLE:        /* arg: pit_position 0~3(0=不动作) */
-		if (payload_length >= 3u && payload[2] <= 3u)
+	case CAR_SUB_REQ_TURNTABLE:        /* arg: 转台码 0~7(1~3对坑 4~6对桶 7回正, 0=不动作) */
+		if (payload_length >= 3u && payload[2] <= 7u)
 		{
 			Car_Ack_Send(CAR_SUB_REQ_TURNTABLE, 0x01u);
 			Car_Nav_MailPush(CAR_SUB_REQ_TURNTABLE, payload[2], 0u);

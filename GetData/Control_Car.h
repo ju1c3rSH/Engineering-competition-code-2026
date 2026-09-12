@@ -44,7 +44,7 @@
 
 #define CAR_SUB_REQ_NAVIGATION  0x01u   /* arg0=navigation_target_id 0~5, arg1=speed_gear 0~3 */
 #define CAR_SUB_REQ_STOP          0x02u   /* 急停安全停车, 清执行状态 */
-#define CAR_SUB_REQ_TURNTABLE     0x03u   /* arg0=pit_position 0~3(0=不动作), arg1=保留恒0 */
+#define CAR_SUB_REQ_TURNTABLE     0x03u   /* arg0=转台码 0~7: 1~3对坑(123/90/57°) 4~6对桶(270/270/90°CW反向) 7回正90°, 0=不动作; arg1=保留恒0 */
 #define CAR_SUB_GYRO_ZERO         0x04u   /* 陀螺仪置零(须车静止) */
 /* 打靶段内跟瞄: 段表不断, 边走边修航向, 收敛刹停, 发射后续跑 */
 #define CAR_SUB_TRACKING_START    0x05u   /* arg0=tracking_speed_level(0=段表速度/1=低速跟瞄), arg1=0保留 */

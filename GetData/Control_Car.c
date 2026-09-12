@@ -197,29 +197,34 @@ void Car_Tracking_ErrorPush(int16_t error_fixed, uint8_t target_found_flag)
 	__enable_irq();
 }
 
-/* 转台对坑：1->123  2->90  3->57，pit=0 不动作 */
+/* 转台码->定点角: 对坑 1->123 2->90 3->57, 对桶 4/5->270 6->90, 7 回正->90, 0 不动作 */
 static struct
 {
 	uint8_t  busy;
-	uint8_t  pit;
+	uint8_t  code;      /* 本次请求码, TURN_DONE 原样回显 */
 	uint16_t ms;
 } tt;
 static uint8_t CW_OR_CCW = 1;
 
-/* 转台对坑: 排爆/人质摆放距离一致, 惯导保证车位, 只需坑位打固定角。
- * pit_position 1->123度 2->90度 3->57度, 0 不动作 */
-static void Nav_Turntable(uint8_t pit_position)
+/* 转台定点角: 排爆/人质摆放距离一致, 惯导保证车位, 按码打固定角。
+ * 对坑 1~3->123/90/57; 对桶 4~6->270/270/90(入桶摆位沿用实车验证值,
+ * 坑3 反向 CW 到 90, 其余 CCW); 7 回正 90 */
+static void Nav_Turntable(uint8_t turn_code)
 {
-	switch (pit_position)
+	CW_OR_CCW = 1;
+	switch (turn_code)
 	{
 	case 1u: Car_data.Motor_Angle = 123.0f; break;
 	case 2u: Car_data.Motor_Angle =  90.0f; break;
 	case 3u: Car_data.Motor_Angle =  57.0f; break;
+	case 4u:
+	case 5u: Car_data.Motor_Angle = 270.0f; break;
+	case 6u: Car_data.Motor_Angle =  90.0f; CW_OR_CCW = 0u; break;
+	case 7u: Car_data.Motor_Angle =  90.0f; break;
 	default: return;
 	}
-	CW_OR_CCW = 1;
 	tt.busy = 1u;
-	tt.pit = pit_position;
+	tt.code = turn_code;
 	tt.ms = 0u;
 }
 
@@ -451,7 +456,7 @@ void Car_Nav_Task(void)
 		if (tt.ms >= TURNTABLE_SETTLE_MS)
 		{
 			tt.busy = 0u;
-			Car_Event_Send(CAR_EVT_TURN_DONE, tt.pit, 0x00u);
+			Car_Event_Send(CAR_EVT_TURN_DONE, tt.code, 0x00u);
 		}
 	}
 
