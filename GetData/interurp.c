@@ -120,7 +120,7 @@ static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *p
 
 	switch (payload[1])
 	{
-	case CAR_SUB_REQ_NAVIGATION:       /* arg: navigation_target_id 0~5, speed_gear 0~3 */
+	case CAR_SUB_REQ_NAVIGATION:       /* arg: navigation_target_id 0~7(6/7=重锚伪路线), speed_gear 0~3 */
 		if (payload_length >= 4u && payload[2] < CAR_NAV_ID_COUNT && payload[3] <= 3u)
 		{
 			Car_Ack_Send(CAR_SUB_REQ_NAV, 0x01u);

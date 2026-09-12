@@ -21,6 +21,8 @@ void Yaw_pid_Init()
                           .p.move_dist = { (v), (d), MF_KEEP, TURN_ACC_MPS2 } }
 #define SEG_ARC(v, r)   { .type = MF_SEG_ARC, .reset_pid = 1, \
                           .p.arc = { (v), (r), ((r) > 0.0f ? 90.0f : -90.0f), TURN_ACC_MPS2 } }
+#define SEG_TURN_TO(y)  { .type = MF_SEG_TURN_TO, .reset_pid = 1, \
+                          .p.turn = { (y), 0.0f } }
 #define SEG_END         { .type = MF_SEG_END }
 
 static const mf_seg_t tbl_qr[] =          /* NAV_TO_QR: flag0 出发首段 43(台架单段用) */
@@ -65,15 +67,27 @@ static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(170.0f)),
 	SEG_END
 };
+static const mf_seg_t tbl_rebase_bomb[] =   /* NAV_REBASE_BOMB: flag10 排爆区重锚, 对坑前原地转绝对角 */
+{
+	SEG_TURN_TO(-90.3f),
+	SEG_END
+};
+static const mf_seg_t tbl_rebase_return[] = /* NAV_REBASE_RETURN: flag17 携人质返程前重锚 */
+{
+	SEG_TURN_TO(-179.8f),
+	SEG_END
+};
 
 static const mf_seg_t *const nav_routes[CAR_NAV_ID_COUNT] =
 {
-	tbl_qr,        /* 0 NAV_TO_QR     */
-	tbl_bomb,      /* 1 NAV_TO_BOMB   */
-	tbl_bucket,    /* 2 NAV_TO_BUCKET */
-	tbl_target,    /* 3 NAV_TO_TARGET */
-	tbl_hostage,   /* 4 NAV_TO_HOSTAGE*/
-	tbl_return,    /* 5 NAV_TO_RETURN */
+	tbl_qr,             /* 0 NAV_TO_QR         */
+	tbl_bomb,           /* 1 NAV_TO_BOMB       */
+	tbl_bucket,         /* 2 NAV_TO_BUCKET     */
+	tbl_target,         /* 3 NAV_TO_TARGET     */
+	tbl_hostage,        /* 4 NAV_TO_HOSTAGE    */
+	tbl_return,         /* 5 NAV_TO_RETURN     */
+	tbl_rebase_bomb,    /* 6 NAV_REBASE_BOMB   */
+	tbl_rebase_return,  /* 7 NAV_REBASE_RETURN */
 };
 typedef char nav_route_count_check[(sizeof(nav_routes) / sizeof(nav_routes[0])) == CAR_NAV_ID_COUNT ? 1 : -1];
 
@@ -474,12 +488,12 @@ void Car_Nav_Task(void)
 	}
 
 	{
-		float d = m->wheel[0].delta_m + m->wheel[1].delta_m;
+		/* 堵转判据=两轮位移绝对值之和: 原地转(重锚 TURN_TO)左右轮反向等大,
+		 * 取代数和恒 0 会误报, 逐轮取绝对值对直行/弧线/原地转统一成立 */
+		float d0 = m->wheel[0].delta_m;
+		float d1 = m->wheel[1].delta_m;
+		float d = (d0 < 0.0f ? -d0 : d0) + (d1 < 0.0f ? -d1 : d1);
 
-		if (d < 0.0f)
-		{
-			d = -d;
-		}
 		if (tracking.state != TRACKING_IDLE)
 		{
 			/* 跟瞄期间的停车是有意的(收敛刹停/丢帧悬停), 不算堵转 */

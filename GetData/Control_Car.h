@@ -42,7 +42,7 @@
 #define CAR_DATA_ID_CTRL        0x21u   /* CMD_CAR_CTRL: 运动请求(下行 sub_cmd 式) */
 #define CAR_DATA_ID_EVT         0x22u   /* EVT_CAR_EVENT: 底盘事件上报(上行) */
 
-#define CAR_SUB_REQ_NAVIGATION  0x01u   /* arg0=navigation_target_id 0~5, arg1=speed_gear 0~3 */
+#define CAR_SUB_REQ_NAVIGATION  0x01u   /* arg0=navigation_target_id 0~7(6/7=重锚伪路线), arg1=speed_gear 0~3 */
 #define CAR_SUB_REQ_STOP          0x02u   /* 急停安全停车, 清执行状态 */
 #define CAR_SUB_REQ_TURNTABLE     0x03u   /* arg0=转台码 0~7: 1~3对坑(123/90/57°) 4~6对桶(270/270/90°CW反向) 7回正90°, 0=不动作; arg1=保留恒0 */
 #define CAR_SUB_GYRO_ZERO         0x04u   /* 陀螺仪置零(须车静止) */
@@ -70,7 +70,7 @@
 
 #define CAR_FAULT_WATCHDOG      0x04u   /* 进度看门狗: 里程 3s 无变化 */
 
-#define CAR_NAV_ID_COUNT        6u      /* NavTarget_t 契约(与 Brain mission_sm.h 一致) */
+#define CAR_NAV_ID_COUNT        8u      /* NavTarget_t 契约(与 Brain mission_sm.h 一致): 0~5 任务路线, 6~7 重锚伪路线 */
 
 typedef struct
 {
