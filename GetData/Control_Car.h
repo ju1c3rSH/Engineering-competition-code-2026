@@ -28,23 +28,45 @@
 #define MF_M_DIST(u)    (((float)(u) / 15.0f) * (M_PI_F * WHEEL_DIA_M))
 #define MF_M_SPEED(rps) ((float)(rps) * (M_PI_F * WHEEL_DIA_M))
 #define MF_M_ACC(rps2)  ((float)(rps2) * (M_PI_F * WHEEL_DIA_M))
-/* 原转弯机制：90° 内中心线走过 Diameter×π 单位 = π 轮转的弧长，
- * 反解 R = 弧长/(π/2) = 2π×轮径（原 Diameter=15 单位即 1 轮转） */
+/* 原转弯机制: 90° 弧中心线走 π 轮转, 反解 R=2π×轮径(基线 Diameter=15 单位=1 轮转) */
 #define TURN_RADIUS_M (2.0f * M_PI_F * WHEEL_DIA_M)
 #define TURN_ACC_MPS2 MF_M_ACC(45.0f)      /* 旧 speed_control Acc=45 轮转/s2 */
 
 /* ================== UART4 导航协议常量 (panzer_links_protocol.md 4.x) ================== */
+#define FRAME_TYPE_REQUEST        0x20u   /* CMD_REQUEST */
+#define FRAME_TYPE_ACK            0x21u   /* CMD_ACK */
+#define FRAME_TYPE_NACK           0x22u   /* CMD_NACK */
+#define FRAME_TYPE_STOP           0x23u   /* CMD_STOP(通用) */
+#define FRAME_TYPE_DATA           0x24u   /* DATA_STREAM */
+
 #define CAR_DATA_ID_CTRL        0x21u   /* CMD_CAR_CTRL: 运动请求(下行 sub_cmd 式) */
 #define CAR_DATA_ID_EVT         0x22u   /* EVT_CAR_EVENT: 底盘事件上报(上行) */
 
-#define CAR_SUB_REQ_NAV         0x01u   /* REQ_NAV:  arg0=nav_id arg1=gear */
-#define CAR_SUB_REQ_STOP        0x02u   /* REQ_STOP: 急停清状态 */
-#define CAR_SUB_REQ_TURNTABLE   0x03u   /* REQ_TURNTABLE: arg0=pit 0~3 */
-#define CAR_SUB_GYRO_ZERO       0x04u   /* GYRO_ZERO: 陀螺仪置零(须车静止) */
+#define CAR_SUB_REQ_NAVIGATION  0x01u   /* arg0=navigation_target_id 0~5, arg1=speed_gear 0~3 */
+#define CAR_SUB_REQ_STOP          0x02u   /* 急停安全停车, 清执行状态 */
+#define CAR_SUB_REQ_TURNTABLE     0x03u   /* arg0=pit_position 0~3(0=不动作), arg1=保留恒0 */
+#define CAR_SUB_GYRO_ZERO         0x04u   /* 陀螺仪置零(须车静止) */
+/* 打靶段内跟瞄: 段表不断, 边走边修航向, 收敛刹停, 发射后续跑 */
+#define CAR_SUB_TRACKING_START    0x05u   /* arg0=tracking_speed_level(0=段表速度/1=低速跟瞄), arg1=0保留 */
+#define CAR_SUB_TRACKING_ERROR    0x06u   /* [error_low_byte,error_high_byte,target_found_flag], 定点=误差归一化*10000 小端 */
+#define CAR_SUB_TRACKING_STOP     0x07u   /* arg0=tracking_stop_mode(0=就地刹停/1=继续走完当前段), arg1=0保留 */
 
-#define CAR_EVT_NAV_DONE        0x02u   /* 段序列全部完成 */
-#define CAR_EVT_NAV_FAULT       0x03u   /* 段执行异常 */
-#define CAR_EVT_TURN_DONE       0x04u   /* 转台到位 */
+#define CAR_EVT_NAV_DONE          0x02u   /* 段序列全部完成 */
+#define CAR_EVT_NAV_FAULT         0x03u   /* 段执行异常 */
+#define CAR_EVT_TURN_DONE         0x04u   /* 转台到位 */
+#define CAR_EVT_TRACKING_DONE     0x05u   /* 段内跟瞄收敛已刹停, 可发射 */
+#define CAR_EVT_TRACKING_FAULT    0x06u   /* 预留未实现: 当前丢帧/未收敛为悬停等待, 不上报 */
+
+/* 跟瞄看门狗/收敛参数(可在台架复标) */
+#define TRACKING_ERROR_THRESHOLD        0.05f   /* |归一化误差|小于此值视为瞄准 */
+#define TRACKING_HOLD_TIME_MS           500u    /* 维持此时长判收敛 */
+#define TRACKING_FRAME_TIMEOUT_MS       500u    /* 误差流超此时长无更新: 悬停等待 */
+#define TRACKING_PROPORTIONAL_GAIN      60.0f   /* P 增益 dps/单位误差, 内部取负(e>0→顺时针); 镜像摄像头翻符号 */
+#define TRACKING_MAX_YAW_RATE_DPS       60.0f   /* 跟瞄角速度限幅 */
+#define TRACKING_STATIC_ERROR_MAX       0.30f   /* 段走完后的原地静瞄仅当|e|不超过此值(护住后续段表航向基准) */
+
+/* 旧短名兼容别名: interurp.c 收发沿用, 值与全称一致, 新代码用全称 */
+#define CAR_SUB_REQ_NAV         CAR_SUB_REQ_NAVIGATION
 
 #define CAR_FAULT_WATCHDOG      0x04u   /* 进度看门狗: 里程 3s 无变化 */
 
@@ -71,10 +93,11 @@ void Car_Control(void);
 void ResetHWT101(void);
 void Emm_Pos_Control(float Angle);
 
-/* ---- 段表导航调度层: 段执行由 Motion 库 mf_tick 承担，本层只做
- *      REQ_NAV/REQ_STOP/REQ_TURNTABLE/GYRO_ZERO 的调度、重发幂等与事件上报 ---- */
-void Car_Nav_Task(void);       /* 消费cmd mailbox + 启停 + 看门狗 */
-void Car_Nav_MailPush(uint8_t cmd, uint8_t a0, uint8_t a1);  /* TIM4 10ms 中断投递mailbox */
+/* ---- 调度层: 段执行由 Motion 库 mf_tick 承担, 本层只做
+ *      请求分发/重发幂等/事件上报, 跟瞄叠加见 Tracking_ApplyOverlay ---- */
+void Car_Nav_Task(void);
+void Car_Nav_MailPush(uint8_t cmd, uint8_t a0, uint8_t a1);
+void Car_Tracking_ErrorPush(int16_t error_fixed, uint8_t target_found_flag);
 
 mf_ctx_t *mf_app(void);
 void mf_app_init(void);

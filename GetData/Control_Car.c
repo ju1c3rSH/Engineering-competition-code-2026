@@ -1,5 +1,7 @@
 ﻿#include "Control_Car.h"
 #include "Car_Sense.h"
+#include "mf_math.h"
+#include "mf_kinematics.h"
 
 Parameter_TypeDef_Car Car_data;
 Yaw_TypeDef Yaw_struct;
@@ -14,14 +16,7 @@ void Yaw_pid_Init()
 	Yaw_struct.Yaw_pid.Out                 = 0.0f;
 }
 
-/* ================== nav_id 段表：原 if-else 路线完整复刻 ==================
- * 逐段对应原 Car_Drive_route 的 flags 路线(git true_BOOM_Finish 基线)：
- * 数值即原常量(旧 Car_Pos 单位，1 单位 = 1/15 驱动轮转)，速度档同旧
- * Middle/Low，转弯 = 原 Car_turn_corner(90° 弧，中心线走 π 轮转)。
- * NAV_TO_QR 仅出发首段；NAV_TO_BOMB 自原点连续复刻 flag0~10(原点长焦
- * 扫码，途中不停)。转台编排(flag9/100/11)不进段表，由主控 REQ_TURNTABLE
- * 按节点调度；flag17 的 5s 兜底转向同属主控逻辑。
- * ======================================================================== */
+/* nav_id 段表: 原 flags 路线逐段复刻(基线 git 4f3ceb2 true_BOOM_Finish) */
 #define SEG_MOVE(v, d)  { .type = MF_SEG_MOVE_DIST, .reset_pid = 1, \
                           .p.move_dist = { (v), (d), MF_KEEP, TURN_ACC_MPS2 } }
 #define SEG_ARC(v, r)   { .type = MF_SEG_ARC, .reset_pid = 1, \
@@ -84,9 +79,9 @@ typedef char nav_route_count_check[(sizeof(nav_routes) / sizeof(nav_routes[0])) 
 
 #define NAV_GEAR_BUF_LEN 12u      /* 最长表 tbl_bomb: 11 段 + END */
 
-static float Nav_GearSpeed(uint8_t gear)
+static float Nav_GearSpeed(uint8_t speed_gear)
 {
-	switch (gear)
+	switch (speed_gear)
 	{
 	case 1u:  return MF_M_SPEED(Low_speed);
 	case 2u:  return MF_M_SPEED(Middle_speed);
@@ -95,19 +90,19 @@ static float Nav_GearSpeed(uint8_t gear)
 	}
 }
 
-/* gear 覆盖需改写段速度，拷入 RAM 缓冲后启动 */
-static const mf_seg_t *Nav_GearTable(uint8_t nav_id, uint8_t gear)
+/* speed_gear 覆盖需改写段速度，拷入 RAM 缓冲后启动 */
+static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed_gear)
 {
 	static mf_seg_t buf[NAV_GEAR_BUF_LEN];
-	const mf_seg_t *src = nav_routes[nav_id];
+	const mf_seg_t *src = nav_routes[navigation_target_id];
 	uint8_t i;
 	float v;
 
-	if (gear == 0u)
+	if (speed_gear == 0u)
 	{
 		return src;
 	}
-	v = Nav_GearSpeed(gear);
+	v = Nav_GearSpeed(speed_gear);
 	for (i = 0u; i < NAV_GEAR_BUF_LEN; i++)
 	{
 		buf[i] = src[i];
@@ -147,6 +142,29 @@ static struct
 	uint16_t   stall_ms;
 } nav;
 
+/* ---- 打靶段内跟瞄 v2: 段表不断, 段内叠加视觉航向修正 ----
+ * 靶标前一段由中控发 TRACKING_START 开启, 底盘按指定速度边走边修航向;
+ * horizontal_error_normalized 归零即段内刹停等发射, 发射后 TRACKING_STOP
+ * (mode=1) 继续走完当前段。履带动, 转盘不动 */
+typedef enum
+{
+	TRACKING_IDLE = 0,    /* 未跟瞄 */
+	TRACKING_RUN,         /* 跟瞄中: 段内叠加视觉航向修正 */
+	TRACKING_LOCKED,      /* 已收敛刹停: 等发射 */
+} TrackingState_t;
+
+static struct
+{
+	TrackingState_t state;
+	float horizontal_error_normalized;  /* 最新归一化横向误差, 约 -1~+1 */
+	uint8_t target_found_flag;          /* 最新有效标志 */
+	uint16_t frame_age_ms;              /* 距上次误差帧时长 */
+	uint16_t hold_ms;                   /* |e|小于阈值维持时长 */
+	uint8_t tracking_speed_level;       /* 0=段表速度/1=低速跟瞄 */
+} tracking;
+
+#define TRACKING_ERROR_FIXED_SCALE  10000.0f
+
 /* cmd mailbox：UART4 中断单生产者投递，本定时任务消费 */
 static volatile uint8_t mail_head, mail_tail;
 static volatile uint8_t mail_cmd[8], mail_a0[8], mail_a1[8];
@@ -165,6 +183,20 @@ void Car_Nav_MailPush(uint8_t cmd, uint8_t a0, uint8_t a1)
 	mail_head = next;
 }
 
+/* 跟瞄误差帧独立投递: error_fixed = 横向误差归一化*10000(小端 i16) */
+static volatile int16_t tracking_error_mail;
+static volatile uint8_t tracking_found_mail;
+static volatile uint8_t tracking_error_pending;
+
+void Car_Tracking_ErrorPush(int16_t error_fixed, uint8_t target_found_flag)
+{
+	__disable_irq();
+	tracking_error_mail = error_fixed;
+	tracking_found_mail = target_found_flag;
+	tracking_error_pending = 1u;
+	__enable_irq();
+}
+
 /* 转台对坑：1->123  2->90  3->57，pit=0 不动作 */
 static struct
 {
@@ -174,9 +206,11 @@ static struct
 } tt;
 static uint8_t CW_OR_CCW = 1;
 
-static void Nav_Turntable(uint8_t pit)
+/* 转台对坑: 排爆/人质摆放距离一致, 惯导保证车位, 只需坑位打固定角。
+ * pit_position 1->123度 2->90度 3->57度, 0 不动作 */
+static void Nav_Turntable(uint8_t pit_position)
 {
-	switch (pit)
+	switch (pit_position)
 	{
 	case 1u: Car_data.Motor_Angle = 123.0f; break;
 	case 2u: Car_data.Motor_Angle =  90.0f; break;
@@ -185,33 +219,183 @@ static void Nav_Turntable(uint8_t pit)
 	}
 	CW_OR_CCW = 1;
 	tt.busy = 1u;
-	tt.pit = pit;
+	tt.pit = pit_position;
 	tt.ms = 0u;
 }
 
-/* REQ_NAV: 若路径索引与当前正在进行的相同，则不做处理；同一索引若已完成，则补发事件；
- * 其余(新 id/STOP 后/FAULT 后)=停旧起新，从段 0 开始 */
-static void Nav_DoRequest(uint8_t nav_id, uint8_t gear)
+/* REQ_NAV 幂等: 同 id 进行中忽略 / 已完成补发 DONE / 其余停旧起新 */
+static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 {
-	if (nav.state == NAV_RUN && nav.nav_id == nav_id)
+	if (nav.state == NAV_RUN && nav.nav_id == navigation_target_id)
 	{
 		return;
 	}
-	if (nav.state == NAV_DONE && nav.nav_id == nav_id)
+	if (nav.state == NAV_DONE && nav.nav_id == navigation_target_id)
 	{
-		Car_Event_Send(CAR_EVT_NAV_DONE, nav_id, 0x00u);
+		Car_Event_Send(CAR_EVT_NAV_DONE, navigation_target_id, 0x00u);
 		return;
 	}
-	mf_start_path(mf_app(), Nav_GearTable(nav_id, gear));
+	mf_start_path(mf_app(), Nav_GearTable(navigation_target_id, speed_gear));
 	nav.state = NAV_RUN;
-	nav.nav_id = nav_id;
+	nav.nav_id = navigation_target_id;
 	nav.stall_ms = 0u;
+	/* 起新段清跟瞄: 防 EXE_LASER 重试/FAULT 泄漏的 LOCKED 带到新路段 */
+	tracking.state = TRACKING_IDLE;
+	tracking.hold_ms = 0u;
 }
 
 static void Nav_DoStop(void)
 {
 	mf_stop(mf_app());
 	nav.state = NAV_IDLE;
+	tracking.state = TRACKING_IDLE;
+}
+
+/* ---- 段内跟瞄: 段表不断, 段内叠加视觉航向修正 ---- */
+static void Tracking_HoldStill(mf_ctx_t *motion)
+{
+	motion->cmd.vx_mps = 0.0f;
+	motion->cmd.vy_mps = 0.0f;
+	motion->cmd.wz_dps = 0.0f;
+}
+
+static void Tracking_Start(uint8_t tracking_speed_level)
+{
+	if (tracking.state == TRACKING_LOCKED)
+	{
+		/* 已收敛后重收 START = Brain 补发, 只补发 DONE 不复位 */
+		Car_Event_Send(CAR_EVT_TRACKING_DONE, 0u, 0x00u);
+		return;
+	}
+	tracking.state = TRACKING_RUN;
+	tracking.tracking_speed_level = tracking_speed_level;
+	tracking.frame_age_ms = 0u;
+	tracking.hold_ms = 0u;
+	tracking.target_found_flag = 0u;
+	tracking.horizontal_error_normalized = 0.0f;
+	tracking_error_pending = 0u;   /* 丢弃上轮残帧, 首拍不等旧误差 */
+}
+
+/* 原子消费误差帧: 有新帧更新误差并喂狗, 无新帧不碰 frame_age_ms */
+static void Tracking_ConsumeErrorFrame(void)
+{
+	uint8_t has_new_frame;
+
+	__disable_irq();
+	has_new_frame = tracking_error_pending;
+	if (has_new_frame != 0u)
+	{
+		tracking.horizontal_error_normalized =
+		    (float)tracking_error_mail / TRACKING_ERROR_FIXED_SCALE;
+		if (tracking.horizontal_error_normalized > 1.0f)  { tracking.horizontal_error_normalized = 1.0f; }
+		if (tracking.horizontal_error_normalized < -1.0f) { tracking.horizontal_error_normalized = -1.0f; }
+		tracking.target_found_flag = (uint8_t)(tracking_found_mail & 0x01u);
+		tracking.frame_age_ms = 0u;
+		tracking_error_pending = 0u;
+	}
+	__enable_irq();
+}
+
+static void Tracking_Stop(uint8_t tracking_stop_mode)
+{
+	/* mode=0 就地刹停(锚点保留) / mode=1 解除压零, 段表续跑 */
+	if (tracking_stop_mode == 0u)
+	{
+		Tracking_HoldStill(mf_app());
+		tracking.state = TRACKING_LOCKED;
+	}
+	else
+	{
+		tracking.state = TRACKING_IDLE;
+	}
+}
+
+/* 跟瞄收敛判定: |e|小于阈值累计 hold_ms, 达标即刹停上报 DONE。返回 1=本拍已收敛 */
+static uint8_t Tracking_CheckConverged(mf_ctx_t *motion)
+{
+	float absolute_error = tracking.horizontal_error_normalized;
+	if (absolute_error < 0.0f)
+	{
+		absolute_error = -absolute_error;
+	}
+	if (absolute_error >= TRACKING_ERROR_THRESHOLD)
+	{
+		tracking.hold_ms = 0u;
+		return 0u;
+	}
+	tracking.hold_ms = (uint16_t)(tracking.hold_ms + CAR_TASK_MS);
+	if (tracking.hold_ms < TRACKING_HOLD_TIME_MS)
+	{
+		return 0u;
+	}
+	Tracking_HoldStill(motion);
+	tracking.state = TRACKING_LOCKED;
+	Car_Event_Send(CAR_EVT_TRACKING_DONE, 0u, 0x00u);
+	return 1u;
+}
+
+/* 视觉 P 前馈: vx 保留, wz += -Kp*e (e>0 目标偏右→顺时针; 镜像摄像头翻增益符号) */
+static void Tracking_ApplyYawCorrection(mf_ctx_t *motion)
+{
+	float yaw_correction_dps = -TRACKING_PROPORTIONAL_GAIN * tracking.horizontal_error_normalized;
+	if (yaw_correction_dps > TRACKING_MAX_YAW_RATE_DPS)
+	{
+		yaw_correction_dps = TRACKING_MAX_YAW_RATE_DPS;
+	}
+	else if (yaw_correction_dps < -TRACKING_MAX_YAW_RATE_DPS)
+	{
+		yaw_correction_dps = -TRACKING_MAX_YAW_RATE_DPS;
+	}
+	motion->cmd.wz_dps += yaw_correction_dps;
+	if (tracking.tracking_speed_level == 1u && motion->cmd.vx_mps > MF_M_SPEED(Low_speed))
+	{
+		motion->cmd.vx_mps = MF_M_SPEED(Low_speed);
+	}
+}
+
+/* 每拍在 mf_tick 之后调用, RUN 态恒返 1(修正须当拍重算轮速环) */
+static uint8_t Tracking_ApplyOverlay(void)
+{
+	mf_ctx_t *motion = mf_app();
+	float absolute_error;
+	uint8_t servo_allowed;
+
+	if (tracking.state == TRACKING_LOCKED)
+	{
+		Tracking_HoldStill(motion);
+		return 1u;
+	}
+	if (tracking.state != TRACKING_RUN)
+	{
+		return 0u;
+	}
+	Tracking_ConsumeErrorFrame();
+	tracking.frame_age_ms = (uint16_t)(tracking.frame_age_ms + CAR_TASK_MS);
+	if (tracking.target_found_flag == 0u || tracking.frame_age_ms > TRACKING_FRAME_TIMEOUT_MS)
+	{
+		tracking.hold_ms = 0u;
+		Tracking_HoldStill(motion);
+		return 1u;
+	}
+	absolute_error = (tracking.horizontal_error_normalized < 0.0f)
+	                 ? -tracking.horizontal_error_normalized
+	                 : tracking.horizontal_error_normalized;
+	/* 静瞄(段已走完)仅限小误差, 防大角旋转带歪后续段表; 段内不限 */
+	servo_allowed = (uint8_t)((mf_is_done(motion) == 0u)
+	                          || (absolute_error <= TRACKING_STATIC_ERROR_MAX));
+	if (Tracking_CheckConverged(motion) != 0u)
+	{
+		return 1u;
+	}
+	if (servo_allowed != 0u)
+	{
+		Tracking_ApplyYawCorrection(motion);
+	}
+	else
+	{
+		Tracking_HoldStill(motion);
+	}
+	return 1u;
 }
 
 static void Nav_Fault(void)
@@ -241,9 +425,11 @@ void Car_Nav_Task(void)
 		mail_tail = (uint8_t)(mail_tail + 1u) & 7u;
 		switch (cmd)
 		{
-		case CAR_SUB_REQ_NAV:       Nav_DoRequest(a0, a1); break;
-		case CAR_SUB_REQ_STOP:      Nav_DoStop(); break;
-		case CAR_SUB_REQ_TURNTABLE: Nav_Turntable(a0); break;
+		case CAR_SUB_REQ_NAVIGATION:    Nav_DoRequest(a0, a1); break;
+		case CAR_SUB_REQ_STOP:          Nav_DoStop(); break;
+		case CAR_SUB_REQ_TURNTABLE:     Nav_Turntable(a0); break;
+		case CAR_SUB_TRACKING_START:    Tracking_Start(a0); break;
+		case CAR_SUB_TRACKING_STOP:     Tracking_Stop(a0); break;
 		case CAR_SUB_GYRO_ZERO:
 			/* 车静止时置零，此刻必在原点(上电流程：扫码->置零->起步) */
 			if (nav.state != NAV_RUN)
@@ -251,10 +437,13 @@ void Car_Nav_Task(void)
 				ResetHWT101();
 				mf_set_pose(mf_app(), 0.0f, 0.0f, 0.0f);
 			}
+			tracking.state = TRACKING_IDLE;
 			break;
 		default: break;
 		}
 	}
+	/* 误差帧每拍消费一次 */
+	Tracking_ConsumeErrorFrame();
 
 	if (tt.busy != 0u)
 	{
@@ -286,7 +475,12 @@ void Car_Nav_Task(void)
 		{
 			d = -d;
 		}
-		if (d > NAV_STALL_DELTA_M)
+		if (tracking.state != TRACKING_IDLE)
+		{
+			/* 跟瞄期间的停车是有意的(收敛刹停/丢帧悬停), 不算堵转 */
+			nav.stall_ms = 0u;
+		}
+		else if (d > NAV_STALL_DELTA_M)
 		{
 			nav.stall_ms = 0u;
 		}
@@ -335,12 +529,42 @@ void mf_app_init(void)
 	mf_init(&g_mf, &cfg);
 }
 
+/* 按改写后 cmd 重解轮速环(轮速环积分每拍多累一次, 复调 Ki 注意) */
+static void Tracking_RecomputeWheels(void)
+{
+	mf_ctx_t *motion = mf_app();
+	float wheel_command[MF_WHEEL_MAX];
+	uint8_t wheel_index;
+
+	motion->cmd.vx_mps = mf_clampf(motion->cmd.vx_mps, motion->cfg.max_vx_mps);
+	motion->cmd.wz_dps = mf_clampf(motion->cmd.wz_dps, motion->cfg.max_wz_dps);
+	motion->cmd.vy_mps = 0.0f;
+	mf_inverse_kinematics(&motion->cmd, motion->cfg.track_width_m,
+	                      motion->cfg.half_length_m, motion->cfg.half_width_m,
+	                      wheel_command);
+	for (wheel_index = 0u; wheel_index < MF_WHEEL_COUNT; wheel_index++)
+	{
+		motion->wheel[wheel_index].cmd_mps = wheel_command[wheel_index];
+		motion->wheel[wheel_index].out = mf_pid_calc(&motion->pid_wheel[wheel_index],
+		    wheel_command[wheel_index] - motion->wheel[wheel_index].speed_mps, MF_DT_S);
+		if (motion->cmd.vx_mps == 0.0f && motion->cmd.wz_dps == 0.0f)
+		{
+			motion->wheel[wheel_index].out = 0.0f;
+			mf_pid_reset(&motion->pid_wheel[wheel_index]);
+		}
+	}
+}
+
 //坦克主控函数：TIM4 10ms 中断调用
 void Car_Control()
 {
 	CarSense_Sample();                   /* 采样层: 编码器+航向 -> 快照(seq+1) */
 	Car_Nav_Task();                      /* 调度层: 信箱/启停/事件/看门狗 */
 	mf_tick(mf_app(), CarSense_Get());   /* 运动库: 纯消费快照, 无新样自动跳过 */
+	if (Tracking_ApplyOverlay() != 0u)   /* 段内跟瞄改写了 cmd */
+	{
+		Tracking_RecomputeWheels();
+	}
 	CarSense_Output(mf_app());           /* 执行层: wheel[].out -> DIR+PWM */
 }
 
