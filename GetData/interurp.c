@@ -58,7 +58,7 @@ void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason)
 	{
 		p[i] = 0u;
 	}
-	n = Protocol_EncodeFrame(txbuf, sizeof(txbuf), 0x24u, p, 10u);
+	n = Protocol_EncodeFrame(txbuf, sizeof(txbuf), FRAME_TYPE_DATA, p, 10u);
 	if (n != 0u)
 	{
 		HAL_UART_Transmit_DMA(&huart4, txbuf, n);
@@ -75,7 +75,7 @@ static void Car_Ack_Send(uint8_t sub_echo, uint8_t status)
 	p[0] = CAR_DATA_ID_CTRL;
 	p[1] = sub_echo;
 	p[2] = status;
-	n = Protocol_EncodeFrame(txbuf, sizeof(txbuf), 0x21u, p, 3u);
+	n = Protocol_EncodeFrame(txbuf, sizeof(txbuf), FRAME_TYPE_ACK, p, 3u);
 	if (n != 0u)
 	{
 		HAL_UART_Transmit_DMA(&huart4, txbuf, n);
@@ -94,24 +94,25 @@ static void Car_Nack_Send(uint8_t reason)
 
 	p[0] = CAR_DATA_ID_CTRL;
 	p[1] = reason;
-	n = Protocol_EncodeFrame(txbuf, sizeof(txbuf), 0x22u, p, 2u);
+	n = Protocol_EncodeFrame(txbuf, sizeof(txbuf), FRAME_TYPE_NACK, p, 2u);
 	if (n != 0u)
 	{
 		HAL_UART_Transmit_DMA(&huart4, txbuf, n);
 	}
 }
 
-static void Uart4_OnFrame(void *ctx, uint8_t type, const uint8_t *payload, uint8_t plen)
+static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *payload, uint8_t payload_length)
 {
-	(void)ctx;
+	/* callback_context 恒为 NULL(Protocol_ParserInit 内写死), 仅为凑框架签名保留 */
+	(void)callback_context;
 
-	if (type == 0x23u)                 /* CMD_STOP(通用) -> 急停 */
+	if (type == FRAME_TYPE_STOP)                 /* CMD_STOP(通用) -> 急停 */
 	{
 		Car_Ack_Send(CAR_SUB_REQ_STOP, 0x01u);
 		Car_Nav_MailPush(CAR_SUB_REQ_STOP, 0u, 0u);
 		return;
 	}
-	if (type != 0x20u || plen < 2u || payload[0] != CAR_DATA_ID_CTRL)
+	if (type != FRAME_TYPE_REQUEST || payload_length < 2u || payload[0] != CAR_DATA_ID_CTRL)
 	{
 		Car_Nack_Send(0x01u);
 		return;
@@ -119,8 +120,8 @@ static void Uart4_OnFrame(void *ctx, uint8_t type, const uint8_t *payload, uint8
 
 	switch (payload[1])
 	{
-	case CAR_SUB_REQ_NAV:              /* arg: nav_id, gear */
-		if (plen >= 4u && payload[2] < CAR_NAV_ID_COUNT && payload[3] <= 3u)
+	case CAR_SUB_REQ_NAVIGATION:       /* arg: navigation_target_id 0~5, speed_gear 0~3 */
+		if (payload_length >= 4u && payload[2] < CAR_NAV_ID_COUNT && payload[3] <= 3u)
 		{
 			Car_Ack_Send(CAR_SUB_REQ_NAV, 0x01u);
 			Car_Nav_MailPush(CAR_SUB_REQ_NAV, payload[2], payload[3]);
@@ -136,8 +137,8 @@ static void Uart4_OnFrame(void *ctx, uint8_t type, const uint8_t *payload, uint8
 		Car_Nav_MailPush(CAR_SUB_REQ_STOP, 0u, 0u);
 		break;
 
-	case CAR_SUB_REQ_TURNTABLE:        /* arg: pit 0~3 */
-		if (plen >= 3u && payload[2] <= 3u)
+	case CAR_SUB_REQ_TURNTABLE:        /* arg: pit_position 0~3(0=不动作) */
+		if (payload_length >= 3u && payload[2] <= 3u)
 		{
 			Car_Ack_Send(CAR_SUB_REQ_TURNTABLE, 0x01u);
 			Car_Nav_MailPush(CAR_SUB_REQ_TURNTABLE, payload[2], 0u);
@@ -151,6 +152,40 @@ static void Uart4_OnFrame(void *ctx, uint8_t type, const uint8_t *payload, uint8
 	case CAR_SUB_GYRO_ZERO:            /* 陀螺仪置零: 须车静止(原点上电流程) */
 		Car_Ack_Send(CAR_SUB_GYRO_ZERO, 0x01u);
 		Car_Nav_MailPush(CAR_SUB_GYRO_ZERO, 0u, 0u);
+		break;
+
+	case CAR_SUB_TRACKING_START:
+		if (payload_length >= 3u && payload[2] <= 1u)
+		{
+			Car_Ack_Send(CAR_SUB_TRACKING_START, 0x01u);
+			Car_Nav_MailPush(CAR_SUB_TRACKING_START, payload[2], 0u);
+		}
+		else
+		{
+			Car_Nack_Send(0x01u);
+		}
+		break;
+
+	/* 误差流无 ACK(20~50Hz 高频, 回 ACK 会淹没链路); 短帧静默丢弃 */
+	case CAR_SUB_TRACKING_ERROR:
+		if (payload_length >= 5u)
+		{
+			int16_t horizontal_error_fixed =
+			    (int16_t)((uint16_t)payload[2] | ((uint16_t)payload[3] << 8));
+			Car_Tracking_ErrorPush(horizontal_error_fixed, payload[4]);
+		}
+		break;
+
+	case CAR_SUB_TRACKING_STOP:
+		if (payload_length >= 3u && payload[2] <= 1u)
+		{
+			Car_Ack_Send(CAR_SUB_TRACKING_STOP, 0x01u);
+			Car_Nav_MailPush(CAR_SUB_TRACKING_STOP, payload[2], 0u);
+		}
+		else
+		{
+			Car_Nack_Send(0x01u);
+		}
 		break;
 
 	default:
