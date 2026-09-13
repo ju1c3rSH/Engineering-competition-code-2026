@@ -261,6 +261,12 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 	/* 起新段清跟瞄: 防 EXE_LASER 重试/FAULT 泄漏的 LOCKED 带到新路段 */
 	tracking.state = TRACKING_IDLE;
 	tracking.hold_ms = 0u;
+	if (mf_path_get_state(&mf_app()->path) != MF_PATH_RUN)
+	{
+		/* 段表启动校验未过(如 ARC 半径/符号非法): 立即按进度看门狗原因
+		 * 上报 NAV_FAULT, 不静默空转等 3s 里程看门狗兜底 */
+		Nav_Fault();
+	}
 }
 
 static void Nav_DoStop(void)

@@ -14,6 +14,28 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
 
 void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path)
 {
+    uint16_t i;
+    const float r_min = 1.0e-3f;
+
+    /* 启动前校验段表: ARC 半径过小会除零; d_yaw 与半径反号会原地兜圈,
+     * 且轮一直在动, 堵转看门狗无法兜底。非法则拒绝启动(保持 IDLE),
+     * 调用方以 state != MF_PATH_RUN 感知并自行上报故障 */
+    for (i = 0u; (i < 255u) && (path[i].type != MF_SEG_END); i++)
+    {
+        if (path[i].type == MF_SEG_ARC)
+        {
+            const mf_arc_t *a = &path[i].p.arc;
+            if ((a->radius_m < r_min) && (a->radius_m > -r_min))
+            {
+                return;
+            }
+            if ((a->d_yaw_deg != 0.0f) && ((a->d_yaw_deg * a->radius_m) < 0.0f))
+            {
+                return;
+            }
+        }
+    }
+
     p->path = path;
     p->idx = 0;
     p->state = MF_PATH_RUN;
@@ -304,6 +326,7 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
 {
     const mf_seg_t *s;
     uint8_t done = 0;
+    uint8_t entered = 0;
 
     out->vx_mps = 0.0f;
     out->vy_mps = 0.0f;
@@ -324,6 +347,7 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
     if (!p->started)        /* 进段：快照 + 可选复位 PID */
     {
         p->started = 1;
+        entered = 1;
         seg_enter(p, s, pose);
         if (s->reset_pid)
         {
@@ -338,7 +362,10 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
     {
     case MF_SEG_MOVE_DIST:
     case MF_SEG_ARC:
-        p->dist_accum += ds;    /* 弧长/里程统一由位移累计 */
+        if (entered == 0)   /* 进段拍不计入: 此时的 ds 是上一段尾巴的位移 */
+        {
+            p->dist_accum += ds;    /* 弧长/里程统一由位移累计 */
+        }
         break;
     default:
         break;
