@@ -300,8 +300,7 @@ void USART2_IRQHandler(void)
   {
       __HAL_UART_CLEAR_IDLEFLAG(&huart2); 
       HAL_UART_DMAStop(&huart2);   
-      UART2_RX_STA = RXbuffer2_size - __HAL_DMA_GET_COUNTER(huart2.hdmarx);  
-      Rxbuffer2[UART2_RX_STA] = 0;
+      UART2_RX_STA = RXbuffer2_size - __HAL_DMA_GET_COUNTER(huart2.hdmarx);
       Uart2_task();
       UART2_RX_STA |= 0X8000; 
 			memset(Rxbuffer2,0,RXbuffer2_size);
@@ -325,9 +324,8 @@ void USART3_IRQHandler(void)
 	{
 	    __HAL_UART_CLEAR_IDLEFLAG(&huart3); 
 	    HAL_UART_DMAStop(&huart3);   
-	    UART3_RX_STA = RXbuffer3_size - __HAL_DMA_GET_COUNTER(huart3.hdmarx);  
-	    Rxbuffer3[UART3_RX_STA] = 0; 
-			Uart3_task();
+	    UART3_RX_STA = RXbuffer3_size - __HAL_DMA_GET_COUNTER(huart3.hdmarx);
+		Uart3_task();
 			UART3_RX_STA |= 0X8000; 
 			memset(Rxbuffer3,0,RXbuffer3_size);
 	    HAL_UART_Receive_DMA(&huart3, Rxbuffer3, RXbuffer3_size);
@@ -414,8 +412,7 @@ void USART6_IRQHandler(void)
   {
       __HAL_UART_CLEAR_IDLEFLAG(&huart6); 
       HAL_UART_DMAStop(&huart6);   
-      UART6_RX_STA = RXbuffer6_size - __HAL_DMA_GET_COUNTER(huart6.hdmarx);  
-      Rxbuffer6[UART6_RX_STA] = 0;
+      UART6_RX_STA = RXbuffer6_size - __HAL_DMA_GET_COUNTER(huart6.hdmarx);
       Uart6_task();
       UART6_RX_STA |= 0X8000; 
 			memset(Rxbuffer6,0,RXbuffer6_size);
