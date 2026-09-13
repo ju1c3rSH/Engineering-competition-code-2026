@@ -248,23 +248,45 @@ void UART_Task_Init(void)
 }
 void Uart3_task()
 {
-		/*检索并解包hwt101*/
-		for(uint8_t i = 0; i<22; i++)
+	/*检索并解包hwt101: 按本次突发实际长度扫描, sum8 校验通过才采用。
+	 * 旧实现固定扫前 22 字节且不校验——多包输出时 0x53 角度包可能落在
+	 * 扫描窗外(航向冻结), 数据字节恰为 55 53 时会假同步(航向跳变)。*/
+	uint8_t i, j;
+	uint16_t sum;
+	uint8_t sta = (uint8_t)UART3_RX_STA;
+
+	if (sta > RXbuffer3_size)
+	{
+		sta = RXbuffer3_size;
+	}
+	if (sta < 11u)
+	{
+		return;   /* 不足以容纳一个完整角度包 */
+	}
+	for (i = 0u; i <= sta - 11u; i++)
+	{
+		if ((Rxbuffer3[i] == 0x55u) && (Rxbuffer3[i + 1u] == 0x53u))
 		{
-			if(Rxbuffer3[i] == 0x55 && Rxbuffer3[(i+1)%22] == 0x53)
+			sum = 0u;
+			for (j = 0u; j < 10u; j++)
 			{
-				YawL = Rxbuffer3[(i + 6)%22];
-				YawH = Rxbuffer3[(i + 7)%22];
-				VL = Rxbuffer3[(i + 8)%22];
-				VH = Rxbuffer3[(i + 9)%22];
-				Yaw_struct.Yaw = (float)((YawH<<8)|YawL)/32768*180;
+				sum += Rxbuffer3[i + j];
+			}
+			if ((uint8_t)sum == Rxbuffer3[i + 10u])
+			{
+				YawL = Rxbuffer3[i + 6u];
+				YawH = Rxbuffer3[i + 7u];
+				VL = Rxbuffer3[i + 8u];
+				VH = Rxbuffer3[i + 9u];
+				Yaw_struct.Yaw = (float)((YawH<<8)|YawL)/32768.0f*180.0f;
 				if(Yaw_struct.Yaw > 180)
 				{
 					Yaw_struct.Yaw = -(360.0f - Yaw_struct.Yaw);
 				}
-				break;
+				break;   /* 取突发内第一个通过校验的角度包 */
 			}
 		}
+	}
 }
 void Uart2_task()
 {

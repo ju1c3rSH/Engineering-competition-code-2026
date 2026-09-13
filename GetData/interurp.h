@@ -29,6 +29,7 @@ extern uint8_t Rxbuffer3_2[RXbuffer3_size];
 extern uint8_t Rxbuffer6_2[RXbuffer6_size];
 extern uint8_t Rxbuffer4_2[RXbuffer4_size];
 
+extern __IO uint16_t UART3_RX_STA;    /* stm32f4xx_it.c: 本次 IDLE 突发字节数 */
 extern __IO uint16_t UART4_RX_STA;    /* stm32f4xx_it.c: 本次 IDLE 突发字节数 */
 
 
