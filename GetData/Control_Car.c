@@ -519,7 +519,11 @@ void Car_Nav_Task(void)
 
 /* ================== 运动框架实例 ==================
  * 增益为旧环等效换算值，台架上按 mf 库语义重调：
- * 轮速环: 旧 Kp4000(计数误差->PWM 满幅 1500) 折归一化
+ * 轮速环 P: 旧 Kp4000(计数误差->PWM 满幅 1500) 折归一化(暂留 1.0 台架重调)
+ * 轮速环 I: 按旧环 Ki=50/拍(误差 rev/s, 满幅 1500, I_Max 1000) 等效折算:
+ *   贡献速率 = 误差×50÷0.01s÷1500 = 3.33 duty/s per rev/s
+ *            = 7.07 duty/s per m/s(1rev/s=π×0.15m)          -> ki = 7.0
+ *   I 上限   = 1000÷1500 = 0.667 duty -> i_max = 0.667÷7.07 = 0.095
  * 航向环: 旧 Kp0.15/OutMax0.8(rev/s 差速) × π×WHEEL_DIA_M / (track/2) -> deg/s */
 static mf_ctx_t g_mf;
 
@@ -545,8 +549,8 @@ void mf_app_init(void)
 		.yaw_out_max   = 172.8f,
 		.pv_kp         = 2.0f,
 		.wheel_kp      = 1.0f,
-		.wheel_ki      = 0.02f,
-		.wheel_i_max   = 0.75f,
+		.wheel_ki      = 7.0f,     /* 旧环 I 等效(见上方折算), 恢复静摩擦穿透能力 */
+		.wheel_i_max   = 0.095f,   /* 7.0×0.095≈0.665 满占空比, 等效旧 I_Max1000/1500 */
 	};
 	mf_init(&g_mf, &cfg);
 }
