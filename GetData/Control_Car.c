@@ -279,6 +279,8 @@ static void Tracking_HoldStill(mf_ctx_t *motion)
 	/* 同步泄放段内斜坡状态: mf_path_tick 下拍会从 0 重新起坡,
 	 * 保证 TRACKING_STOP(1) 释放时是低速缓起而不是 0->巡航 的速度阶跃 */
 	motion->path.cur_speed = 0.0f;
+	motion->path.cur_wz = 0.0f;
+	motion->path.prev_wz = 0.0f;
 }
 
 static void Tracking_Start(uint8_t tracking_speed_level)

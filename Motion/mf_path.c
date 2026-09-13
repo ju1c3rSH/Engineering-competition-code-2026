@@ -25,6 +25,8 @@ void mf_path_stop(mf_path_ctx_t *p)
     p->state = MF_PATH_IDLE;
     p->path = 0;
     p->cur_speed = 0.0f;    /* 停路径即视为停稳, 新路径从 0 起坡 */
+    p->cur_wz = 0.0f;
+    p->prev_wz = 0.0f;
 }
 
 static float seg_tol_dist(const mf_seg_t *s)
@@ -55,6 +57,27 @@ static float seg_speed_ramp(mf_path_ctx_t *p, float target, float acc, float dt)
     p->cur_speed = mf_rampf(p->cur_speed, target,
                             (acc > 0.0f) ? acc : MF_DEFAULT_ACC, dt);
     return p->cur_speed;
+}
+
+/* 角速度斜坡(幅值不对称): 只限制幅值上升, 消除 TURN/GOTO 入段的差速阶跃;
+ * 幅值下降(误差自然衰减)直接跟随, 不给航向环引入额外相位滞后 */
+static float seg_wz_ramp(mf_path_ctx_t *p, float target, float dt)
+{
+    float step = MF_DEFAULT_ANG_ACC * dt;
+    float mag_t = (target < 0.0f) ? -target : target;
+    float mag_c = (p->cur_wz < 0.0f) ? -p->cur_wz : p->cur_wz;
+    float mag;
+
+    if (mag_t > mag_c + step)
+    {
+        mag = mag_c + step;
+    }
+    else
+    {
+        mag = mag_t;
+    }
+    p->cur_wz = (target < 0.0f) ? -mag : mag;
+    return p->cur_wz;
 }
 
 /* 带驻留的到位判定: |err|<tol 连续保持 MF_TOL_HOLD_MS 才算到位,
@@ -153,7 +176,7 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
     return (uint8_t)(remain_yaw <= MF_TOL_ARRIVE_DEG);
 }
 
-/* 原地转向（绝对/相对统一）: 前向速度斜坡归零再转, 驻留判到位 */
+/* 原地转向（绝对/相对统一）: 前向速度斜坡归零再转, 角速度缓起, 驻留判到位 */
 static uint8_t seg_turn(mf_path_ctx_t *p, const mf_seg_t *s,
                         const mf_pose_t *pose, float dt,
                         mf_body_cmd_t *out)
@@ -168,12 +191,14 @@ static uint8_t seg_turn(mf_path_ctx_t *p, const mf_seg_t *s,
     out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
     out->wz_dps = mf_clampf(out->wz_dps, (t->w_max_dps > 0.0f)
                                          ? t->w_max_dps : 1e9f);
+    out->wz_dps = seg_wz_ramp(p, out->wz_dps, dt);
 
     return seg_dwell_reached(p, err, seg_tol_yaw(s), dt);
 }
 
 /* 点到点：方位角 P 转向 + 距离 P 前进，到位后按声明收尾转向
- * vx 经 cur_speed 斜坡衔接(入段不从 0 突起), 收尾转向同样驻留判到位 */
+ * vx 经 cur_speed 斜坡衔接并按方位角投影(偏角越大前向分量越小, 防绕圈),
+ * 角速度缓起, 收尾转向驻留判到位 */
 static uint8_t seg_goto(mf_path_ctx_t *p, const mf_seg_t *s,
                         const mf_pose_t *pose, float dt,
                         mf_body_cmd_t *out)
@@ -199,12 +224,17 @@ static uint8_t seg_goto(mf_path_ctx_t *p, const mf_seg_t *s,
 
         out->wz_dps = mf_clampf(mf_pid_calc(p->pid_yaw, bearing, dt),
                                 (g->w_max_dps > 0.0f) ? g->w_max_dps : 1e9f);
+        out->wz_dps = seg_wz_ramp(p, out->wz_dps, dt);
 
         vx = mf_pid_calc(p->pid_point_v, dist_err, dt);
         vx = mf_clampf(vx, (g->v_max_mps > 0.0f) ? g->v_max_mps : 1e9f);
         if (bearing > 90.0f || bearing < -90.0f)    /* 目标在身后：先原地转 */
         {
             vx = 0.0f;
+        }
+        else
+        {
+            vx *= cosf(bearing * (MF_PI_F / 180.0f));   /* 投影: 只留朝向目标分量 */
         }
         out->vx_mps = seg_speed_ramp(p, vx, g->acc_mps2, dt);
         out->vy_mps = 0.0f;
@@ -228,6 +258,7 @@ static uint8_t seg_goto(mf_path_ctx_t *p, const mf_seg_t *s,
         out->vy_mps = 0.0f;
         out->wz_dps = mf_clampf(mf_pid_calc(p->pid_yaw, dyaw, dt),
                                 (g->w_max_dps > 0.0f) ? g->w_max_dps : 1e9f);
+        out->wz_dps = seg_wz_ramp(p, out->wz_dps, dt);
         return seg_dwell_reached(p, dyaw, tol_y, dt);
     }
 }
@@ -244,6 +275,7 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
     p->time_ms = 0;
     p->tol_hold_ms = 0u;
     p->subphase = 0;
+    p->cur_wz = p->prev_wz;     /* 角速度斜坡从上拍实际输出续起, 不回零 */
     /* cur_speed 刻意不清零: 跨段保持, 段间速度衔接由各段的
      * seg_speed_ramp/抛物线减速完成 */
 
@@ -339,6 +371,7 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
             out->wz_dps = 0.0f;
         }
     }
+    p->prev_wz = out->wz_dps;   /* 记录本拍最终角速度, 供下段进段做斜坡种子 */
     return done;
 }
 

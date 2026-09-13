@@ -30,6 +30,8 @@ typedef struct
     uint32_t time_ms;       /* 段内已用时，ms */
     uint16_t tol_hold_ms;   /* 到位驻留累计：|err|<tol 连续保持时长 */
     float cur_speed;        /* 斜坡后的当前前向速度，m/s（跨段保持，衔接用） */
+    float cur_wz;           /* 斜坡后的当前角速度指令，deg/s（TURN/GOTO 入段缓起） */
+    float prev_wz;          /* 上一拍最终输出角速度，deg/s（进段时作 cur_wz 种子） */
     uint8_t subphase;       /* GOTO 段：0=接近点，1=收尾转向 */
     uint8_t started;
 
