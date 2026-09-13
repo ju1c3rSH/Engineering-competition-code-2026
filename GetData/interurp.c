@@ -42,11 +42,59 @@ static Protocol_Parser_t uart4_parser;
 static uint8_t uart4_body[16];
 static uint8_t evt_seq = 1;
 
+/* ================== UART4 上行发送队列 ==================
+ * 生产者两个: UART4 中断(ACK/NACK) 与 TIM4 中断(事件上报), 优先级不同可互相抢占;
+ * 消费者唯一: TIM4 10ms 拍里的 Car_TxQueue_Pump。
+ * 取代旧"static txbuf + 直接 Transmit_DMA"写法: 那样在 DMA 在途时返回 HAL_BUSY
+ * 会静默丢事件帧, 且同函数重入会覆写 static 缓冲把在途帧发坏 */
+#define CAR_TXQ_DEPTH   8u          /* 幂 2, 便于取模 */
+#define CAR_TXQ_FRAME   16u         /* 最大帧: DATA(payload10) = 16B */
+
+static uint8_t txq_buf[CAR_TXQ_DEPTH][CAR_TXQ_FRAME];
+static uint8_t txq_len[CAR_TXQ_DEPTH];
+static volatile uint8_t txq_head = 0u;   /* 写位置(仅生产者, 关中断内更新) */
+static volatile uint8_t txq_tail = 0u;   /* 读位置(仅 Pump 更新) */
+
+/* 入队: 两个 ISR 上下文都会调, 关中断保护头指针与缓冲拷贝 */
+static uint8_t Car_TxEnqueue(uint8_t type, const uint8_t *payload, uint8_t plen)
+{
+	uint8_t ok = 0u;
+	uint16_t n;
+
+	__disable_irq();
+	if ((uint8_t)((txq_head + 1u) & (CAR_TXQ_DEPTH - 1u)) != txq_tail)
+	{
+		n = Protocol_EncodeFrame(txq_buf[txq_head], CAR_TXQ_FRAME, type, payload, plen);
+		if (n != 0u)
+		{
+			txq_len[txq_head] = (uint8_t)n;
+			txq_head = (uint8_t)((txq_head + 1u) & (CAR_TXQ_DEPTH - 1u));
+			ok = 1u;
+		}
+	}
+	__enable_irq();
+	/* 队列满时丢最新一帧(保持入队者不被阻塞); 上行均为通知类, 由上层超时兜底 */
+	return ok;
+}
+
+/* 单点泵出: 仅在 TIM4 10ms 拍里调用; DMA 在途则留到下拍续发 */
+void Car_TxQueue_Pump(void)
+{
+	if (txq_tail == txq_head)
+	{
+		return;
+	}
+	if (huart4.gState != HAL_UART_STATE_READY)
+	{
+		return;
+	}
+	HAL_UART_Transmit_DMA(&huart4, txq_buf[txq_tail], txq_len[txq_tail]);
+	txq_tail = (uint8_t)((txq_tail + 1u) & (CAR_TXQ_DEPTH - 1u));
+}
+
 void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason)
 {
-	static uint8_t txbuf[16];
 	uint8_t p[10];
-	uint16_t n;
 	uint8_t i;
 
 	p[0] = evt_seq++;
@@ -58,28 +106,18 @@ void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason)
 	{
 		p[i] = 0u;
 	}
-	n = Protocol_EncodeFrame(txbuf, sizeof(txbuf), FRAME_TYPE_DATA, p, 10u);
-	if (n != 0u)
-	{
-		HAL_UART_Transmit_DMA(&huart4, txbuf, n);
-	}
+	(void)Car_TxEnqueue(FRAME_TYPE_DATA, p, 10u);
 }
 
 static void Car_Ack_Send(uint8_t sub_echo, uint8_t status)
 {
 #if CAR_ACK_EN
-	static uint8_t txbuf[16];
 	uint8_t p[3];
-	uint16_t n;
 
 	p[0] = CAR_DATA_ID_CTRL;
 	p[1] = sub_echo;
 	p[2] = status;
-	n = Protocol_EncodeFrame(txbuf, sizeof(txbuf), FRAME_TYPE_ACK, p, 3u);
-	if (n != 0u)
-	{
-		HAL_UART_Transmit_DMA(&huart4, txbuf, n);
-	}
+	(void)Car_TxEnqueue(FRAME_TYPE_ACK, p, 3u);
 #else
 	(void)sub_echo;
 	(void)status;
@@ -88,17 +126,11 @@ static void Car_Ack_Send(uint8_t sub_echo, uint8_t status)
 
 static void Car_Nack_Send(uint8_t reason)
 {
-	static uint8_t txbuf[16];
 	uint8_t p[2];
-	uint16_t n;
 
 	p[0] = CAR_DATA_ID_CTRL;
 	p[1] = reason;
-	n = Protocol_EncodeFrame(txbuf, sizeof(txbuf), FRAME_TYPE_NACK, p, 2u);
-	if (n != 0u)
-	{
-		HAL_UART_Transmit_DMA(&huart4, txbuf, n);
-	}
+	(void)Car_TxEnqueue(FRAME_TYPE_NACK, p, 2u);
 }
 
 static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *payload, uint8_t payload_length)

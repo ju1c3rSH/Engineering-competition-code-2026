@@ -38,6 +38,7 @@ void Uart3_task(void);
 void Uart4_task(void);
 void Uart6_task(void);
 void Uart2_task(void);
+void Car_TxQueue_Pump(void);         /* TIM4 拍内调用: 泵出 ACK/EVT 发送队列 */
 
 
 

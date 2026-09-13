@@ -586,6 +586,7 @@ void Car_Control()
 {
 	CarSense_Sample();                   /* 采样层: 编码器+航向 -> 快照(seq+1) */
 	Car_Nav_Task();                      /* 调度层: 信箱/启停/事件/看门狗 */
+	Car_TxQueue_Pump();                  /* 上行发送队列: ACK/EVT 单点泵出 */
 	mf_tick(mf_app(), CarSense_Get());   /* 运动库: 纯消费快照, 无新样自动跳过 */
 	if (Tracking_ApplyOverlay() != 0u)   /* 段内跟瞄改写了 cmd */
 	{
