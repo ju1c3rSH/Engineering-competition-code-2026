@@ -26,6 +26,10 @@ void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw)
 {
     float ds, dyaw, yaw_mid, c, s;
 
+    /* 注意(标定项, 暂不改动): 履带转弯滑移使 (dL+dR)/2 系统性偏大于真实
+     * 车体位移, 弧线越多 x,y 漂移越大; 重锚伪路线只修 yaw 不修 x,y。
+     * 台架跑"直线 + 4x90度回环"闭合后, 在此对 ds 乘滑移修正系数(<1),
+     * 或弧线段改用 IMU 增量 dyaw 反解弧长 ds = |R| * |dyaw_rad| */
     ds = (wheel[0].delta_m + wheel[1].delta_m) * 0.5f;
 
 #if (MF_YAW_SOURCE == MF_YAW_SRC_IMU)

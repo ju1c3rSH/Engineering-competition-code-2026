@@ -212,6 +212,11 @@ void Car_Tracking_ErrorPush(int16_t error_fixed, uint8_t target_found_flag)
 }
 
 /* 转台码->定点角: 对坑 1->123 2->90 3->57, 对桶 4/5->270 6->90, 7 回正->90, 0 不动作 */
+/* 注意(旧基线遗留行为, 暂不改动): 转台为开环时序——TIM5 100ms 周期重发
+ * 同一绝对位置(Emm_V5 绝对模式, 重复下发还会重启电机梯形规划), TURN_DONE
+ * 在置 busy 后固定 3s 计时上报, 不校验 Emm 应答与到位状态。沿用实车验证
+ * 行为; 若现场出现"未到位即动作", 改法: 目标变化才下发一次 + 轮询 Emm
+ * 状态字确认到位后再报 TURN_DONE */
 static struct
 {
 	uint8_t  busy;
