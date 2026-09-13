@@ -28,6 +28,7 @@ typedef struct
     /* 段内累加量（进段清零） */
     float dist_accum;       /* 已走弧长/位移，m（带符号） */
     uint32_t time_ms;       /* 段内已用时，ms */
+    uint16_t tol_hold_ms;   /* 到位驻留累计：|err|<tol 连续保持时长 */
     float cur_speed;        /* 斜坡后的当前前向速度，m/s（跨段保持，衔接用） */
     uint8_t subphase;       /* GOTO 段：0=接近点，1=收尾转向 */
     uint8_t started;

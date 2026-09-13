@@ -57,6 +57,18 @@ static float seg_speed_ramp(mf_path_ctx_t *p, float target, float acc, float dt)
     return p->cur_speed;
 }
 
+/* 带驻留的到位判定: |err|<tol 连续保持 MF_TOL_HOLD_MS 才算到位,
+ * 防止高速穿越容差窗被单拍误判, 也抑制噪声抖动 */
+static uint8_t seg_dwell_reached(mf_path_ctx_t *p, float err, float tol, float dt)
+{
+    if ((err > tol) || (err < -tol))
+    {
+        p->tol_hold_ms = 0u;
+        return 0u;
+    }
+    p->tol_hold_ms = (uint16_t)(p->tol_hold_ms + (uint16_t)(dt * 1000.0f));
+    return (uint8_t)(p->tol_hold_ms >= MF_TOL_HOLD_MS);
+}
 
 /* ---------- 各段类型执行（返回 1=完成） ---------- */
 
@@ -99,7 +111,7 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
                       - pose->yaw_deg);
     out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
 
-    return (p->dist_accum * m->dist_m >= m->dist_m * m->dist_m);
+    return (uint8_t)(remain <= MF_TOL_ARRIVE_M);
 }
 
 /* 定半径弧线：航向目标按弧长推进，走够 d_yaw 完成（panzer 转弯的声明式版）
@@ -138,11 +150,10 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
     err = mf_wrap_deg(yaw_sp - pose->yaw_deg);
     out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
 
-    return ((pose->yaw_deg - p->entry.yaw_deg) * a->d_yaw_deg
-            >= a->d_yaw_deg * a->d_yaw_deg);
+    return (uint8_t)(remain_yaw <= MF_TOL_ARRIVE_DEG);
 }
 
-/* 原地转向（绝对/相对统一）: 前向速度斜坡归零再转 */
+/* 原地转向（绝对/相对统一）: 前向速度斜坡归零再转, 驻留判到位 */
 static uint8_t seg_turn(mf_path_ctx_t *p, const mf_seg_t *s,
                         const mf_pose_t *pose, float dt,
                         mf_body_cmd_t *out)
@@ -158,11 +169,11 @@ static uint8_t seg_turn(mf_path_ctx_t *p, const mf_seg_t *s,
     out->wz_dps = mf_clampf(out->wz_dps, (t->w_max_dps > 0.0f)
                                          ? t->w_max_dps : 1e9f);
 
-    return (err < seg_tol_yaw(s)) && (err > -seg_tol_yaw(s));
+    return seg_dwell_reached(p, err, seg_tol_yaw(s), dt);
 }
 
 /* 点到点：方位角 P 转向 + 距离 P 前进，到位后按声明收尾转向
- * vx 经 cur_speed 斜坡衔接(入段不从 0 突起) */
+ * vx 经 cur_speed 斜坡衔接(入段不从 0 突起), 收尾转向同样驻留判到位 */
 static uint8_t seg_goto(mf_path_ctx_t *p, const mf_seg_t *s,
                         const mf_pose_t *pose, float dt,
                         mf_body_cmd_t *out)
@@ -206,6 +217,7 @@ static uint8_t seg_goto(mf_path_ctx_t *p, const mf_seg_t *s,
             }
             p->subphase = 1;                        /* 转入收尾转向 */
             mf_pid_reset(p->pid_yaw);
+            p->tol_hold_ms = 0u;
         }
         return 0;
     }
@@ -216,7 +228,7 @@ static uint8_t seg_goto(mf_path_ctx_t *p, const mf_seg_t *s,
         out->vy_mps = 0.0f;
         out->wz_dps = mf_clampf(mf_pid_calc(p->pid_yaw, dyaw, dt),
                                 (g->w_max_dps > 0.0f) ? g->w_max_dps : 1e9f);
-        return (dyaw < tol_y) && (dyaw > -tol_y);
+        return seg_dwell_reached(p, dyaw, tol_y, dt);
     }
 }
 
@@ -230,6 +242,7 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
     p->entry = *pose;
     p->dist_accum = 0.0f;
     p->time_ms = 0;
+    p->tol_hold_ms = 0u;
     p->subphase = 0;
     /* cur_speed 刻意不清零: 跨段保持, 段间速度衔接由各段的
      * seg_speed_ramp/抛物线减速完成 */

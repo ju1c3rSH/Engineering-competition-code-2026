@@ -62,6 +62,19 @@
 #define MF_TOL_YAW_DEG      2.0f
 #endif
 
+/* 到位余量: 行程/航向类判据带小余量收口, 避免减速末端里程量化导致永远差一点 */
+#ifndef MF_TOL_ARRIVE_M
+#define MF_TOL_ARRIVE_M     0.002f   /* 2mm */
+#endif
+#ifndef MF_TOL_ARRIVE_DEG
+#define MF_TOL_ARRIVE_DEG   0.5f
+#endif
+
+/* 转向/收尾到位驻留: |err|<tol 需连续保持此时长才算到位(防高速穿越误判) */
+#ifndef MF_TOL_HOLD_MS
+#define MF_TOL_HOLD_MS      100u
+#endif
+
 #if (MF_CHASSIS_TYPE == MF_CHASSIS_DIFF || MF_CHASSIS_TYPE == MF_CHASSIS_TRACK)
 #define MF_WHEEL_COUNT 2
 #elif (MF_CHASSIS_TYPE == MF_CHASSIS_MECANUM)
