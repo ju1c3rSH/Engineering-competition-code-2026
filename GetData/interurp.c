@@ -124,13 +124,16 @@ static void Car_Ack_Send(uint8_t sub_echo, uint8_t status)
 #endif
 }
 
-static void Car_Nack_Send(uint8_t reason)
+/* NACK payload 3B [data_id, sub_echo, reason] (v2.2 §1.4): sub_echo=被拒 sub_cmd 原值,
+ * 帧类型/data_id 层被拒时填 0; master(Brain) 按长度判别, legacy 2B 仍须被其接受 */
+static void Car_Nack_Send(uint8_t sub_echo, uint8_t reason)
 {
-	uint8_t p[2];
+	uint8_t p[3];
 
 	p[0] = CAR_DATA_ID_CTRL;
-	p[1] = reason;
-	(void)Car_TxEnqueue(FRAME_TYPE_NACK, p, 2u);
+	p[1] = sub_echo;
+	p[2] = reason;
+	(void)Car_TxEnqueue(FRAME_TYPE_NACK, p, 3u);
 }
 
 static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *payload, uint8_t payload_length)
@@ -144,9 +147,19 @@ static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *p
 		Car_Nav_MailPush(CAR_SUB_REQ_STOP, 0u, 0u);
 		return;
 	}
-	if (type != FRAME_TYPE_REQUEST || payload_length < 2u || payload[0] != CAR_DATA_ID_CTRL)
+	if (type != FRAME_TYPE_REQUEST || payload_length < 1u)
 	{
-		Car_Nack_Send(0x01u);
+		Car_Nack_Send(0u, CAR_NACK_FORMAT);      /* 非 REQUEST 突发/过短: 无法定位 sub */
+		return;
+	}
+	if (payload[0] != CAR_DATA_ID_CTRL)
+	{
+		Car_Nack_Send(payload[0], CAR_NACK_FORMAT);   /* data_id 不支持: 回显原 data_id */
+		return;
+	}
+	if (payload_length < 2u)
+	{
+		Car_Nack_Send(0u, CAR_NACK_FORMAT);
 		return;
 	}
 
@@ -160,7 +173,8 @@ static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *p
 		}
 		else
 		{
-			Car_Nack_Send(0x01u);
+			Car_Nack_Send(payload[1],
+			              (payload_length >= 4u) ? CAR_NACK_PARAM : CAR_NACK_FORMAT);
 		}
 		break;
 
@@ -177,7 +191,8 @@ static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *p
 		}
 		else
 		{
-			Car_Nack_Send(0x01u);
+			Car_Nack_Send(payload[1],
+			              (payload_length >= 3u) ? CAR_NACK_PARAM : CAR_NACK_FORMAT);
 		}
 		break;
 
@@ -194,7 +209,8 @@ static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *p
 		}
 		else
 		{
-			Car_Nack_Send(0x01u);
+			Car_Nack_Send(payload[1],
+			              (payload_length >= 3u) ? CAR_NACK_PARAM : CAR_NACK_FORMAT);
 		}
 		break;
 
@@ -216,12 +232,13 @@ static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *p
 		}
 		else
 		{
-			Car_Nack_Send(0x01u);
+			Car_Nack_Send(payload[1],
+			              (payload_length >= 3u) ? CAR_NACK_PARAM : CAR_NACK_FORMAT);
 		}
 		break;
 
 	default:
-		Car_Nack_Send(0x01u);
+		Car_Nack_Send(payload[1], CAR_NACK_UNKNOWNSUB);   /* 回显原 sub 定位 */
 		break;
 	}
 }

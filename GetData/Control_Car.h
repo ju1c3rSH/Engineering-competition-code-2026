@@ -39,6 +39,12 @@
 #define FRAME_TYPE_STOP           0x23u   /* CMD_STOP(通用) */
 #define FRAME_TYPE_DATA           0x24u   /* DATA_STREAM */
 
+/* NACK 原因码枚举 (panzer_links_protocol.md v2.2 §1.4, 三链路统一) */
+#define CAR_NACK_FORMAT       0x01u   /* 长度不足/非REQUEST/data_id 不支持 */
+#define CAR_NACK_BUSY         0x02u   /* 忙/未就绪(预留) */
+#define CAR_NACK_PARAM        0x03u   /* 子命令存在但参数越界 */
+#define CAR_NACK_UNKNOWNSUB   0x04u   /* data_id 合法但 sub_cmd 不在定义表 */
+
 #define CAR_DATA_ID_CTRL        0x21u   /* CMD_CAR_CTRL: 运动请求(下行 sub_cmd 式) */
 #define CAR_DATA_ID_EVT         0x22u   /* EVT_CAR_EVENT: 底盘事件上报(上行) */
 
