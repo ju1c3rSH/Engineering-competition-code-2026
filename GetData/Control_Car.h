@@ -91,7 +91,7 @@ typedef struct
 void Yaw_pid_Init(void);
 void Car_Control(void);
 void ResetHWT101(void);
-void Emm_Pos_Control(float Angle);
+void Emm_Pos_Control(void);   /* TIM5 转台重发: 内部带 tt_arm 门控+方向/角度成对快照 */
 
 /* ---- 调度层: 段执行由 Motion 库 mf_tick 承担, 本层只做
  *      请求分发/重发幂等/事件上报, 跟瞄叠加见 Tracking_ApplyOverlay ---- */

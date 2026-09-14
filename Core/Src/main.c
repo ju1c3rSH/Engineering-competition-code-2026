@@ -114,7 +114,20 @@ int main(void)
 	HAL_Delay(2000);
 	HAL_TIM_Base_Start_IT(&GAP_TIM);		
 	HAL_TIM_Base_Start_IT(&htim5);
-	
+
+  /* 独立看门狗: LSI 32kHz/64 分频/重载 99 ≈ 198ms; Car_Control(TIM4 10ms) 末尾喂狗。
+   * 控制环停摆(HardFault/跑飞/时钟失效)即复位, 防故障态履带保持最后占空比失控;
+   * 放在 2s 静置之后启动, 避免 HAL_Delay 期间被复位。调试器挂起时冻结不喂狗复位。
+   * 直接寄存器操作(HAL IWDG 模块未启用): prescaler=4×2^PR, PR=4 → /64 */
+  DBGMCU->APB1FZ |= DBGMCU_APB1_FZ_DBG_IWDG_STOP;
+  IWDG->KR = 0xCCCCU;                                   /* 启动 */
+  IWDG->KR = 0x5555U;                                   /* 解除 PR/RLR 写保护 */
+  IWDG->PR = 0x4U;
+  while ((IWDG->SR & IWDG_SR_PVU) != 0U) { }            /* 等分频生效 */
+  IWDG->RLR = 99U;
+  while ((IWDG->SR & IWDG_SR_RVU) != 0U) { }            /* 等重载值生效 */
+  IWDG->KR = 0xAAAAU;                                   /* 首喂 */
+
   /* USER CODE END 2 */
 
   /* Infinite loop */

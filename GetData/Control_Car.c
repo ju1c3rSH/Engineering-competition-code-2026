@@ -156,6 +156,8 @@ static struct
 	uint16_t   stall_ms;
 } nav;
 
+static void Nav_Fault(void);   /* 前置声明: Nav_DoRequest 段表校验失败即调(定义在后) */
+
 /* ---- 打靶段内跟瞄 v2: 段表不断, 段内叠加视觉航向修正 ----
  * 靶标前一段由中控发 TRACKING_START 开启, 底盘按指定速度边走边修航向;
  * horizontal_error_normalized 归零即段内刹停等发射, 发射后 TRACKING_STOP
@@ -211,6 +213,11 @@ void Car_Tracking_ErrorPush(int16_t error_fixed, uint8_t target_found_flag)
 	__enable_irq();
 }
 
+/* 转台重发门控: 上电后首条 TURNTABLE 命令才允许 Emm 下发, 急停后重新冻结。
+ * 防两类失控: 1) 仅 MCU 复位(驱动器带电)时自动甩回旧目标; 2) 急停后 TIM5
+ * 100ms 重发继续驱动转台 */
+static uint8_t tt_arm = 0u;
+
 /* 转台码->定点角: 对坑 1->123 2->90 3->57, 对桶 4/5->270 6->90, 7 回正->90, 0 不动作 */
 /* 注意(旧基线遗留行为, 暂不改动): 转台为开环时序——TIM5 100ms 周期重发
  * 同一绝对位置(Emm_V5 绝对模式, 重复下发还会重启电机梯形规划), TURN_DONE
@@ -227,21 +234,29 @@ static uint8_t CW_OR_CCW = 1;
 
 /* 转台定点角: 排爆/人质摆放距离一致, 惯导保证车位, 按码打固定角。
  * 对坑 1~3->123/90/57; 对桶 4~6->270/270/90(入桶摆位沿用实车验证值,
- * 坑3 反向 CW 到 90, 其余 CCW); 7 回正 90 */
+ * 坑3 反向 CW 到 90, 其余 CCW); 7 回正 90。
+ * 先写方向后写角度 + tt_arm 先关后开: TIM5 被抢占恢复后读到的一定是
+ * 同一对(方向,角度), 不会出现"新角度+旧方向"挥向另一侧 */
 static void Nav_Turntable(uint8_t turn_code)
 {
-	CW_OR_CCW = 1;
+	uint8_t dir = 1u;
+	float   angle;
+
+	tt_arm = 0u;                     /* 更新期间冻结 TIM5 重发 */
 	switch (turn_code)
 	{
-	case 1u: Car_data.Motor_Angle = 123.0f; break;
-	case 2u: Car_data.Motor_Angle =  90.0f; break;
-	case 3u: Car_data.Motor_Angle =  57.0f; break;
+	case 1u: angle = 123.0f; break;
+	case 2u: angle =  90.0f; break;
+	case 3u: angle =  57.0f; break;
 	case 4u:
-	case 5u: Car_data.Motor_Angle = 270.0f; break;
-	case 6u: Car_data.Motor_Angle =  90.0f; CW_OR_CCW = 0u; break;
-	case 7u: Car_data.Motor_Angle =  90.0f; break;
+	case 5u: angle = 270.0f; break;
+	case 6u: angle =  90.0f; dir = 0u; break;
+	case 7u: angle =  90.0f; break;
 	default: return;
 	}
+	CW_OR_CCW = dir;
+	Car_data.Motor_Angle = angle;
+	tt_arm = 1u;
 	tt.busy = 1u;
 	tt.code = turn_code;
 	tt.ms = 0u;
@@ -274,11 +289,29 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 	}
 }
 
+/* 急停冻结转台: 弃用在途位置帧(DMA 中途可被共享 rxb 的 memset 撕裂, 且
+ * Emm_V5 内部 HAL_UART_Transmit_DMA 遇 BUSY 会静默吞掉停止帧), 改用局部
+ * 缓冲阻塞直发(5B@115200≈0.43ms, 仅 STOP 时一次)。残窗: TIM5 恰在
+ * "tt_arm 检查后、发送前"被抢占时, 恢复后会多发一帧旧位置——之后无重发,
+ * 电机走完该目标即停, 与旧行为相当 */
+static void Turntable_EmergencyStop(void)
+{
+	uint8_t stop_cmd[5] = {0x01u, 0xFEu, 0x98u, 0x00u, 0x6Bu};
+
+	HAL_UART_AbortTransmit(&huart6);
+	(void)HAL_UART_Transmit(&huart6, stop_cmd, sizeof(stop_cmd), 10u);
+}
+
 static void Nav_DoStop(void)
 {
 	mf_stop(mf_app());
 	nav.state = NAV_IDLE;
 	tracking.state = TRACKING_IDLE;
+	/* 急停覆盖转台: 停电机 + 冻结 TIM5 重发 + 作废未决 TURN_DONE
+	 * (协议头 REQ_STOP 语义: 急停安全停车, 清执行状态) */
+	tt_arm = 0u;
+	tt.busy = 0u;
+	Turntable_EmergencyStop();
 }
 
 /* ---- 段内跟瞄: 段表不断, 段内叠加视觉航向修正 ---- */
@@ -606,6 +639,7 @@ void Car_Control()
 		Tracking_RecomputeWheels();
 	}
 	CarSense_Output(mf_app());           /* 执行层: wheel[].out -> DIR+PWM */
+	IWDG->KR = 0xAAAAU;                  /* 喂独立看门狗(198ms): 本函数停摆即复位清 PWM */
 }
 
 //HWT101角度置零
@@ -614,9 +648,23 @@ void ResetHWT101(void)
 	uint8_t temp[]={0xff,0xAA,0X76,0x00,0x00};
 	HAL_UART_Transmit_DMA(&huart3, temp, 5);
 }
-void Emm_Pos_Control(float Angle)
+/* TIM5 100ms 转台重发(经 interurp.c 调用)。
+ * tt_arm 门控: 上电后首条 TURNTABLE 命令前/急停后不下发——旧版上电即向
+ * 绝对 0°(=驱动器上电零点)发位置, 仅 MCU 复位时转台会自行大行程甩动。
+ * 方向+角度关中断成对快照, 防 TIM4 更新中途读到混合对挥向另一侧。
+ * acc=20: 旧值 0 为直接启动, 带载 180RPM 零斜坡起转冲击/失步 */
+void Emm_Pos_Control(void)
 {
-	static uint32_t Angle_Tick = 0;
-	Angle_Tick = (uint32_t)(1208.888 * Angle);
-	Emm_V5_Pos_Control(1,CW_OR_CCW,180,0,Angle_Tick,true,false);
+	uint8_t  dir;
+	uint32_t tick;
+
+	if (tt_arm == 0u)
+	{
+		return;
+	}
+	__disable_irq();
+	dir  = CW_OR_CCW;
+	tick = (uint32_t)(1208.888f * Car_data.Motor_Angle);
+	__enable_irq();
+	Emm_V5_Pos_Control(1, dir, 180, 20, tick, true, false);
 }

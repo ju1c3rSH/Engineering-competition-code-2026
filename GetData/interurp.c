@@ -31,7 +31,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	}
 	else if(htim->Instance == TIM5)
 	{
-		Emm_Pos_Control(Car_data.Motor_Angle);
+		Emm_Pos_Control();   /* 内部带 tt_arm 门控: 首条 TURNTABLE 前/急停后不自走 */
 	}
 }
 

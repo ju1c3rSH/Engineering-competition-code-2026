@@ -91,7 +91,8 @@ extern UART_HandleTypeDef huart6;
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
-
+  TIM3->CCR1 = 0u;   /* 故障态先清履带 PWM(占空比=CCR/ARR, 低有效驱动), 防失控滑跑 */
+  TIM3->CCR2 = 0u;
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
    while (1)
@@ -106,7 +107,8 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  TIM3->CCR1 = 0u;   /* 故障态先清履带 PWM, 防失控滑跑(看门狗复位前的窗口) */
+  TIM3->CCR2 = 0u;
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -121,7 +123,8 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
+  TIM3->CCR1 = 0u;   /* 故障态先清履带 PWM, 防失控滑跑(看门狗复位前的窗口) */
+  TIM3->CCR2 = 0u;
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
@@ -136,7 +139,8 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-
+  TIM3->CCR1 = 0u;   /* 故障态先清履带 PWM, 防失控滑跑(看门狗复位前的窗口) */
+  TIM3->CCR2 = 0u;
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -151,7 +155,8 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+  TIM3->CCR1 = 0u;   /* 故障态先清履带 PWM, 防失控滑跑(看门狗复位前的窗口) */
+  TIM3->CCR2 = 0u;
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {
@@ -426,6 +431,30 @@ void USART6_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/* UART 错误恢复: DMA 接收模式下 FE/NE/ORE/PE 会走 UART_EndRxTransfer 停收,
+ * 不重装则 IDLE 中断从此不再产生, 该链路永久哑掉(比赛中无人工复位机会)。
+ * 与 IDLE 分支同样整缓冲重装; HAL 在进本回调前已清错误标志, 直接重开即可 */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if (huart == &huart4)
+  {
+    HAL_UART_Receive_DMA(&huart4, Rxbuffer4, RXbuffer4_size);
+  }
+  else if (huart == &huart3)
+  {
+    HAL_UART_Receive_DMA(&huart3, Rxbuffer3, RXbuffer3_size);
+  }
+  else if (huart == &huart2)
+  {
+    HAL_UART_Receive_DMA(&huart2, Rxbuffer2, RXbuffer2_size);
+  }
+  else if (huart == &huart6)
+  {
+    HAL_UART_Receive_DMA(&huart6, Rxbuffer6, RXbuffer6_size);
+  }
+}
+
 
 int fputc(int ch , FILE *f)
 {
