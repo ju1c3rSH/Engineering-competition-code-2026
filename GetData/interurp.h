@@ -29,6 +29,7 @@ extern uint8_t Rxbuffer3_2[RXbuffer3_size];
 extern uint8_t Rxbuffer6_2[RXbuffer6_size];
 extern uint8_t Rxbuffer4_2[RXbuffer4_size];
 
+extern __IO uint16_t UART2_RX_STA;    /* stm32f4xx_it.c: 本次 IDLE 突发字节数(0x8000=完成) */
 extern __IO uint16_t UART3_RX_STA;    /* stm32f4xx_it.c: 本次 IDLE 突发字节数 */
 extern __IO uint16_t UART4_RX_STA;    /* stm32f4xx_it.c: 本次 IDLE 突发字节数 */
 
@@ -40,6 +41,12 @@ void Uart4_task(void);
 void Uart6_task(void);
 void Uart2_task(void);
 void Car_TxQueue_Pump(void);         /* TIM4 拍内调用: 泵出 ACK/EVT 发送队列 */
+
+/* ---- USART2 调试口(115200): 主循环唯一 printf 点, ISR 零打印 ---- */
+void Car_DebugTask(void);            /* main while(1) 调用: ACK/NACK 事件回显 + '?' 状态查询 */
+void Car_Debug_Snapshot(uint8_t *nav_state, uint8_t *nav_id, uint16_t *seg_idx,
+                        uint8_t *seg_done, uint8_t *trk_state, int16_t *err_f10k,
+                        float *x_m, float *y_m, float *yaw_deg);
 
 
 

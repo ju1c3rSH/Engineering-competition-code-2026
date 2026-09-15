@@ -648,6 +648,31 @@ void ResetHWT101(void)
 	uint8_t temp[]={0xff,0xAA,0X76,0x00,0x00};
 	HAL_UART_Transmit_DMA(&huart3, temp, 5);
 }
+
+/* 调试口状态快照(main 上下文 '?' 查询用): 关中断抓 nav/tracking/里程计字段,
+ * 防 TIM4 写入中途读到混合值。仅用于调试显示, 单字级撕裂容忍, 不进控制路径 */
+void Car_Debug_Snapshot(uint8_t *nav_state, uint8_t *nav_id, uint16_t *seg_idx,
+                        uint8_t *seg_done, uint8_t *trk_state, int16_t *err_f10k,
+                        float *x_m, float *y_m, float *yaw_deg)
+{
+	const mf_status_t *st;
+	const mf_pose_t *pose;
+
+	__disable_irq();
+	st = mf_get_status(mf_app());
+	pose = mf_get_pose(mf_app());
+	*nav_state = (uint8_t)nav.state;
+	*nav_id    = nav.nav_id;
+	*seg_idx   = st->seg_index;
+	*seg_done  = st->seg_done;
+	*trk_state = (uint8_t)tracking.state;
+	*err_f10k  = (int16_t)(tracking.horizontal_error_normalized
+	                       * TRACKING_ERROR_FIXED_SCALE);
+	*x_m    = pose->x_m;
+	*y_m    = pose->y_m;
+	*yaw_deg = pose->yaw_deg;
+	__enable_irq();
+}
 /* TIM5 100ms 转台重发(经 interurp.c 调用)。
  * tt_arm 门控: 上电后首条 TURNTABLE 命令前/急停后不下发——旧版上电即向
  * 绝对 0°(=驱动器上电零点)发位置, 仅 MCU 复位时转台会自行大行程甩动。

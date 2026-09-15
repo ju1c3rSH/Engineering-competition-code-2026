@@ -134,9 +134,8 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-		
-		
-		
+		Car_DebugTask();                     /* USART2 调试口: 事件回显 + '?' 查询(唯一 printf 点) */
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

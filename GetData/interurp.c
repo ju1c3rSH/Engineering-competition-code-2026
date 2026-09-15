@@ -109,6 +109,44 @@ void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason)
 	(void)Car_TxEnqueue(FRAME_TYPE_DATA, p, 10u);
 }
 
+/* ---- 调试口观测记录 (USART2, 详 interurp.h) -------------------------------
+ * 生产者: UART4 ISR(ACK/NACK 见帧即记) 与 TIM4 ISR(事件帧同路); 消费者: 主循环
+ * Car_DebugTask() 唯一发出口——所有 printf/阻塞发送只在主循环, 四个 ISR 零打印 ---- */
+static volatile struct
+{
+	uint16_t ack_cnt;
+	uint16_t nack_cnt;
+	uint8_t  last_sub;
+	uint8_t  last_code;    /* ACK=status / NACK=reason */
+	volatile uint8_t ack_fresh;
+	volatile uint8_t nack_fresh;
+	volatile uint8_t query_fresh;
+} dbg2;
+
+/* 入队后的观测登记: ISR 与主循环双上下文都会调, 关中断保护计数字段 */
+static void Car_Dbg2_Record(uint8_t ack, uint8_t sub, uint8_t code)
+{
+	uint16_t n;
+
+	__disable_irq();
+	if (ack != 0u)
+	{
+		dbg2.ack_cnt++;
+		n = dbg2.ack_cnt;
+		dbg2.ack_fresh = 1u;
+	}
+	else
+	{
+		dbg2.nack_cnt++;
+		n = dbg2.nack_cnt;
+		dbg2.nack_fresh = 1u;
+	}
+	dbg2.last_sub = sub;
+	dbg2.last_code = code;
+	(void)n;
+	__enable_irq();
+}
+
 static void Car_Ack_Send(uint8_t sub_echo, uint8_t status)
 {
 #if CAR_ACK_EN
@@ -117,7 +155,10 @@ static void Car_Ack_Send(uint8_t sub_echo, uint8_t status)
 	p[0] = CAR_DATA_ID_CTRL;
 	p[1] = sub_echo;
 	p[2] = status;
-	(void)Car_TxEnqueue(FRAME_TYPE_ACK, p, 3u);
+	if (Car_TxEnqueue(FRAME_TYPE_ACK, p, 3u) != 0u)
+	{
+		Car_Dbg2_Record(1u, sub_echo, status);
+	}
 #else
 	(void)sub_echo;
 	(void)status;
@@ -133,7 +174,10 @@ static void Car_Nack_Send(uint8_t sub_echo, uint8_t reason)
 	p[0] = CAR_DATA_ID_CTRL;
 	p[1] = sub_echo;
 	p[2] = reason;
-	(void)Car_TxEnqueue(FRAME_TYPE_NACK, p, 3u);
+	if (Car_TxEnqueue(FRAME_TYPE_NACK, p, 3u) != 0u)
+	{
+		Car_Dbg2_Record(0u, sub_echo, reason);
+	}
 }
 
 static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *payload, uint8_t payload_length)
@@ -307,7 +351,69 @@ void Uart3_task()
 }
 void Uart2_task()
 {
-		//调试数据处理
+	uint8_t i, sta = (uint8_t)(UART2_RX_STA & 0x7FFFu);
+
+	/* 消费 0x8000 完成位约定: 突发内扫 '?', 命中置查询标志供 Car_DebugTask 回报
+	 * (历史 Uart2_task 恒空壳, 此处首次实现; ISR 只置标志, 打印全在主循环) */
+	if (sta == 0u)
+	{
+		return;
+	}
+	if (sta > RXbuffer2_size)
+	{
+		sta = RXbuffer2_size;
+	}
+	for (i = 0u; i < sta; i++)
+	{
+		if (Rxbuffer2[i] == '?')
+		{
+			dbg2.query_fresh = 1u;
+			break;
+		}
+	}
+}
+
+/* ================== USART2 调试口(115200): 事件回显 + '?' 查询 ==================
+ * 主循环每圈调用: 唯一的 printf/阻塞发送点; ISR 从不发送。
+ * 查询回两行: 调度状态(NAV/TRK/误差) + 里程位姿, 详见 Car_Debug_Snapshot */
+void Car_DebugTask(void)
+{
+	uint8_t  nav_state, nav_id, seg_done, trk_state;
+	uint16_t seg_idx;
+	int16_t  err_f10k;
+	float    x_m, y_m, yaw_deg;
+	uint16_t ack_n, nack_n;
+	uint8_t  sub, code;
+	uint8_t  ack_f = 0u, nack_f = 0u, query_f = 0u;
+
+	__disable_irq();
+	ack_n  = dbg2.ack_cnt;
+	nack_n = dbg2.nack_cnt;
+	sub    = dbg2.last_sub;
+	code   = dbg2.last_code;
+	if (dbg2.ack_fresh != 0u)   { dbg2.ack_fresh = 0u;   ack_f = 1u; }
+	if (dbg2.nack_fresh != 0u)  { dbg2.nack_fresh = 0u;  nack_f = 1u; }
+	if (dbg2.query_fresh != 0u) { dbg2.query_fresh = 0u; query_f = 1u; }
+	__enable_irq();
+
+	if (ack_f != 0u)
+	{
+		printf("ACK:%02X/%02X #%u\r\n", sub, code, (unsigned)ack_n);
+	}
+	if (nack_f != 0u)
+	{
+		printf("NACK:%02X/%02X #%u\r\n", sub, code, (unsigned)nack_n);
+	}
+	if (query_f != 0u)
+	{
+		(void)Car_Debug_Snapshot(&nav_state, &nav_id, &seg_idx, &seg_done,
+		                         &trk_state, &err_f10k, &x_m, &y_m, &yaw_deg);
+		printf("CHASSIS:NAV=%c ID=%02u SEG=%u/%u TRK=%c E=%d\r\n",
+		       "IRD"[nav_state & 0x03u], (unsigned)nav_id, (unsigned)seg_idx, (unsigned)seg_done,
+		       "IRL"[trk_state & 0x03u], err_f10k);
+		printf("POSE:%d %d %d\r\n",
+		       (int)(x_m * 1000.0f), (int)(y_m * 1000.0f), (int)(yaw_deg * 10.0f));
+	}
 }
 void Uart6_task()
 {
