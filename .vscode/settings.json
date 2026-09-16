@@ -5,5 +5,6 @@
         "control_car.h": "c",
         "main.h": "c",
         "usart.h": "c"
-    }
+    },
+    "python.analysis.stubPath": "C:\\Users\\Episode\\.kendryte\\k230_canmv_pylance\\26c22a1be1f7fa88\\typings"
 }

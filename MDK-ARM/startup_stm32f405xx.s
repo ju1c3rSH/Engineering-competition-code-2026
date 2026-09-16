@@ -29,7 +29,9 @@
 ;   <o> Stack Size (in Bytes) <0x0-0xFFFFFFFF:8>
 ; </h>
 
-Stack_Size		EQU     0x400
+; 4KB: main(printf 帧格式化) 与全部 ISR 共用 MSP; TIM4 Car_Control 调用链
+; + UART4(优先级0)嵌套 + 各 O0 栈帧叠加, 旧值 0x400 在 -O0 下溢出致 HardFault
+Stack_Size		EQU     0x1000
 
                 AREA    STACK, NOINIT, READWRITE, ALIGN=3
 Stack_Mem       SPACE   Stack_Size

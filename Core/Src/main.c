@@ -108,6 +108,10 @@ int main(void)
 	
 
   UART_Task_Init();
+  {
+    extern void Fault_Boot_Report(void);   /* stm32f4xx_it.c: 读 RTC 复位源 + 上次 HardFault 现场 */
+    Fault_Boot_Report();
+  }
 	Yaw_pid_Init();
 	Motor_Init();
 	ResetHWT101();

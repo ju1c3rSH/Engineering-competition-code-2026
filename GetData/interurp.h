@@ -15,7 +15,9 @@
 #define RXbuffer2_size     10
 #define RXbuffer3_size     44
 #define RXbuffer6_size     30
-#define RXbuffer4_size     16
+/* 32B: 旧值 16 只容 1 帧, Brain 连续两帧一个 IDLE 突发(NAV 重发+其他)时 DMA 回绕
+ * 令 UART4_RX_STA 算出错值、parser 收错乱尾段(随机性 ACK 丢失根因之一) */
+#define RXbuffer4_size     32
 
 extern uint8_t Rxbuffer1[RXbuffer1_size];
 extern uint8_t Rxbuffer2[RXbuffer2_size];

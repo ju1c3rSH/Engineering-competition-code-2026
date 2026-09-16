@@ -63,6 +63,101 @@ __IO uint16_t UART6_RX_STA = 0;
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/* ============ 故障勘查 (cnblogs ljbguanli 法落地): HardFault 时从栈帧挖回 PC/LR ============
+ * 现场 PC/LR/CFSR 同时写RTC 备份寄存器: IWDG/PIN 复位不清备份域,下次上电调试口打出来,
+ * 再用 fromelf -c panzer.axf / Keil Disassembly 把 PC 对回源码行。
+ * RAM 快照供挂调试器时随时看(调试器态 IWDG 冻结, g_fault_buf 新鲜)。 */
+volatile uint32_t g_fault_buf[6] = {0, 0, 0, 0, 0, 0};
+
+void Fault_Capture(uint32_t *sp)
+{
+  g_fault_buf[0] = sp[6];      /* PC    */
+  g_fault_buf[1] = sp[5];      /* LR    */
+  g_fault_buf[2] = SCB->CFSR;
+  g_fault_buf[3] = SCB->HFSR;
+  g_fault_buf[4] = SCB->MMFAR;
+  g_fault_buf[5] = SCB->BFAR;
+
+  /* RTC 备份域: 仅需 PWR 时钟 + DBP, 与 RTC 本体是否启用无关(IWDG 复位不清) */
+  SET_BIT(RCC->APB1ENR, RCC_APB1ENR_PWREN);
+  (void)RCC->APB1ENR;
+  SET_BIT(PWR->CR, PWR_CR_DBP);
+  RTC->BKP0R = 0xFA17FA17u;
+  RTC->BKP1R = g_fault_buf[0];
+  RTC->BKP2R = g_fault_buf[1];
+  RTC->BKP3R = g_fault_buf[2];
+  RTC->BKP4R = g_fault_buf[3];
+  RTC->BKP5R = g_fault_buf[4];
+  RTC->BKP6R = g_fault_buf[5];
+
+  TIM3->CCR1 = 0u;   /* 故障态先清履带 PWM, 防失控滑跑(喂狗停摆后 IWDG 复位前窗口) */
+  TIM3->CCR2 = 0u;
+  for (;;) { }       /* 使 IWDG 复位重启; 挂调试器时被冻结死机现场可查 */
+}
+
+void Fault_Capture_Auto(void)
+{
+  uint32_t *__sp;
+
+  __asm volatile (
+      "tst   lr, #4     \n"
+      "ite   eq         \n"
+      "mrseq %0, msp    \n"
+      "mrsne %0, psp    \n"
+      : "=r"(__sp) :: );
+  Fault_Capture(__sp);
+}
+
+void HardFault_Handler(void);   /* 定义在 file 主体(接 Fault_Capture), 见下 */
+
+/* ---- RX DMA 重装修复: IDLE/Error 路径在 HAL 锁竞争(HAL_BUSY)下的失败必须可恢复 ----
+ * UART4 IDLE(flash 优先级0)抢占 TIM4 发送(DMA Tx 持 huart4 锁)时,
+ * HAL_UART_Receive_DMA 返回 HAL_BUSY; 旧代码丢掉返回值 → RX DMA 已被 DMAStop
+ * 裸停而不再装回 → IDLE 从此不产生, 控制链路永久哑掉。
+ * 现改: 失败置标志,Car_Control 的 TIM4 拍调用 Uart_RxRearm_Task 重试(堵住死口)。 */
+static volatile uint8_t rx_rearm_req = 0u;
+
+static void RxRearm(UART_HandleTypeDef *hu, uint8_t *buf, uint16_t size, uint8_t bit)
+{
+  if (HAL_UART_Receive_DMA(hu, buf, size) != HAL_OK)
+  {
+    rx_rearm_req |= bit;     /* HAL 持锁中: 下一 TIM4 拍重试 */
+  }
+  else
+  {
+    rx_rearm_req &= (uint8_t)(~bit);
+  }
+}
+
+void Uart_RxRearm_Task(void)
+{
+  if ((rx_rearm_req & 1u) != 0u) { RxRearm(&huart4, Rxbuffer4, RXbuffer4_size, 1u); }
+  if ((rx_rearm_req & 2u) != 0u) { RxRearm(&huart3, Rxbuffer3, RXbuffer3_size, 2u); }
+  if ((rx_rearm_req & 4u) != 0u) { RxRearm(&huart2, Rxbuffer2, RXbuffer2_size, 4u); }
+  if ((rx_rearm_req & 8u) != 0u) { RxRearm(&huart6, Rxbuffer6, RXbuffer6_size, 8u); }
+}
+
+
+
+void Fault_Boot_Report(void)
+{
+  if (RTC->BKP0R == 0xFA17FA17u)
+  {
+    printf("FAULT-LAST: PC=%08lX LR=%08lX CFSR=%08lX HFSR=%08lX MMFAR=%08lX BFAR=%08lX\r\n",
+           (unsigned long)RTC->BKP1R, (unsigned long)RTC->BKP2R,
+           (unsigned long)RTC->BKP3R, (unsigned long)RTC->BKP4R,
+           (unsigned long)RTC->BKP5R, (unsigned long)RTC->BKP6R);
+    RTC->BKP0R = 0u;
+  }
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST) != RESET)     { printf("RST=IWDG\r\n"); }
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_BORRST) != RESET) { printf("RST=BOR\r\n"); }
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_SFTRST) != RESET) { printf("RST=SOFTR\r\n"); }
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_PORRST) != RESET) { printf("RST=POR\r\n"); }
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST) != RESET) { printf("RST=PIN\r\n"); }
+  __HAL_RCC_CLEAR_RESET_FLAGS();
+}
+
+
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -108,8 +203,16 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-  TIM3->CCR1 = 0u;   /* 故障态先清履带 PWM, 防失控滑跑(看门狗复位前的窗口) */
-  TIM3->CCR2 = 0u;
+  {
+    uint32_t *__sp;
+    __asm volatile (
+        "tst   lr, #4  \n"
+        "ite   eq      \n"
+        "mrseq %0, msp \n"
+        "mrsne %0, psp \n"
+        : "=r"(__sp) :: );
+    Fault_Capture(__sp);   /* 挖回栈帧 PC/LR, 写 RTC 备份, 不返回 */
+  }
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -124,8 +227,7 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-  TIM3->CCR1 = 0u;   /* 故障态先清履带 PWM, 防失控滑跑(看门狗复位前的窗口) */
-  TIM3->CCR2 = 0u;
+  Fault_Capture_Auto();   /* 同故障勘查路径: PC/LR/故障状态落 RTC 备份, 不返回 */
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
@@ -140,8 +242,7 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-  TIM3->CCR1 = 0u;   /* 故障态先清履带 PWM, 防失控滑跑(看门狗复位前的窗口) */
-  TIM3->CCR2 = 0u;
+  Fault_Capture_Auto();
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -156,8 +257,7 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-  TIM3->CCR1 = 0u;   /* 故障态先清履带 PWM, 防失控滑跑(看门狗复位前的窗口) */
-  TIM3->CCR2 = 0u;
+  Fault_Capture_Auto();
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {
@@ -310,7 +410,7 @@ void USART2_IRQHandler(void)
       Uart2_task();
       UART2_RX_STA |= 0X8000; 
 			memset(Rxbuffer2,0,RXbuffer2_size);
-      HAL_UART_Receive_DMA(&huart2, Rxbuffer2, RXbuffer2_size);
+      RxRearm(&huart2, Rxbuffer2, RXbuffer2_size, 4u);
   }
   /* USER CODE END USART2_IRQn 0 */
   HAL_UART_IRQHandler(&huart2);
@@ -334,7 +434,7 @@ void USART3_IRQHandler(void)
 		Uart3_task();
 			UART3_RX_STA |= 0X8000; 
 			memset(Rxbuffer3,0,RXbuffer3_size);
-	    HAL_UART_Receive_DMA(&huart3, Rxbuffer3, RXbuffer3_size);
+	    RxRearm(&huart3, Rxbuffer3, RXbuffer3_size, 2u);
 	}
   /* USER CODE END USART3_IRQn 0 */
   HAL_UART_IRQHandler(&huart3);
@@ -371,7 +471,7 @@ void UART4_IRQHandler(void)
       Uart4_task();
       UART4_RX_STA |= 0X8000; 
 			memset(Rxbuffer4,0,RXbuffer4_size);
-      HAL_UART_Receive_DMA(&huart4, Rxbuffer4, RXbuffer4_size);
+      RxRearm(&huart4, Rxbuffer4, RXbuffer4_size, 1u);
   }
   /* USER CODE END UART4_IRQn 0 */
   HAL_UART_IRQHandler(&huart4);
@@ -422,7 +522,7 @@ void USART6_IRQHandler(void)
       Uart6_task();
       UART6_RX_STA |= 0X8000; 
 			memset(Rxbuffer6,0,RXbuffer6_size);
-      HAL_UART_Receive_DMA(&huart6, Rxbuffer6, RXbuffer6_size);
+      RxRearm(&huart6, Rxbuffer6, RXbuffer6_size, 8u);
   }
   /* USER CODE END USART6_IRQn 0 */
   HAL_UART_IRQHandler(&huart6);
@@ -453,19 +553,19 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   if (huart == &huart4)
   {
-    HAL_UART_Receive_DMA(&huart4, Rxbuffer4, RXbuffer4_size);
+    RxRearm(&huart4, Rxbuffer4, RXbuffer4_size, 1u);
   }
   else if (huart == &huart3)
   {
-    HAL_UART_Receive_DMA(&huart3, Rxbuffer3, RXbuffer3_size);
+    RxRearm(&huart3, Rxbuffer3, RXbuffer3_size, 2u);
   }
   else if (huart == &huart2)
   {
-    HAL_UART_Receive_DMA(&huart2, Rxbuffer2, RXbuffer2_size);
+    RxRearm(&huart2, Rxbuffer2, RXbuffer2_size, 4u);
   }
   else if (huart == &huart6)
   {
-    HAL_UART_Receive_DMA(&huart6, Rxbuffer6, RXbuffer6_size);
+    RxRearm(&huart6, Rxbuffer6, RXbuffer6_size, 8u);
   }
 }
 

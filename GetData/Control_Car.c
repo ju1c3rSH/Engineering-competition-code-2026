@@ -630,7 +630,9 @@ static void Tracking_RecomputeWheels(void)
 //坦克主控函数：TIM4 10ms 中断调用
 void Car_Control()
 {
+	extern void Uart_RxRearm_Task(void);   /* stm32f4xx_it.c: RX DMA 重装失败的重试点 */
 	CarSense_Sample();                   /* 采样层: 编码器+航向 -> 快照(seq+1) */
+	Uart_RxRearm_Task();                 /* 上拍 IDLE/Error 路径 HAL_BUSY 未装回的 RX DMA, 此处堵死口 */
 	Car_Nav_Task();                      /* 调度层: 信箱/启停/事件/看门狗 */
 	Car_TxQueue_Pump();                  /* 上行发送队列: ACK/EVT 单点泵出 */
 	mf_tick(mf_app(), CarSense_Get());   /* 运动库: 纯消费快照, 无新样自动跳过 */
@@ -642,10 +644,14 @@ void Car_Control()
 	IWDG->KR = 0xAAAAU;                  /* 喂独立看门狗(198ms): 本函数停摆即复位清 PWM */
 }
 
-//HWT101角度置零
+//HWT101角度置零: 缓冲必须 static —— Transmit_DMA 异步搬运, 栈数组函数返回即失效会发坏字节
 void ResetHWT101(void)
 {
-	uint8_t temp[]={0xff,0xAA,0X76,0x00,0x00};
+	static uint8_t temp[] = {0xff, 0xAA, 0X76, 0x00, 0x00};
+	if (huart3.gState != HAL_UART_STATE_READY)
+	{
+		return;   /* 上帧置零还在途: 跳过(命令幂等, 免 HAL_BUSY 静默失败) */
+	}
 	HAL_UART_Transmit_DMA(&huart3, temp, 5);
 }
 
