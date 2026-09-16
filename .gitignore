@@ -17,3 +17,5 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/settings.json
+MDK-ARM/build_log.txt
+MDK-ARM/fromelf_full.txt

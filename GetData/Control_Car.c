@@ -16,11 +16,16 @@ void Yaw_pid_Init()
 	Yaw_struct.Yaw_pid.Out                 = 0.0f;
 }
 
+/* 运动调优 (test/motion-tuning): 旧 TURN_ACC(45转/s²≈21.2m/s²) 等效阶跃,
+ * 满目标速度 0.94m/s 仅 45ms —— 起步电流浪涌触发电源 BOR 复位(实测 RST=BOR)。
+ * 直行/弧线统一降到 5转/s²(≈2.36m/s², 0.4s 拉满 0.94m/s), 削起步浪涌 */
+#define SEG_ACC_MPS2  MF_M_ACC(5.0f)
+
 /* nav_id 段表: 原 flags 路线逐段复刻(基线 git 4f3ceb2 true_BOOM_Finish) */
 #define SEG_MOVE(v, d)  { .type = MF_SEG_MOVE_DIST, .reset_pid = 1, \
-                          .p.move_dist = { (v), (d), MF_KEEP, TURN_ACC_MPS2 } }
+                          .p.move_dist = { (v), (d), MF_KEEP, SEG_ACC_MPS2 } }
 #define SEG_ARC(v, r)   { .type = MF_SEG_ARC, .reset_pid = 1, \
-                          .p.arc = { (v), (r), ((r) > 0.0f ? 90.0f : -90.0f), TURN_ACC_MPS2 } }
+                          .p.arc = { (v), (r), ((r) > 0.0f ? 90.0f : -90.0f), SEG_ACC_MPS2 } }
 #define SEG_TURN_TO(y)  { .type = MF_SEG_TURN_TO, .reset_pid = 1, \
                           .p.turn = { (y), 0.0f } }
 #define SEG_END         { .type = MF_SEG_END }
@@ -594,7 +599,8 @@ void mf_app_init(void)
 		.yaw_i_max     = 0.0f,
 		.yaw_out_max   = 172.8f,
 		.pv_kp         = 2.0f,
-		.wheel_kp      = 1.0f,
+		.wheel_kp      = 0.3f,   /* test/motion-tuning: 旧 1.0 = 误差满 1m/s 即满占空比(近 bang-bang);
+				            * 降到 0.3 起步占空比软起步, I 项照旧补静差 */
 		.wheel_ki      = 7.0f,     /* 旧环 I 等效(见上方折算), 恢复静摩擦穿透能力 */
 		.wheel_i_max   = 0.095f,   /* 7.0×0.095≈0.665 满占空比, 等效旧 I_Max1000/1500 */
 	};

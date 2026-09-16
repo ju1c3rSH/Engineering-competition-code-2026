@@ -14,8 +14,8 @@
 //编码器ARR最大值
 #define Encode_ARR 		65535
 
-// PWM定时器ARR值宏定义
-#define PWM_ARR 1500  // 84MHz时钟，10kHz PWM频率
+// PWM定时器ARR值宏定义(与 CubeMX ARR 一致: tim.c Period=1680-1, 否则满占空比封顶89.3%)
+#define PWM_ARR 1679  // 84MHz/2 = 42MHz / 1680 = 25kHz PWM
 
 
 //定时器号
