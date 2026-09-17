@@ -114,6 +114,15 @@ extern Parameter_TypeDef_Car Car_data;
 
 void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);  /* interurp.c */
 
+void Car_Debug_Stat_Print(void);   /*'. '?'/p 周期: 四行状态块(CHASSIS/WHEEL/POSE/WTBL) */
+
+/* 台架直转(USART2 'w'/'e'/'1'~'7'/'x', Car_DebugTask 主循环执行): 微调不报
+ * TURN_DONE, 打码走协议码表 */
+void Car_Turntable_BenchNudge(float delta_deg);
+void Car_Turntable_BenchCode(uint8_t turn_code);
+void Car_Turntable_BenchStop(void);
+void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg);  /* interurp.c */
+
 
 
 #endif

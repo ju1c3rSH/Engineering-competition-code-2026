@@ -55,6 +55,8 @@ static uint8_t txq_len[CAR_TXQ_DEPTH];
 static volatile uint8_t txq_head = 0u;   /* 写位置(仅生产者, 关中断内更新) */
 static volatile uint8_t txq_tail = 0u;   /* 读位置(仅 Pump 更新) */
 
+static void Car_Dbg2_EvtRecord(uint8_t event, uint8_t echo);   /* 定义在 dbg2 区, 前置声明 */
+
 /* 入队: 两个 ISR 上下文都会调, 关中断保护头指针与缓冲拷贝 */
 static uint8_t Car_TxEnqueue(uint8_t type, const uint8_t *payload, uint8_t plen)
 {
@@ -107,6 +109,7 @@ void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason)
 		p[i] = 0u;
 	}
 	(void)Car_TxEnqueue(FRAME_TYPE_DATA, p, 10u);
+	Car_Dbg2_EvtRecord(event, echo);
 }
 
 /* ---- 调试口观测记录 (USART2, 详 interurp.h) -------------------------------
@@ -116,11 +119,24 @@ static volatile struct
 {
 	uint16_t ack_cnt;
 	uint16_t nack_cnt;
+	uint16_t evt_cnt;
 	uint8_t  last_sub;
 	uint8_t  last_code;    /* ACK=status / NACK=reason */
+	uint8_t  last_evt;     /* EVT=事件码 */
+	uint8_t  last_evt_echo;
 	volatile uint8_t ack_fresh;
 	volatile uint8_t nack_fresh;
+	volatile uint8_t evt_fresh;
 	volatile uint8_t query_fresh;
+	volatile uint8_t periodic_fresh;   /* 调试口 'p': 翻转周期状态输出 */
+	/* 转台事件登记 + 台架命令寄存 */
+	uint8_t  tt_kind;                  /* 登记 kind: 0=停止 1=打码 2=微调 */
+	uint8_t  tt_code;                  /* 本次登记的码 */
+	float    tt_ang;                   /* 登记时刻目标角(deg) */
+	volatile uint8_t tt_fresh;
+	volatile uint8_t bench_fresh;
+	uint8_t  bench_kind;               /* 台架: 0=停转 1=+5° 2=-5° 3=直接打码 */
+	uint8_t  bench_arg;                /* bench_kind==3: 码 1~7 */
 } dbg2;
 
 /* 入队后的观测登记: ISR 与主循环双上下文都会调, 关中断保护计数字段 */
@@ -144,6 +160,29 @@ static void Car_Dbg2_Record(uint8_t ack, uint8_t sub, uint8_t code)
 	dbg2.last_sub = sub;
 	dbg2.last_code = code;
 	(void)n;
+	__enable_irq();
+}
+
+/* EVT 上行回显登记: 生产者 TIM4 ISR(Car_Event_Send), 消费者主循环 Car_DebugTask */
+static void Car_Dbg2_EvtRecord(uint8_t event, uint8_t echo)
+{
+	__disable_irq();
+	dbg2.last_evt = event;
+	dbg2.last_evt_echo = echo;
+	dbg2.evt_cnt++;
+	dbg2.evt_fresh = 1u;
+	__enable_irq();
+}
+
+/* TT 转台事件登记(kind: 0=停止 1=打码 2=微调)。生产者: TIM4 ISR(Nav_Turntable/
+ * Nav_DoStop)与主循环台架命令, 消费者 Car_DebugTask */
+void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg)
+{
+	__disable_irq();
+	dbg2.tt_kind  = kind;
+	dbg2.tt_code  = code;
+	dbg2.tt_ang   = angle_deg;
+	dbg2.tt_fresh = 1u;
 	__enable_irq();
 }
 
@@ -368,7 +407,32 @@ void Uart2_task()
 		if (Rxbuffer2[i] == '?')
 		{
 			dbg2.query_fresh = 1u;
-			break;
+		}
+		else if (Rxbuffer2[i] == 'p')
+		{
+			dbg2.periodic_fresh = 1u;   /* 翻转 1Hz 周期状态输出开关 */
+		}
+		/* 台架直转命令: ISR 只置标志, 命令执行/打印全在 Car_DebugTask 主循环 */
+		else if (Rxbuffer2[i] == 'x')
+		{
+			dbg2.bench_kind = 0u;
+			dbg2.bench_fresh = 1u;
+		}
+		else if (Rxbuffer2[i] == 'w')
+		{
+			dbg2.bench_kind = 1u;
+			dbg2.bench_fresh = 1u;
+		}
+		else if (Rxbuffer2[i] == 'e')
+		{
+			dbg2.bench_kind = 2u;
+			dbg2.bench_fresh = 1u;
+		}
+		else if ((Rxbuffer2[i] >= '1') && (Rxbuffer2[i] <= '7'))
+		{
+			dbg2.bench_kind = 3u;
+			dbg2.bench_arg = (uint8_t)(Rxbuffer2[i] - '0');
+			dbg2.bench_fresh = 1u;
 		}
 	}
 }
@@ -378,22 +442,36 @@ void Uart2_task()
  * 查询回两行: 调度状态(NAV/TRK/误差) + 里程位姿, 详见 Car_Debug_Snapshot */
 void Car_DebugTask(void)
 {
-	uint8_t  nav_state, nav_id, seg_done, trk_state;
-	uint16_t seg_idx;
-	int16_t  err_f10k;
-	float    x_m, y_m, yaw_deg;
-	uint16_t ack_n, nack_n;
-	uint8_t  sub, code;
-	uint8_t  ack_f = 0u, nack_f = 0u, query_f = 0u;
+	static uint32_t stat_last_tick = 0u;
+	static uint8_t  periodic_en = 0u;
+	uint32_t now;
+	uint16_t ack_n, nack_n, evt_n;
+	uint8_t  sub, code, evt, evt_echo;
+	uint8_t  tt_kind, tt_code, bench_kind, bench_arg;
+	float    tt_ang;
+	uint8_t  ack_f = 0u, nack_f = 0u, evt_f = 0u, query_f = 0u, periodic_f = 0u;
+	uint8_t  tt_f = 0u, bench_f = 0u;
 
 	__disable_irq();
 	ack_n  = dbg2.ack_cnt;
 	nack_n = dbg2.nack_cnt;
+	evt_n  = dbg2.evt_cnt;
 	sub    = dbg2.last_sub;
 	code   = dbg2.last_code;
-	if (dbg2.ack_fresh != 0u)   { dbg2.ack_fresh = 0u;   ack_f = 1u; }
-	if (dbg2.nack_fresh != 0u)  { dbg2.nack_fresh = 0u;  nack_f = 1u; }
-	if (dbg2.query_fresh != 0u) { dbg2.query_fresh = 0u; query_f = 1u; }
+	evt    = dbg2.last_evt;
+	evt_echo = dbg2.last_evt_echo;
+	tt_kind  = dbg2.tt_kind;
+	tt_code  = dbg2.tt_code;
+	bench_kind  = dbg2.bench_kind;
+	bench_arg   = dbg2.bench_arg;
+	tt_ang   = dbg2.tt_ang;
+	if (dbg2.ack_fresh != 0u)      { dbg2.ack_fresh = 0u;      ack_f = 1u; }
+	if (dbg2.nack_fresh != 0u)     { dbg2.nack_fresh = 0u;     nack_f = 1u; }
+	if (dbg2.evt_fresh != 0u)      { dbg2.evt_fresh = 0u;      evt_f = 1u; }
+	if (dbg2.query_fresh != 0u)    { dbg2.query_fresh = 0u;    query_f = 1u; }
+	if (dbg2.periodic_fresh != 0u) { dbg2.periodic_fresh = 0u; periodic_f = 1u; }
+	if (dbg2.tt_fresh != 0u)       { dbg2.tt_fresh = 0u;       tt_f = 1u; }
+	if (dbg2.bench_fresh != 0u)    { dbg2.bench_fresh = 0u;    bench_f = 1u; }
 	__enable_irq();
 
 	if (ack_f != 0u)
@@ -404,15 +482,63 @@ void Car_DebugTask(void)
 	{
 		printf("NACK:%02X/%02X #%u\r\n", sub, code, (unsigned)nack_n);
 	}
+	if (evt_f != 0u)   /* NAV_DONE/NAV_FAULT/TURN_DONE/TRACKING_DONE 上行回显 */
+	{
+		printf("EVT:%02X:%02X #%u\r\n", evt, evt_echo, (unsigned)evt_n);
+	}
+	if (tt_f != 0u)   /* 转台事件: 0=停止 1=收到协议码 2=台架微调 */
+	{
+		if (tt_kind == 0u)
+		{
+			printf("TT:STOP CODE=%u @%d\r\n", (unsigned)tt_code, (int)(tt_ang * 10.0f));
+		}
+		else if (tt_kind == 1u)
+		{
+			printf("TT:CODE=%u ARM=1 @%d\r\n", (unsigned)tt_code, (int)(tt_ang * 10.0f));
+		}
+		else
+		{
+			printf("TT:NUDGE @%d\r\n", (int)(tt_ang * 10.0f));
+		}
+	}
+	if (bench_f != 0u)   /* 台架直转执行(命令打印走 TT/WTBL 行) */
+	{
+		if (bench_kind == 0u)
+		{
+			Car_Turntable_BenchStop();
+		}
+		else if (bench_kind == 1u)
+		{
+			Car_Turntable_BenchNudge(5.0f);
+		}
+		else if (bench_kind == 2u)
+		{
+			Car_Turntable_BenchNudge(-5.0f);
+		}
+		else if ((bench_kind == 3u) && (bench_arg >= 1u) && (bench_arg <= 7u))
+		{
+			Car_Turntable_BenchCode(bench_arg);
+		}
+		dbg2.query_fresh = 1u;   /* 回一份完整状态块供 WTBL 核对 */
+	}
 	if (query_f != 0u)
 	{
-		(void)Car_Debug_Snapshot(&nav_state, &nav_id, &seg_idx, &seg_done,
-		                         &trk_state, &err_f10k, &x_m, &y_m, &yaw_deg);
-		printf("CHASSIS:NAV=%c ID=%02u SEG=%u/%u TRK=%c E=%d\r\n",
-		       "IRD"[nav_state & 0x03u], (unsigned)nav_id, (unsigned)seg_idx, (unsigned)seg_done,
-		       "IRL"[trk_state & 0x03u], err_f10k);
-		printf("POSE:%d %d %d\r\n",
-		       (int)(x_m * 1000.0f), (int)(y_m * 1000.0f), (int)(yaw_deg * 10.0f));
+		Car_Debug_Stat_Print();
+	}
+	if (periodic_f != 0u)   /* 'p': 翻转 1Hz 周期状态块, 翻转回执确认 */
+	{
+		periodic_en = (uint8_t)!periodic_en;
+		stat_last_tick = HAL_GetTick();
+		printf("PERIODIC:%u\r\n", (unsigned)periodic_en);
+	}
+	if (periodic_en != 0u)
+	{
+		now = HAL_GetTick();
+		if ((uint32_t)(now - stat_last_tick) >= 1000u)
+		{
+			stat_last_tick = now;
+			Car_Debug_Stat_Print();
+		}
 	}
 }
 void Uart6_task()

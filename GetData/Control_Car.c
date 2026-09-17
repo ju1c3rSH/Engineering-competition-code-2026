@@ -265,6 +265,7 @@ static void Nav_Turntable(uint8_t turn_code)
 	tt.busy = 1u;
 	tt.code = turn_code;
 	tt.ms = 0u;
+	Car_Dbg2_TtRecord(1u, turn_code, angle);
 }
 
 /* REQ_NAV 幂等: 同 id 进行中忽略 / 已完成补发 DONE / 其余停旧起新 */
@@ -317,6 +318,33 @@ static void Nav_DoStop(void)
 	tt_arm = 0u;
 	tt.busy = 0u;
 	Turntable_EmergencyStop();
+	Car_Dbg2_TtRecord(0u, tt.code, Car_data.Motor_Angle);
+}
+
+/* ---- 台架直转调试(USART2 'w'/'e'/'1'~'7'/'x', 经 Car_DebugTask 主循环执行):
+ * 绕过 UART4 协议与状态机, 单独验证 TIM5 重发 -> UART6 DMA -> 驱动器链路。
+ * 微调不置 tt.busy —— 台架期间不发 TURN_DONE 事件, 不会误喂 Brain 状态机 */
+void Car_Turntable_BenchNudge(float delta_deg)
+{
+	__disable_irq();
+	tt_arm = 0u;
+	Car_data.Motor_Angle += delta_deg;
+	tt_arm = 1u;
+	__enable_irq();
+	Car_Dbg2_TtRecord(2u, 0u, Car_data.Motor_Angle);
+}
+
+void Car_Turntable_BenchCode(uint8_t turn_code)
+{
+	Nav_Turntable(turn_code);   /* 走协议同款码表, 含 TT 事件登记 */
+}
+
+void Car_Turntable_BenchStop(void)
+{
+	tt_arm = 0u;
+	tt.busy = 0u;
+	Turntable_EmergencyStop();
+	Car_Dbg2_TtRecord(0u, tt.code, Car_data.Motor_Angle);
 }
 
 /* ---- 段内跟瞄: 段表不断, 段内叠加视觉航向修正 ---- */
@@ -661,29 +689,55 @@ void ResetHWT101(void)
 	HAL_UART_Transmit_DMA(&huart3, temp, 5);
 }
 
-/* 调试口状态快照(main 上下文 '?' 查询用): 关中断抓 nav/tracking/里程计字段,
- * 防 TIM4 写入中途读到混合值。仅用于调试显示, 单字级撕裂容忍, 不进控制路径 */
-void Car_Debug_Snapshot(uint8_t *nav_state, uint8_t *nav_id, uint16_t *seg_idx,
-                        uint8_t *seg_done, uint8_t *trk_state, int16_t *err_f10k,
-                        float *x_m, float *y_m, float *yaw_deg)
+/* USART2 调试口状态块/打印('?'/p 周期): main 上下文, 关中断抓 nav/tracking/wheel
+ * 快照防 TIM4 写入中途读到混合值。仅调试显示, 单字级撕裂容忍, 不进控制路径。
+ * 原 9 参 Car_Debug_Snapshot 一并内聚于此(printf 本身仍在 main 上下文) */
+void Car_Debug_Stat_Print(void)
 {
 	const mf_status_t *st;
 	const mf_pose_t *pose;
+	mf_ctx_t *m;
+
+	uint8_t  nav_state, nav_id, seg_done, trk_state, trk_found, tt_armed;
+	uint16_t seg_idx, trk_frame_age, trk_hold;
+	int16_t  err_f10k;
+	float    x_m, y_m, yaw_deg, wl_cmd, wl_spd, wr_cmd, wr_spd, tt_deg;
 
 	__disable_irq();
-	st = mf_get_status(mf_app());
-	pose = mf_get_pose(mf_app());
-	*nav_state = (uint8_t)nav.state;
-	*nav_id    = nav.nav_id;
-	*seg_idx   = st->seg_index;
-	*seg_done  = st->seg_done;
-	*trk_state = (uint8_t)tracking.state;
-	*err_f10k  = (int16_t)(tracking.horizontal_error_normalized
-	                       * TRACKING_ERROR_FIXED_SCALE);
-	*x_m    = pose->x_m;
-	*y_m    = pose->y_m;
-	*yaw_deg = pose->yaw_deg;
+	m = mf_app();
+	st = mf_get_status(m);
+	pose = mf_get_pose(m);
+	nav_state = nav.state;
+	nav_id    = nav.nav_id;
+	seg_idx   = st->seg_index;
+	seg_done  = st->seg_done;
+	trk_state = tracking.state;
+	trk_found = tracking.target_found_flag;
+	err_f10k  = (int16_t)(tracking.horizontal_error_normalized * TRACKING_ERROR_FIXED_SCALE);
+	trk_frame_age = tracking.frame_age_ms;
+	trk_hold  = tracking.hold_ms;
+	x_m    = pose->x_m;
+	y_m    = pose->y_m;
+	yaw_deg = pose->yaw_deg;
+	wl_cmd = m->wheel[0].cmd_mps;   /* 框架轮序 0=左 1=右(CarSense_Output 同序) */
+	wl_spd = m->wheel[0].speed_mps;
+	wr_cmd = m->wheel[1].cmd_mps;
+	wr_spd = m->wheel[1].speed_mps;
+	tt_deg = Car_data.Motor_Angle;
+	tt_armed = tt_arm;
 	__enable_irq();
+
+	printf("CHASSIS:NAV=%c ID=%02u SEG=%u/%u TRK=%c E=%d F=%u AGE=%u HOLD=%u\r\n",
+	       "IRD"[nav_state & 0x03u], (unsigned)nav_id, (unsigned)seg_idx, (unsigned)seg_done,
+	       "IRL"[trk_state & 0x03u], err_f10k, (unsigned)trk_found,
+	       (unsigned)trk_frame_age, (unsigned)trk_hold);
+	printf("WHEEL:CL=%d SL=%d CR=%d SR=%d\r\n",
+	       (int)(wl_cmd * 1000.0f), (int)(wl_spd * 1000.0f),
+	       (int)(wr_cmd * 1000.0f), (int)(wr_spd * 1000.0f));
+	printf("POSE:%d %d %d\r\n",
+	       (int)(x_m * 1000.0f), (int)(y_m * 1000.0f), (int)(yaw_deg * 10.0f));
+	printf("WTBL:%d ARM=%u\r\n",
+	       (int)(tt_deg * 10.0f), (unsigned)tt_armed);
 }
 /* TIM5 100ms 转台重发(经 interurp.c 调用)。
  * tt_arm 门控: 上电后首条 TURNTABLE 命令前/急停后不下发——旧版上电即向
