@@ -516,11 +516,20 @@ void USART6_IRQHandler(void)
   /* USER CODE BEGIN USART6_IRQn 0 */
   if(__HAL_UART_GET_FLAG(&huart6, UART_FLAG_IDLE) != RESET)
   {
-      __HAL_UART_CLEAR_IDLEFLAG(&huart6); 
-      HAL_UART_DMAStop(&huart6);   
+      __HAL_UART_CLEAR_IDLEFLAG(&huart6);
+      /* TX 在途(Emm 位置帧 ~1.1ms)时 DMAStop 会连同停止 TX DMA → 线上出半帧,
+       * 驱动器收不到完整指令且 Emm_tx_fail_cnt 观测不到 —— 此分支只终止 RX */
+      if (huart6.gState == HAL_UART_STATE_BUSY_TX)
+      {
+          (void)HAL_DMA_Abort(huart6.hdmarx);
+      }
+      else
+      {
+          HAL_UART_DMAStop(&huart6);
+      }
       UART6_RX_STA = RXbuffer6_size - __HAL_DMA_GET_COUNTER(huart6.hdmarx);
       Uart6_task();
-      UART6_RX_STA |= 0X8000; 
+      UART6_RX_STA |= 0X8000;
 			memset(Rxbuffer6,0,RXbuffer6_size);
       RxRearm(&huart6, Rxbuffer6, RXbuffer6_size, 8u);
   }

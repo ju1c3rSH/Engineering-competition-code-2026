@@ -307,9 +307,18 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 static void Turntable_EmergencyStop(void)
 {
 	uint8_t stop_cmd[5] = {EMM_MOTOR_ADDR, 0xFEu, 0x98u, 0x00u, 0x6Bu};
+	uint8_t try_n;
 
-	HAL_UART_AbortTransmit(&huart6);
-	(void)HAL_UART_Transmit(&huart6, stop_cmd, sizeof(stop_cmd), 10u);
+	/* 在途 TX 被优先级更高的 TIM5 位置帧占用时首停必 HAL_BUSY: Abort+阻塞发送
+	 * 最多试 3 次(每次 abort 清 TX 锁), 仍失败只能放弃——电机会走到旧目标 */
+	for (try_n = 0u; try_n < 3u; try_n++)
+	{
+		HAL_UART_AbortTransmit(&huart6);
+		if (HAL_UART_Transmit(&huart6, stop_cmd, sizeof(stop_cmd), 10u) == HAL_OK)
+		{
+			break;
+		}
+	}
 }
 
 static void Nav_DoStop(void)
@@ -341,6 +350,7 @@ void Car_Turntable_BenchNudge(float delta_deg)
 void Car_Turntable_BenchCode(uint8_t turn_code)
 {
 	Nav_Turntable(turn_code);   /* 走协议同款码表, 含 TT 事件登记 */
+	tt.busy = 0u;               /* 台架不播出 TURN_DONE: 挂着链路时不误推进 Brain */
 }
 
 void Car_Turntable_BenchStop(void)
