@@ -52,4 +52,10 @@ void Emm_V5_Origin_Modify_Params(uint8_t addr, bool svF, uint8_t o_mode, uint8_t
 void Emm_V5_Origin_Trigger_Return(uint8_t addr, uint8_t o_mode, bool snF); // 发送命令触发回零
 void Emm_V5_Origin_Interrupt(uint8_t addr); // 强制中断并退出回零
 
+/* 台架观测计数(Emm_V5.c 定义, '?' 状态块回显): 区分"MCU 发出失败"与
+ * "驱动器收到(应答 0x11)/收不到" */
+extern volatile uint32_t Emm_tx_fail_cnt;   /* UART6 TX DMA 下发失败(HAL_BUSY 等) */
+extern volatile uint32_t Emm_reply_ok_cnt;  /* 首字节 0x11 应答帧计数 */
+extern volatile uint32_t Emm_rx_cnt;        /* USART6 应答字节总数(>0=Rx线通) */
+
 #endif

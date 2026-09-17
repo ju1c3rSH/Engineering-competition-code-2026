@@ -11,6 +11,14 @@
 **********************************************************/
 
 uint8_t rxb[20] = {0};
+/* 调试观测(转台台架): TX DMA 下发失败计数(旧实现忽略返回值, HAL_BUSY 静默吞帧)
+ * 、驱动器合法指令应答 0x11 计数 —— USART2 '?' 状态块回显, 区分"MCU 没发出去"
+ * 与"驱动器没收到/没应答" */
+volatile uint32_t Emm_tx_fail_cnt = 0u;
+volatile uint32_t Emm_reply_ok_cnt = 0u;
+
+/* Emm_V5 USART6 收发体力计数: RX 侧有新字节即数(张大头对 FD 位置帧回 0x11 应答) */
+volatile uint32_t Emm_rx_cnt = 0u;
 /**
   * @brief    将当前位置清零
   * @param    addr  ：电机地址
@@ -192,7 +200,10 @@ void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, ui
   rxb[12] =  0x6B;                      // 校验字节
   
   // 发送命令
-  HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 13);
+  if (HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 13) != HAL_OK)
+  {
+    Emm_tx_fail_cnt++;
+  }
 //  HAL_UART_Transmit(&huart1, (uint8_t *)rxb, 13 , 1000);
 }
 
