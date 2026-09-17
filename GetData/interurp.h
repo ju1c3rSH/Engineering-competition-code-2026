@@ -34,6 +34,7 @@ extern uint8_t Rxbuffer4_2[RXbuffer4_size];
 extern __IO uint16_t UART2_RX_STA;    /* stm32f4xx_it.c: 本次 IDLE 突发字节数(0x8000=完成) */
 extern __IO uint16_t UART3_RX_STA;    /* stm32f4xx_it.c: 本次 IDLE 突发字节数 */
 extern __IO uint16_t UART4_RX_STA;    /* stm32f4xx_it.c: 本次 IDLE 突发字节数 */
+extern __IO uint16_t UART6_RX_STA;    /* stm32f4xx_it.c: 张大头 USART6 IDLE 突发字节数 */
 
 
 

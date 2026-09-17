@@ -543,5 +543,18 @@ void Car_DebugTask(void)
 }
 void Uart6_task()
 {
-		//步进电机数据处理
+	//步进电机数据处理
+	/* 台架观测(USART2 '?' 回显): 统计 USART6 应答字节数与首字节 0x11
+	 * (张大头驱动器对合法 FD 位置帧回应答)——区分"MCU 发了但驱动器没收到"
+	 * 与"驱动器收到了已在动" */
+	uint8_t sta = (uint8_t)(UART6_RX_STA & 0x0FFFu);
+
+	if ((sta > 0u) && (sta <= RXbuffer6_size))
+	{
+		Emm_rx_cnt += sta;
+		if (Rxbuffer6[0] == 0x11u)
+		{
+			Emm_reply_ok_cnt++;
+		}
+	}
 }

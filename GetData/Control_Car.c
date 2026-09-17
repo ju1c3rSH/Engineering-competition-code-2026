@@ -738,6 +738,9 @@ void Car_Debug_Stat_Print(void)
 	       (int)(x_m * 1000.0f), (int)(y_m * 1000.0f), (int)(yaw_deg * 10.0f));
 	printf("WTBL:%d ARM=%u\r\n",
 	       (int)(tt_deg * 10.0f), (unsigned)tt_armed);
+	printf("EMM:TF=%u RX=%u OK=%u\r\n",   /* 转台台架: UART6 DMA 失败/RX 应答字节/0x11 应答帧 */
+	       (unsigned)Emm_tx_fail_cnt,
+	       (unsigned)Emm_rx_cnt, (unsigned)Emm_reply_ok_cnt);
 }
 /* TIM5 100ms 转台重发(经 interurp.c 调用)。
  * tt_arm 门控: 上电后首条 TURNTABLE 命令前/急停后不下发——旧版上电即向
