@@ -6,6 +6,10 @@
 Parameter_TypeDef_Car Car_data;
 Yaw_TypeDef Yaw_struct;
 
+/* 张大头驱动器命令地址: 实车电机设为 2(2026-09 台架核对), 改电机地址就翻这。
+ * 位置帧与急停帧都取此宏——场上曾因写死 1 而地址为 2 臂到驱动器全程静默 */
+#define EMM_MOTOR_ADDR   2u
+
 void Yaw_pid_Init()
 {
 	Yaw_struct.Yaw_pid.Kp                  = 0.15f;
@@ -302,7 +306,7 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
  * 电机走完该目标即停, 与旧行为相当 */
 static void Turntable_EmergencyStop(void)
 {
-	uint8_t stop_cmd[5] = {0x01u, 0xFEu, 0x98u, 0x00u, 0x6Bu};
+	uint8_t stop_cmd[5] = {EMM_MOTOR_ADDR, 0xFEu, 0x98u, 0x00u, 0x6Bu};
 
 	HAL_UART_AbortTransmit(&huart6);
 	(void)HAL_UART_Transmit(&huart6, stop_cmd, sizeof(stop_cmd), 10u);
@@ -760,5 +764,5 @@ void Emm_Pos_Control(void)
 	dir  = CW_OR_CCW;
 	tick = (uint32_t)(1208.888f * Car_data.Motor_Angle);
 	__enable_irq();
-	Emm_V5_Pos_Control(1, dir, 180, 20, tick, true, false);
+	Emm_V5_Pos_Control(EMM_MOTOR_ADDR, dir, 180, 20, tick, true, false);
 }
