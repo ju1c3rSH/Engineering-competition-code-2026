@@ -42,15 +42,15 @@ static const mf_seg_t tbl_qr[] =          /* NAV_TO_QR: flag0 出发首段 43(�
 static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: flag0~10 排爆区 */
 {
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(43.0f)),
-	SEG_ARC(MF_M_SPEED(Middle_speed),  TURN_RADIUS_M),   /* 左 90 (flag1) */
+	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),   /* 左 90 (flag1) */
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(12.0f)),
-	SEG_ARC(MF_M_SPEED(Middle_speed), -TURN_RADIUS_M),   /* 右 90 (flag2) */
+	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag2) */
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(46.0f)),
-	SEG_ARC(MF_M_SPEED(Middle_speed),  TURN_RADIUS_M),   /* 左 90 (flag4) */
+	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),   /* 左 90 (flag4) */
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(35.0f)),
-	SEG_ARC(MF_M_SPEED(Middle_speed), -TURN_RADIUS_M),   /* 右 90 (flag6) */
+	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag6) */
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(48.5f)),
-	SEG_ARC(MF_M_SPEED(Middle_speed), -TURN_RADIUS_M),   /* 右 90 (flag8) */
+	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag8) */
 	SEG_MOVE(MF_M_SPEED(Low_speed),    MF_M_DIST(45.5f)),
 	SEG_END
 };
@@ -67,7 +67,7 @@ static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 
 static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~16 人质区 */
 {
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(37.5f)),
-	SEG_ARC(MF_M_SPEED(Middle_speed), -TURN_RADIUS_M),   /* 右 90 (flag14) */
+	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag14) */
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(60.0f)),
 	SEG_END
 };

@@ -21,6 +21,13 @@
 #define MF_CHASSIS_TYPE     MF_CHASSIS_TRACK    
 #endif
 
+/* ================= 整车安装方向（前后颠倒）================= */
+/* 物理前进与框架正向相反时置为 -1.0f。前后颠倒 = 车体坐标系绕 z 轴旋转 180°，
+ * 等价于：vx 取反 + wz 保持 + 物理左右履带身份对调。 */
+#ifndef MF_CHASSIS_DIR_SIGN
+#define MF_CHASSIS_DIR_SIGN   (-1.0f)
+#endif
+
 /* ================= 电机指令模式 ================= */
 #define MF_MOTOR_PWM_DIR    0   /* 框架内做轮速闭环，输出 [-1,+1] 归一化 PWM（panzer 现状） */
 #define MF_MOTOR_SPEED_CMD  1   /* 驱动器自带闭环（如 Emm_V5 串口舵机电机），框架输出轮速 m/s */
