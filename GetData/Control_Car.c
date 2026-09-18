@@ -241,6 +241,14 @@ static struct
 } tt;
 static uint8_t CW_OR_CCW = 1;
 
+/* 位置当量: ticks/°。旧值 1208.888 按 435200 ticks/圈 假设计算, 但 2026-09-17
+ * 台架实测与此不符: 增量台架 `w`(MCU认为+5°=6044 ticks) 实转 90°, `7`(90°=
+ * 108800 ticks) 实转约 4.5 圈——驱动器实际计数域 ≈ 24178 ticks/圈, 即比例
+ * 18×。现按实测折算 1208.888÷18≈67.16。
+ * 精调方法: 转台回原点敲 `7`(目标90°), 标记+录像量实际转角 θ, 新系数 =
+ * 1208.888×90÷θ; 落角偏差>2° 时改这里重烧, 驱动器侧参数不改 */
+#define WTBL_TICK_PER_DEG   67.16f
+
 /* 转台定点角: 排爆/人质摆放距离一致, 惯导保证车位, 按码打固定角。
  * 对坑 1~3->123/90/57; 对桶 4~6->270/270/90(入桶摆位沿用实车验证值,
  * 坑3 反向 CW 到 90, 其余 CCW); 7 回正 90。
@@ -772,7 +780,7 @@ void Emm_Pos_Control(void)
 	}
 	__disable_irq();
 	dir  = CW_OR_CCW;
-	tick = (uint32_t)(1208.888f * Car_data.Motor_Angle);
+	tick = (uint32_t)(WTBL_TICK_PER_DEG * Car_data.Motor_Angle);
 	__enable_irq();
 	Emm_V5_Pos_Control(EMM_MOTOR_ADDR, dir, 180, 20, tick, true, false);
 }
