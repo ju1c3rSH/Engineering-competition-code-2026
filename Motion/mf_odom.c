@@ -24,37 +24,58 @@ void mf_odom_set_pose(mf_odom_t *o, float x, float y, float yaw)
 
 void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw)
 {
-    float ds, dyaw, yaw_mid, c, s;
+    float dL, dR, ds_enc, ds_for_xy;
+    float dtheta_enc_rad, dyaw_deg, dyaw_rad;
+    float yaw_mid, c, s;
 
-    /* 注意(标定项, 暂不改动): 履带转弯滑移使 (dL+dR)/2 系统性偏大于真实
-     * 车体位移, 弧线越多 x,y 漂移越大; 重锚伪路线只修 yaw 不修 x,y。
-     * 台架跑"直线 + 4x90度回环"闭合后, 在此对 ds 乘滑移修正系数(<1),
-     * 或弧线段改用 IMU 增量 dyaw 反解弧长 ds = |R| * |dyaw_rad| */
-    ds = (wheel[0].delta_m + wheel[1].delta_m) * 0.5f;
+    dL = wheel[0].delta_m;
+    dR = wheel[1].delta_m;
+    ds_enc = (dL + dR) * 0.5f;
 
-#if (MF_YAW_SOURCE == MF_YAW_SRC_IMU)
-    (void)o;    /* 等效轨距仅编码器航向兜底时使用 */
-    dyaw = mf_wrap_deg(imu_yaw - o->pose.yaw_deg);
-#else
-    (void)imu_yaw;
+    /* 编码器几何转角（rad）：对称打滑下它与真实转角只差一个公共系数 k，
+     * 而 ds_enc 同样被 k 放大，所以比值 R = ds_enc / dtheta_enc 不受 k 影响 */
     if (o->track_width_m > 0.0f)
     {
-        dyaw = (wheel[1].delta_m - wheel[0].delta_m) / o->track_width_m
-             * (180.0f / MF_PI_F);
+        dtheta_enc_rad = (dR - dL) / o->track_width_m;
     }
     else
     {
-        dyaw = 0.0f;
+        dtheta_enc_rad = 0.0f;
     }
-#endif
 
-    yaw_mid = o->pose.yaw_deg + dyaw * 0.5f;    /* 中点积分 */
+#if (MF_YAW_SOURCE == MF_YAW_SRC_IMU)
+    dyaw_deg = mf_wrap_deg(imu_yaw - o->pose.yaw_deg);
+#else
+    (void)imu_yaw;
+    dyaw_deg = dtheta_enc_rad * (180.0f / MF_PI_F);
+#endif
+    dyaw_rad = dyaw_deg * (MF_PI_F / 180.0f);
+
+    /* 弧长反解：
+     *   ds_true = R_enc × |dyaw_imu|
+     *           = ds_enc × (dyaw_rad / dtheta_enc_rad)
+     * 直线时 dtheta_enc 是编码器噪声级(≈1e-5 rad)，退化为原 ds_enc，不引入回归 */
+    if (fabsf(dtheta_enc_rad) > 1.0e-4f)
+    {
+        float ratio = dyaw_rad / dtheta_enc_rad;
+        /* 限幅：单侧空转/单边堵转时 ratio 会异常，别让 x/y 单拍跳变 */
+        if (ratio < 0.2f) ratio = 0.2f;
+        if (ratio > 5.0f) ratio = 5.0f;
+        ds_for_xy = ds_enc * ratio;
+    }
+    else
+    {
+        ds_for_xy = ds_enc;
+    }
+
+    /* 中点积分：用真实航向的中间值旋转本拍位移 */
+    yaw_mid = o->pose.yaw_deg + dyaw_deg * 0.5f;
     c = cosf(yaw_mid * (MF_PI_F / 180.0f));
     s = sinf(yaw_mid * (MF_PI_F / 180.0f));
 
-    o->pose.x_m += ds * c;
-    o->pose.y_m += ds * s;
-    o->pose.yaw_deg += dyaw;
+    o->pose.x_m += ds_for_xy * c;
+    o->pose.y_m += ds_for_xy * s;
+    o->pose.yaw_deg += dyaw_deg;
 }
 
 #elif (MF_CHASSIS_TYPE == MF_CHASSIS_MECANUM)
