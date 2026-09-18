@@ -154,7 +154,7 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
     err = mf_wrap_deg(((m->heading_deg == MF_KEEP) ? p->entry.yaw_deg
                                                    : m->heading_deg)
                       - pose->yaw_deg);
-    out->wz_dps = seg_wz_ramp(p, mf_pid_calc(p->pid_yaw, err, dt), dt);
+    out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
 
     /* 失控自保 (test/motion-tuning): 编码器/驱动符号矛盾时反馈为负, remain 沿
      * 正向滚出 3 倍目标距离 —— 强制结束本段, 防正反馈无限狂转(实测 BOR 死机工况) */
@@ -199,7 +199,7 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
     yaw_sp = p->entry.yaw_deg
            + (p->dist_accum / a->radius_m) * (180.0f / MF_PI_F);
     err = mf_wrap_deg(yaw_sp - pose->yaw_deg);
-    out->wz_dps = seg_wz_ramp(p, mf_pid_calc(p->pid_yaw, err, dt), dt);
+    out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
 
     return (uint8_t)(remain_yaw <= MF_TOL_ARRIVE_DEG);
 }
