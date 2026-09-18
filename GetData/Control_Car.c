@@ -785,3 +785,35 @@ void Emm_Pos_Control(void)
 	__enable_irq();
 	Emm_V5_Pos_Control(EMM_MOTOR_ADDR, dir, 180, 20, tick, true, false);
 }
+
+/**
+ * @brief 配置 HWT101 输出速率为 200Hz
+ * @note  配置会保存到 IMU 内部 Flash，后续上电无需重复配置。
+ *        建议仅在首次使用或 IMU 恢复出厂设置后调用一次。
+ */
+void ConfigHWT101(void)
+{
+    /* 1. 解锁寄存器 (进入配置模式) */
+    static uint8_t unlock_cmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5};
+    if (huart3.gState != HAL_UART_STATE_READY) {
+        HAL_Delay(10);
+    }
+    HAL_UART_Transmit_DMA(&huart3, unlock_cmd, 5);
+    HAL_Delay(100);  /* 等待 IMU 进入配置模式 */
+
+    /* 2. 设置输出速率为 200Hz (寄存器 RRATE, 值 0x05) */
+    static uint8_t set_200hz_cmd[] = {0xFF, 0xAA, 0x69, 0x05, 0x00};
+    if (huart3.gState != HAL_UART_STATE_READY) {
+        HAL_Delay(10);
+    }
+    HAL_UART_Transmit_DMA(&huart3, set_200hz_cmd, 5);
+    HAL_Delay(100);  /* 等待寄存器写入完成 */
+
+    /* 3. 保存配置并重启 IMU */
+    static uint8_t save_cmd[] = {0xFF, 0xAA, 0x00, 0x00, 0x00};
+    if (huart3.gState != HAL_UART_STATE_READY) {
+        HAL_Delay(10);
+    }
+    HAL_UART_Transmit_DMA(&huart3, save_cmd, 5);
+    HAL_Delay(500);  /* 等待 IMU 保存并重启 */
+}

@@ -112,9 +112,12 @@ int main(void)
     extern void Fault_Boot_Report(void);   /* stm32f4xx_it.c: 读 RTC 复位源 + 上次 HardFault 现场 */
     Fault_Boot_Report();
   }
+  
 	Yaw_pid_Init();
-	Motor_Init();
-	ResetHWT101();
+  Motor_Init();
+	ConfigHWT101();       
+  HAL_Delay(500);
+  ResetHWT101();
 	HAL_Delay(2000);
 	HAL_TIM_Base_Start_IT(&GAP_TIM);		
 	HAL_TIM_Base_Start_IT(&htim5);
