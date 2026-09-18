@@ -199,7 +199,12 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
     yaw_sp = p->entry.yaw_deg
            + (p->dist_accum / a->radius_m) * (180.0f / MF_PI_F);
     err = mf_wrap_deg(yaw_sp - pose->yaw_deg);
-    out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
+    /* 曲率前馈 wz_ff = v/R(带符号 radius, 左转+/右转-): 稳态角速度开环直给,
+     * PID 不再靠误差积累(纯P需滞后~3.6°才出稳态差速=进弯晚的根因), 只修打滑残差;
+     * 速度源用 cur_speed(斜坡后实际值), 起步/减速前馈自动缩放。
+     * 注意: 勿套 seg_wz_ramp —— 进弯缓起 = 进弯前固定多走直线(实测 10~30cm, ac83518) */
+    out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt)
+                + (p->cur_speed / a->radius_m) * (180.0f / MF_PI_F);
 
     return (uint8_t)(remain_yaw <= MF_TOL_ARRIVE_DEG);
 }
