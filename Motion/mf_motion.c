@@ -18,7 +18,7 @@ void mf_init(mf_ctx_t *m, const mf_cfg_t *cfg)
     m->pose.x_m = 0.0f;
     m->pose.y_m = 0.0f;
     m->pose.yaw_deg = 0.0f;
-
+    
     for (i = 0; i < MF_WHEEL_MAX; i++)
     {
         m->wheel[i].dist_m = 0.0f;
@@ -225,6 +225,7 @@ void mf_tick(mf_ctx_t *m, const mf_state_in_t *in)
     if (m->mode == MF_MODE_PATH)
     {
         ds_body = (m->wheel[0].delta_m + m->wheel[1].delta_m) * 0.5f;
+        // ds_body = m->odom.last_ds_for_xy; 这个不稳定
         mf_path_tick(&m->path, &m->pose, ds_body, dt, &m->cmd);
     }
     else

@@ -66,7 +66,7 @@
 #define MF_TOL_DIST_M       0.02f    /* 2cm */
 #endif
 #ifndef MF_TOL_YAW_DEG
-#define MF_TOL_YAW_DEG      2.0f
+#define MF_TOL_YAW_DEG      1.0f
 #endif
 
 /* 到位余量: 行程/航向类判据带小余量收口, 避免减速末端里程量化导致永远差一点 */

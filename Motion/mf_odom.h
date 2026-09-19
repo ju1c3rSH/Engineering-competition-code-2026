@@ -18,6 +18,7 @@ typedef struct
     float track_width_m;    /* 差速/履带：等效轨距（左右轮距）；麦轮不用 */
     float half_length_m;    /* 麦轮几何参数：半车长 */
     float half_width_m;     /* 麦轮几何参数：半车宽 */
+    float last_ds_for_xy;   /* 本拍反解后实际用于 x/y 的位移 */
 } mf_odom_t;
 
 void mf_odom_init(mf_odom_t *o, float track_width_m,

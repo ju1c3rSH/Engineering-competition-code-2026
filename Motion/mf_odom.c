@@ -11,6 +11,7 @@ void mf_odom_init(mf_odom_t *o, float track_width_m,
     o->track_width_m = track_width_m;
     o->half_length_m = half_length_m;
     o->half_width_m = half_width_m;
+    o->last_ds_for_xy = 0.0f;
 }
 
 void mf_odom_set_pose(mf_odom_t *o, float x, float y, float yaw)
@@ -51,25 +52,25 @@ void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw)
 #endif
     dyaw_rad = dyaw_deg * (MF_PI_F / 180.0f);
 
-    /* 弧长反解：
-     *   ds_true = R_enc × |dyaw_imu|
-     *           = ds_enc × (dyaw_rad / dtheta_enc_rad)
-     * 直线时 dtheta_enc 是编码器噪声级(≈1e-5 rad)，退化为原 ds_enc，不引入回归 */
-    if (fabsf(dyaw_deg) < 0.05f)
+    /* 弧长反解：ds_true = R_enc × |dyaw_imu| = ds_enc × (dyaw_rad / dtheta_enc_rad)
+     * 双阈值交叉确认: IMU 和编码器必须都“看见”明显转角才启用反解,
+     * 任一在噪声级(直线振动/IMU 振铃) → 退回编码器 */
+    if ((fabsf(dyaw_deg) < 0.15f) || (fabsf(dtheta_enc_rad) < 1.0e-3f))
     {
-        ds_for_xy = ds_enc;                              /* IMU侧检测是直线 */
-    }
-    else if (fabsf(dtheta_enc_rad) > 1.0e-4f)
-    {
-        float ratio = dyaw_rad / dtheta_enc_rad;
-        /* 限幅：单侧空转/单边堵转时 ratio 会异常，别让 x/y 单拍跳变 */
-        if (ratio < 0.5f) ratio = 0.5f;
-        if (ratio > 2.0f) ratio = 2.0f;
-        ds_for_xy = ds_enc * ratio;
+        ds_for_xy = ds_enc;
     }
     else
     {
-        ds_for_xy = ds_enc;                              /* IMU 说转弯但编码器看不见 → 打滑，退回 */
+        float ratio = dyaw_rad / dtheta_enc_rad;
+        /* 物理约束：ratio ≤ 1（打滑只会让编码器高估转角） */
+        if ((ratio < 0.5f) || (ratio > 1.1f))
+        {
+            ds_for_xy = ds_enc;    /* 越界 → 退回编码器 */
+        }
+        else
+        {
+            ds_for_xy = ds_enc * ratio;
+        }
     }
 
     /* 中点积分：用真实航向的中间值旋转本拍位移 */
@@ -80,6 +81,7 @@ void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw)
     o->pose.x_m += ds_for_xy * c;
     o->pose.y_m += ds_for_xy * s;
     o->pose.yaw_deg += dyaw_deg;
+    o->last_ds_for_xy = ds_for_xy;
 }
 
 #elif (MF_CHASSIS_TYPE == MF_CHASSIS_MECANUM)
@@ -121,6 +123,7 @@ void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw)
     o->pose.x_m += dx_b * c - dy_b * s;
     o->pose.y_m += dx_b * s + dy_b * c;
     o->pose.yaw_deg += dyaw;
+    o->last_ds_for_xy = dx_b;
 }
 
 #endif /* MF_CHASSIS_TYPE */
