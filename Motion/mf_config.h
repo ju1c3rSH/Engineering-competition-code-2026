@@ -74,7 +74,7 @@
 #define MF_TOL_ARRIVE_M     0.008f   /* 8mm */
 #endif
 #ifndef MF_TOL_ARRIVE_DEG
-#define MF_TOL_ARRIVE_DEG   2.0f
+#define MF_TOL_ARRIVE_DEG   1.0f
 #endif
 
 /* 转向/收尾到位驻留: |err|<tol 需连续保持此时长才算到位(防高速穿越误判) */
