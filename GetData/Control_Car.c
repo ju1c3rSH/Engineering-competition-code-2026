@@ -637,7 +637,10 @@ void mf_app_init(void)
 {
 	static const mf_cfg_t cfg =
 	{
-		.track_width_m = 0.18f,          /* 履带中心距 250mm 实测(motion.h) */
+		/* 等效轨距: 须按 Motion/README.md 原地转 90° 标定(编码器差分航向对齐 IMU)。
+		 * 旧注 250mm 是几何中心距, 与标定值不等价; 本值同时是弧长反解的基准,
+		 * 偏大 → 转弯里程等比偏大, 偏小 → 转弯里程等比偏小(mf_odom.c) */
+		.track_width_m = 0.25f,
 		.half_length_m = 0.0f,
 		.half_width_m  = 0.0f,
 		.max_vx_mps    = 1.5f,           /* 覆盖 High_speed 1.41m/s */
@@ -764,6 +767,43 @@ void Car_Debug_Stat_Print(void)
 	printf("EMM:TF=%u RX=%u OK=%u\r\n",   /* 转台台架: UART6 DMA 失败/RX 应答字节/0x11 应答帧 */
 	       (unsigned)Emm_tx_fail_cnt,
 	       (unsigned)Emm_rx_cnt, (unsigned)Emm_reply_ok_cnt);
+}
+
+/* 段切换观测(替代原 mf_path.c 库层内的 printf): 库层打印 + 经 mf_tick 在
+ * TIM4 ISR 内阻塞发送(每字符 HAL_UART_Transmit 带 10ms 超时)是双违规。
+ * 主循环远快于 10ms 控制拍, seg_index 一变即打出, 时效等价; 若要精确落点
+ * 用 'p' 周期状态块的 POSE 行。ST: 0=IDLE 1=RUN 2=DONE */
+void Car_SegChange_Log(void)
+{
+	static uint16_t seg_last = 0xFFFFu;
+	static uint8_t  state_last = 0xFFu;
+	mf_ctx_t *m;
+	const mf_status_t *st;
+	const mf_pose_t *pose;
+	uint16_t seg_now;
+	uint8_t  state_now;
+	int32_t  x_mm, y_mm, yaw_d10;
+
+	m = mf_app();
+	__disable_irq();
+	st    = mf_get_status(m);
+	pose  = mf_get_pose(m);
+	seg_now   = st->seg_index;
+	state_now = (uint8_t)st->state;
+	x_mm   = (int32_t)(pose->x_m * 1000.0f);
+	y_mm   = (int32_t)(pose->y_m * 1000.0f);
+	yaw_d10 = (int32_t)(pose->yaw_deg * 10.0f);
+	__enable_irq();
+
+	if ((seg_now == seg_last) && (state_now == state_last))
+	{
+		return;
+	}
+	seg_last   = seg_now;
+	state_last = state_now;
+	printf("SEG:%u ST=%u X=%d Y=%d YAW=%d\r\n",
+	       (unsigned)seg_now, (unsigned)state_now,
+	       (int)x_mm, (int)y_mm, (int)yaw_d10);
 }
 /* TIM5 100ms 转台重发(经 interurp.c 调用)。
  * tt_arm 门控: 上电后首条 TURNTABLE 命令前/急停后不下发——旧版上电即向

@@ -52,8 +52,30 @@ void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw)
 #endif
     dyaw_rad = dyaw_deg * (MF_PI_F / 180.0f);
 
-    /* 回退纯编码器 */
-    ds_for_xy = ds_enc;
+    /* 弧长反解：
+     *   ds_true = R_enc × |dyaw_imu|
+     *           = ds_enc × (dyaw_rad / dtheta_enc_rad)
+     * 直线时 dtheta_enc 是编码器噪声级(≈1e-5 rad)，退化为原 ds_enc，不引入回归。
+     * 不可退回纯 ds_enc：履带转弯滑移使 (dL+dR)/2 系统性偏大于真实车体位移,
+     * 弧线越多 x,y 累计漂移越大——本段是修 x/y 累计里程的唯一手段。
+     * 本值只喂 pose.x/y; 路径段进度仍用 mf_motion.c 的轮速均值(要求平稳不抖),
+     * 两者不可互换。基准 track_width_m 偏大会等比放大转弯里程(见 mf_app_init) */
+    if (fabsf(dyaw_deg) < 0.05f)
+    {
+        ds_for_xy = ds_enc;                              /* IMU侧检测是直线 */
+    }
+    else if (fabsf(dtheta_enc_rad) > 1.0e-4f)
+    {
+        float ratio = dyaw_rad / dtheta_enc_rad;
+        /* 限幅：单侧空转/单边堵转时 ratio 会异常，别让 x/y 单拍跳变 */
+        if (ratio < 0.5f) ratio = 0.5f;
+        if (ratio > 2.0f) ratio = 2.0f;
+        ds_for_xy = ds_enc * ratio;
+    }
+    else
+    {
+        ds_for_xy = ds_enc;                              /* IMU 说转弯但编码器看不见 → 打滑，退回 */
+    }
 
     /* 中点积分：用真实航向的中间值旋转本拍位移 */
     yaw_mid = o->pose.yaw_deg + dyaw_deg * 0.5f;

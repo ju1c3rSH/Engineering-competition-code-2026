@@ -540,6 +540,7 @@ void Car_DebugTask(void)
 			Car_Debug_Stat_Print();
 		}
 	}
+	Car_SegChange_Log();   /* 段切换: 变化才打, 主循环上下文(唯一 printf 点) */
 }
 void Uart6_task()
 {

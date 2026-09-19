@@ -115,6 +115,7 @@ extern Parameter_TypeDef_Car Car_data;
 void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);  /* interurp.c */
 
 void Car_Debug_Stat_Print(void);   /*'. '?'/p 周期: 四行状态块(CHASSIS/WHEEL/POSE/WTBL) */
+void Car_SegChange_Log(void);      /* 主循环: seg_index/state 变化时打一行 SEG(原库层 ISR printf) */
 
 /* 台架直转(USART2 'w'/'e'/'1'~'7'/'x', Car_DebugTask 主循环执行): 微调不报
  * TURN_DONE, 打码走协议码表 */
