@@ -1,7 +1,7 @@
 ﻿#include "mf_path.h"
 #include "mf_math.h"
 #include <math.h>
-
+#include <stdio.h> 
 static float seg_next_entry_speed(const mf_path_ctx_t *p);
 
 void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
@@ -218,6 +218,7 @@ static uint8_t seg_turn(mf_path_ctx_t *p, const mf_seg_t *s,
                         const mf_pose_t *pose, float dt,
                         mf_body_cmd_t *out)
 {
+    uint8_t done; 
     const mf_turn_t *t = &s->p.turn;
     float target = (s->type == MF_SEG_TURN_TO) ? t->yaw_deg
                    : p->entry.yaw_deg + t->yaw_deg;
@@ -230,7 +231,15 @@ static uint8_t seg_turn(mf_path_ctx_t *p, const mf_seg_t *s,
                                          ? t->w_max_dps : 1e9f);
     out->wz_dps = seg_wz_ramp(p, out->wz_dps, dt);
 
-    return seg_dwell_reached(p, err, seg_tol_yaw(s), dt);
+    done = seg_dwell_reached(p, err, seg_tol_yaw(s), dt);
+    if (done != 0u)
+        {
+            printf("TURN DONE: tgt=%.2f yaw=%.2f err=%.2f\n",
+                   target, pose->yaw_deg, err);
+        }
+
+    return done;
+    
 }
 
 /* 点到点：方位角 P 转向 + 距离 P 前进，到位后按声明收尾转向
@@ -368,6 +377,15 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
         {
             mf_pid_reset(p->pid_yaw);
             mf_pid_reset(p->pid_point_v);
+        }
+
+        if (s->type == MF_SEG_MOVE_DIST)
+        {
+            printf("MOVE_ENTER seg=%u heading=%.2f yaw=%.2f\n",
+                (unsigned)p->idx,
+                (s->p.move_dist.heading_deg == MF_KEEP) ? pose->yaw_deg
+                                                        : s->p.move_dist.heading_deg,
+                pose->yaw_deg);
         }
     }
 
