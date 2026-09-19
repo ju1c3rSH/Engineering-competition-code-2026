@@ -637,7 +637,7 @@ void mf_app_init(void)
 {
 	static const mf_cfg_t cfg =
 	{
-		.track_width_m = 0.25f,          /* 履带中心距 250mm 实测(motion.h) */
+		.track_width_m = 0.18f,          /* 履带中心距 250mm 实测(motion.h) */
 		.half_length_m = 0.0f,
 		.half_width_m  = 0.0f,
 		.max_vx_mps    = 1.5f,           /* 覆盖 High_speed 1.41m/s */
