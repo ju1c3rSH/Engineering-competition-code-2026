@@ -52,26 +52,8 @@ void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw)
 #endif
     dyaw_rad = dyaw_deg * (MF_PI_F / 180.0f);
 
-    /* 弧长反解：ds_true = R_enc × |dyaw_imu| = ds_enc × (dyaw_rad / dtheta_enc_rad)
-     * 双阈值交叉确认: IMU 和编码器必须都“看见”明显转角才启用反解,
-     * 任一在噪声级(直线振动/IMU 振铃) → 退回编码器 */
-    if ((fabsf(dyaw_deg) < 0.15f) || (fabsf(dtheta_enc_rad) < 1.0e-3f))
-    {
-        ds_for_xy = ds_enc;
-    }
-    else
-    {
-        float ratio = dyaw_rad / dtheta_enc_rad;
-        /* 物理约束：ratio ≤ 1（打滑只会让编码器高估转角） */
-        if ((ratio < 0.5f) || (ratio > 1.1f))
-        {
-            ds_for_xy = ds_enc;    /* 越界 → 退回编码器 */
-        }
-        else
-        {
-            ds_for_xy = ds_enc * ratio;
-        }
-    }
+    /* 回退纯编码器 */
+    ds_for_xy = ds_enc;
 
     /* 中点积分：用真实航向的中间值旋转本拍位移 */
     yaw_mid = o->pose.yaw_deg + dyaw_deg * 0.5f;
