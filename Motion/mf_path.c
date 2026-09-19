@@ -2,6 +2,8 @@
 #include "mf_math.h"
 #include <math.h>
 
+static float seg_next_entry_speed(const mf_path_ctx_t *p);
+
 void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
 {
     p->path = 0;
@@ -124,23 +126,24 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
                              mf_body_cmd_t *out)
 {
     const mf_move_dist_t *m = &s->p.move_dist;
-    float dir, remain, acc, cruise, target, v_stop, err;
+    float dir, remain, acc, cruise, target, v_stop,v_next, err;
 
+    v_next = seg_next_entry_speed(p);
     dir = (m->dist_m >= 0.0f) ? 1.0f : -1.0f;
     remain = (m->dist_m - p->dist_accum) * dir;     /* 沿行进方向剩余行程 m */
     acc = (m->acc_mps2 > 0.0f) ? m->acc_mps2 : MF_DEFAULT_ACC;
     cruise = (m->speed_mps < 0.0f) ? -m->speed_mps : m->speed_mps;
     target = cruise;
 
-    if (seg_next_needs_stop(p))
+    if (v_next >= 0.0f)
     {
         if (remain > 0.0f)
         {
-            v_stop = sqrtf(2.0f * acc * remain);
+            v_stop = sqrtf(2.0f * acc * remain + v_next * v_next);
         }
         else
         {
-            v_stop = 0.0f;
+            v_stop = v_next; // 已经到位
         }
         if (v_stop < target)
         {
@@ -172,21 +175,22 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
                        mf_body_cmd_t *out)
 {
     const mf_arc_t *a = &s->p.arc;
-    float err, acc, target, v_stop, yaw_sp;
+    float err, acc, target, v_stop, v_next,yaw_sp;
     float yaw_done, remain_yaw, remain_m, radius_abs;
 
+    v_next = seg_next_entry_speed(p);
     acc = (a->acc_mps2 > 0.0f) ? a->acc_mps2 : MF_DEFAULT_ACC;
     yaw_done = pose->yaw_deg - p->entry.yaw_deg;
     remain_yaw = (a->d_yaw_deg - yaw_done)
                * ((a->d_yaw_deg >= 0.0f) ? 1.0f : -1.0f);  /* 剩余转角, 正=未走完 */
     target = (a->speed_mps < 0.0f) ? -a->speed_mps : a->speed_mps;
 
-    if (seg_next_needs_stop(p))
+    if (v_next >= 0.0f)
     {
-        radius_abs = (a->radius_m < 0.0f) ? -a->radius_m : a->radius_m;
+        radius_abs = fabsf(a->radius_m);
         remain_m = ((remain_yaw > 0.0f) ? remain_yaw : 0.0f)
                  * (MF_PI_F / 180.0f) * radius_abs;
-        v_stop = sqrtf(2.0f * acc * remain_m);
+        v_stop = sqrtf(2.0f * acc * remain_m + v_next * v_next);
         if (v_stop < target)
         {
             target = v_stop;
@@ -421,4 +425,33 @@ mf_path_state_t mf_path_get_state(const mf_path_ctx_t *p)
 uint16_t mf_path_get_seg_index(const mf_path_ctx_t *p)
 {
     return p->idx;
+}
+static float seg_next_entry_speed(const mf_path_ctx_t *p)
+{
+    const mf_seg_t *next;
+
+    if(p == NULL || p->path == NULL)
+    {
+        return -1.0f;
+
+    }
+    next = &p->path[p->idx + 1u];
+    switch(next->type)
+    {
+        case MF_SEG_MOVE_DIST: return fabsf(next->p.move_dist.speed_mps);
+        case MF_SEG_ARC:       return fabsf(next->p.arc.speed_mps);
+
+        case MF_SEG_TURN_TO:
+        case MF_SEG_TURN_REL:
+        case MF_SEG_WAIT:
+        case MF_SEG_END:
+            return 0.0f;
+
+        case MF_SEG_GOTO_XY:
+        case MF_SEG_GOTO_REL:
+        default:
+            /* GOTO 自带接近曲线(PID + seg_speed_ramp)，前一段不预设入口速度，
+            * 避免和 GOTO 内部叠加成"双段减速" */
+            return -1.0f;
+    }
 }

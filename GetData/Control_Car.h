@@ -123,6 +123,7 @@ void Car_Turntable_BenchCode(uint8_t turn_code);
 void Car_Turntable_BenchStop(void);
 void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg);  /* interurp.c */
 
+void ConfigHWT101(void);
 
 
 #endif

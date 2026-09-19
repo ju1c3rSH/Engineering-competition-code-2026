@@ -55,17 +55,21 @@ void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw)
      *   ds_true = R_enc × |dyaw_imu|
      *           = ds_enc × (dyaw_rad / dtheta_enc_rad)
      * 直线时 dtheta_enc 是编码器噪声级(≈1e-5 rad)，退化为原 ds_enc，不引入回归 */
-    if (fabsf(dtheta_enc_rad) > 1.0e-4f)
+    if (fabsf(dyaw_deg) < 0.05f)
+    {
+        ds_for_xy = ds_enc;                              /* IMU侧检测是直线 */
+    }
+    else if (fabsf(dtheta_enc_rad) > 1.0e-4f)
     {
         float ratio = dyaw_rad / dtheta_enc_rad;
         /* 限幅：单侧空转/单边堵转时 ratio 会异常，别让 x/y 单拍跳变 */
-        if (ratio < 0.2f) ratio = 0.2f;
-        if (ratio > 5.0f) ratio = 5.0f;
+        if (ratio < 0.5f) ratio = 0.5f;
+        if (ratio > 2.0f) ratio = 2.0f;
         ds_for_xy = ds_enc * ratio;
     }
     else
     {
-        ds_for_xy = ds_enc;
+        ds_for_xy = ds_enc;                              /* IMU 说转弯但编码器看不见 → 打滑，退回 */
     }
 
     /* 中点积分：用真实航向的中间值旋转本拍位移 */

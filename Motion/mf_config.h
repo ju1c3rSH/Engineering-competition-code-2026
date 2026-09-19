@@ -71,10 +71,10 @@
 
 /* 到位余量: 行程/航向类判据带小余量收口, 避免减速末端里程量化导致永远差一点 */
 #ifndef MF_TOL_ARRIVE_M
-#define MF_TOL_ARRIVE_M     0.002f   /* 2mm */
+#define MF_TOL_ARRIVE_M     0.008f   /* 8mm */
 #endif
 #ifndef MF_TOL_ARRIVE_DEG
-#define MF_TOL_ARRIVE_DEG   0.5f
+#define MF_TOL_ARRIVE_DEG   2.0f
 #endif
 
 /* 转向/收尾到位驻留: |err|<tol 需连续保持此时长才算到位(防高速穿越误判) */
