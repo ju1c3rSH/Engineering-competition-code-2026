@@ -565,6 +565,23 @@ void Car_DebugTask(void)
 			rt_done_printed = 1u;
 			printf("RT:FINISH %u/%u\r\n", (unsigned)rt_i, (unsigned)rt_n);
 		}
+
+		/* 停等漂移: 每次停等结束打一行, 单位 mm。
+		 * SEG=本段实际位移(对核对表)  PAUSE=停 3s 车体自己挪了多少(期望≈0)
+		 * TOT=全程白走累计(单向溜车会持续累加, 来回抖动会互相抵消) */
+		{
+			uint16_t pd_n;
+			float    sdx, sdy, pdx, pdy, tx, ty;
+
+			if (Car_RouteTest_Drift(&pd_n, &sdx, &sdy, &pdx, &pdy, &tx, &ty) != 0u)
+			{
+				printf("PD:%u SEG[%d,%d] PAUSE[%d,%d] TOT[%d,%d]\r\n",
+				       (unsigned)pd_n,
+				       (int)(sdx * 1000.0f), (int)(sdy * 1000.0f),
+				       (int)(pdx * 1000.0f), (int)(pdy * 1000.0f),
+				       (int)(tx  * 1000.0f), (int)(ty  * 1000.0f));
+			}
+		}
 	}
 #endif
 }

@@ -35,8 +35,21 @@ void Yaw_pid_Init()
 #define SEG_END         { .type = MF_SEG_END }
 
 /* 测试路线停等段(test/route): 每个运动段之后插一次, 停稳 3s 供现场读 POSE 查落点。
- * 段表侧 VAIT 的前一段会自动按抛物线减速到 0(seg_next_needs_stop 含 WAIT), 所以
+ * 段表侧 WAIT 的前一段会自动按抛物线减速到 0(seg_next_needs_stop 含 WAIT), 所以
  * "跑完一段→停三秒→继续"是段表原生语义, 无需上层干预。
+ *
+ * 【置 0 = 关闭停等】此时**完全不插 WAIT 段**(见 Nav_GearTable), 段表回到原版形态:
+ * 段间速度连续、每条 nav 只首末起步停车。用于 A/B 对比定位误差来源 ——
+ * 有/无停等各跑一遍, 终点位姿之差就是"每段停 3s"的净贡献。
+ *
+ * 【为何停等会改变里程累积】不是停等本身"算错", 而是它把整条路线的运动学剖面改了:
+ *   1) 起停次数 8 段×1 → 18 段×18, 每次起步的履带静摩擦打滑都不可复现
+ *   2) 段完成判据是 remain<=8mm(MF_TOL_ARRIVE_M), 此时车速还有 ~0.19m/s,
+ *      进 WAIT 段后靠斜坡减到 0 的这段滑行(~12mm)只进 pose、不进段进度 → 白走
+ *   3) WAIT 段 300 拍的位移全部不计入任何段的 dist_accum(见 mf_path_tick),
+ *      下一段从 0 重新计, 不会扣回去
+ *   现场用串口 PD: 行(SEG/PAUSE/TOT)可直接读出白走里程
+ *
  * 【配套约束】WAIT 段内车体静止, 里程 3s 无变化会撞上 NAV_STALL_MS(3000ms)
  * 堵转看门狗 —— 已由 Car_Nav_Task 里的 mf_is_waiting() 分支豁免。
  * 改这个时长或删掉豁免, 车会在每次停等结束时报 NAV_FAULT 并中途停车 */
@@ -180,7 +193,9 @@ static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed
 	uint8_t i, o;
 	float v;
 #if ROUTE_TEST_EN
+  #if (ROUTE_TEST_PAUSE_MS > 0u)
 	const mf_seg_t pause_seg = SEG_PAUSE;
+  #endif
 #else
 	if (speed_gear == 0u)
 	{
@@ -210,11 +225,16 @@ static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed
 		}
 		o++;
 #if ROUTE_TEST_EN
-		/* 运动段之后插停等; WAIT 段本身不再插(防表里已有 WAIT 时连停两次) */
+		/* 运动段之后插停等; WAIT 段本身不再插(防表里已有 WAIT 时连停两次)。
+		 * ROUTE_TEST_PAUSE_MS=0 时**完全不插** —— 段表回到原版形态(段间速度连续,
+		 * 只在本条 nav 的首末起步/停车), 用于 A/B 对比: 有停等 vs 无停等各跑一遍,
+		 * 终点偏差之差就是"每段停 3s"对路程累积的净贡献 */
+  #if (ROUTE_TEST_PAUSE_MS > 0u)
 		if ((src[i].type != MF_SEG_WAIT) && (o < NAV_GEAR_BUF_LEN))
 		{
 			buf[o++] = pause_seg;
 		}
+  #endif
 #endif
 	}
 	/* 缓冲耗尽时兜底收尾: 宁可截断也必须以 END 结束, 否则段表会越过缓冲读飞 */
@@ -336,17 +356,33 @@ static struct
 } tt;
 static uint8_t CW_OR_CCW = 1;
 /* 最近一次**实际下发**的脉冲数(仅台架标定位置当量用): '?' 的 WTBL 行 TICK= 回显。
- * 有了它就不用从"角度×67.16"去反推下发量, 直接在台架上用
+ * 有了它就不用从"角度×当量"去反推下发量, 直接在台架上用
  * 实测转角 θ 解出真当量: WTBL_TICK_PER_DEG_true = TICK / θ */
 static uint32_t tt_last_tick = 0u;
 
-/* 位置当量: ticks/°。旧值 1208.888 按 435200 ticks/圈 假设计算, 但 2026-09-17
- * 台架实测与此不符: 增量台架 `w`(MCU认为+5°=6044 ticks) 实转 90°, `7`(90°=
- * 108800 ticks) 实转约 4.5 圈——驱动器实际计数域 ≈ 24178 ticks/圈, 即比例
- * 18×。现按实测折算 1208.888÷18≈67.16。
- * 精调方法: 转台回原点敲 `7`(目标90°), 标记+录像量实际转角 θ, 新系数 =
- * 1208.888×90÷θ; 落角偏差>2° 时改这里重烧, 驱动器侧参数不改 */
-#define WTBL_TICK_PER_DEG   67.16f
+/* 位置当量: ticks/° = (每电机转脉冲数 × 减速比 N) / 360
+ *   - 每电机转脉冲数 = 200 步/转 × MStep:  MStep=16 → 3200;  MStep=256 → 51200。
+ *     **改 MStep 时当量同比变化**(16→256 即 ×16), 这是唯一必须跟着改的量。
+ *   - 减速比 N = 电机转 N 圈、转盘转 1 圈, 由机械决定, **改 MStep 不变**。
+ *   - vel/acc 的单位是 RPM(电机轴), 与 MStep 无关 —— 改细分不用动速度参数;
+ *     行程耗时只取决于 RPM 和角度, 所以 TURNTABLE_MS_PER_DEG / settle 也不用动。
+ *
+ * 现值 1208.888 = 51200 × 8.5 / 360 —— **2025 原工程(4f3ceb2)实车验证值**,
+ *   隐含 MStep=256 + 减速比 8.5。
+ * 旧值 67.16  = 3200 × 7.5556 / 360 —— 2026-09-17 台架在 **MStep=16** 下实测
+ *   (`w`(+5°=6044 ticks) 实转 90°、`7`(108800 ticks) 实转约 4.5 圈
+ *    → 实测计数域 ≈ 24178 ticks/转盘转)。
+ *   **两个值各自都成立, 只是对应不同 MStep**; 18× = 16(细分比) × 1.125
+ *   (减速比假设 8.5 与实测 7.5556 之差)。2026-09-20 把 MStep 由 16 改回 256
+ *   (项目初始配置), 当量随之回到 1208.888。
+ *
+ * ⚠ **一次实测就能判定取值对不对** —— 冷机上电敲 `7`(目标 90°), 量实际转角 θ:
+ *     θ ≈ 90°  → 减速比确为 8.5, 现值正确(当初那两次目测各偏约 12.5%)
+ *     θ ≈ 101° → 减速比其实是 7.5556, 应改回 **1074.56**(= 67.16 × 16)
+ *   万一当初 MStep 本就是 256(则当量该回到 67.16), 同样由 θ 暴露: θ ≈ 5.6°。
+ *   通用反算: 新系数 = 1208.888 × 90 / θ。落角偏差 >2° 时改这里重烧,
+ *   **驱动器侧参数不改**。 */
+#define WTBL_TICK_PER_DEG   1208.888f   /* MStep=256 + 减速比 8.5(2025 原工程实车值) */
 
 /* 上电零点对齐(转台"一条命令转好几圈"的根治)。
  * 现状问题: 转台是绝对定位(raF=true), 下发的是"驱动器脉冲计数域里的绝对目标",
@@ -498,6 +534,74 @@ static void RouteTest_OnNavDone(void)
 		return;
 	}
 	Nav_DoRequest(route_test_seq[rt_idx], ROUTE_TEST_GEAR);
+}
+
+/* ---- 停等漂移诊断(只测不改, 回答"停 3s 是不是在偷里程") ----
+ * 机制: odom 每拍无条件积分(mf_tick -> mf_odom_update, 与段型无关), 但段进度
+ * dist_accum 只在 MOVE/ARC 段累加 ds、且**进段那一拍刻意丢弃**。于是 WAIT 段
+ * 3 秒(300 拍)里车体任何挪动——减速尾巴、惯性滑行、坡道溜车、履带回弹、编码器
+ * 抖动——全部进了 pose.x/y, 一分都进不了 dist_accum, 成为"白走里程"。
+ * 下一段 MOVE 从 dist_accum=0 重新开始, 不会把它扣回去, 所以每段白走一点、
+ * 18 段线性叠加, 表现为终点"路程累积或多或少"。
+ * 本函数在 WAIT 段进/出沿各抓一次位姿:
+ *   SEG   = 本段起点(上次停等结束) -> 本次停等开始, 即该运动段实际走的位移
+ *   PAUSE = 停等期间车体自己挪了多少(白走里程, 期望≈0)
+ *   TOT   = 全程白走里程累加 */
+static uint8_t  pd_in_wait;                     /* 1=当前在 WAIT 段内(entry 已抓) */
+static uint8_t  pd_valid;                       /* 1=有一组新数据待主循环打印 */
+static uint16_t pd_seq;                         /* 停等序号 */
+static float    pd_entry_x, pd_entry_y;         /* WAIT 进段位姿 */
+static float    pd_seg_x,  pd_seg_y;            /* 本段起点(=上次停等结束位姿) */
+static float    pd_seg_dx, pd_seg_dy;           /* 本段实际位移 m */
+static float    pd_pau_dx, pd_pau_dy;           /* 停等期间位移 m */
+static float    pd_total_x, pd_total_y;         /* 白走里程累计(有符号分量 m):
+                                                 * 单向漂移会线性累加, 来回抖动会互相抵消,
+                                                 * 据此可区分"系统性溜车"与"随机抖动" */
+
+static void RouteTest_DriftSample(const mf_ctx_t *m)
+{
+	const mf_pose_t *p = mf_get_pose(m);
+
+	if (mf_is_waiting(m) != 0u)
+	{
+		if (pd_in_wait == 0u)               /* WAIT 进沿 */
+		{
+			pd_in_wait = 1u;
+			pd_entry_x = p->x_m;
+			pd_entry_y = p->y_m;
+			pd_seg_dx  = p->x_m - pd_seg_x; /* 本段实际位移 */
+			pd_seg_dy  = p->y_m - pd_seg_y;
+		}
+	}
+	else if (pd_in_wait != 0u)              /* WAIT 出沿 */
+	{
+		pd_in_wait = 0u;
+		pd_pau_dx  = p->x_m - pd_entry_x;   /* 停等白走 */
+		pd_pau_dy  = p->y_m - pd_entry_y;
+		pd_total_x += pd_pau_dx;            /* 有符号累加: 看漂移方向是否一致 */
+		pd_total_y += pd_pau_dy;
+		pd_seq++;
+		pd_valid   = 1u;
+		pd_seg_x   = p->x_m;                /* 下一段起点 */
+		pd_seg_y   = p->y_m;
+	}
+}
+
+/* 供调试口读取: 返回 1 表示有新数据; 读走后 pd_valid 自动清零 */
+uint8_t Car_RouteTest_Drift(uint16_t *seq, float *seg_dx, float *seg_dy,
+                            float *pau_dx, float *pau_dy,
+                            float *tot_x, float *tot_y)
+{
+	if (pd_valid == 0u) { return 0u; }
+	pd_valid = 0u;
+	if (seq != 0)    { *seq    = pd_seq; }
+	if (seg_dx != 0) { *seg_dx = pd_seg_dx; }
+	if (seg_dy != 0) { *seg_dy = pd_seg_dy; }
+	if (pau_dx != 0) { *pau_dx = pd_pau_dx; }
+	if (pau_dy != 0) { *pau_dy = pd_pau_dy; }
+	if (tot_x != 0)  { *tot_x  = pd_total_x; }
+	if (tot_y != 0)  { *tot_y  = pd_total_y; }
+	return 1u;
 }
 
 /* 上电起跑: main.c 在看门狗初始化之后调用一次, 相当于 Brain 发的第一条 REQ_NAV。
@@ -808,6 +912,11 @@ void Car_Nav_Task(void)
 	}
 
 	m = mf_app();
+#if ROUTE_TEST_EN
+	/* 停等漂移采样(只测不改)。必须放在 mf_is_done 分支**之前**: 最后一段的
+	 * WAIT 出沿与 path 置 DONE 同拍发生, 放后面会因提前 return 而漏采 */
+	RouteTest_DriftSample(m);
+#endif
 	if (mf_is_done(m))
 	{
 		nav.state = NAV_DONE;
@@ -1073,6 +1182,8 @@ void Emm_Pos_Control(void)
 	}
 	tick = (uint32_t)(WTBL_TICK_PER_DEG * deg);
 	tt_last_tick = tick;   /* 台架标定读数('?' 的 WTBL 行 TICK=) */
+	/* vel=180 / acc=20 都是**电机轴 RPM 口径**, 与 MStep 无关:
+	 * 改驱动器细分时只改 WTBL_TICK_PER_DEG, 这两个不用动(行程耗时只取决于 RPM 与角度) */
 	Emm_V5_Pos_Control(EMM_MOTOR_ADDR, dir, 180, 20, tick, true, false);
 }
 

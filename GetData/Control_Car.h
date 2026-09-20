@@ -99,6 +99,13 @@
  * 推进本身在 Car_Nav_Task 内部完成(跑完一条自动发下一条), 不需要外部干预 */
 void Car_RouteTest_BootStart(void);
 void Car_RouteTest_Progress(uint8_t *idx, uint8_t *total, uint8_t *finished);
+/* 停等漂移诊断(只测不改): 返回 1=有新数据(读走即清)。
+ * SEG   = 该运动段实际位移(m), 可与核对表的段设定值对表
+ * PAUSE = 停等 3s 期间车体自己挪了多少(m) —— 白走里程, 期望≈0
+ * TOT   = 全程白走里程有符号累计(m), 单向溜车会线性累加 */
+uint8_t Car_RouteTest_Drift(uint16_t *seq, float *seg_dx, float *seg_dy,
+                            float *pau_dx, float *pau_dy,
+                            float *tot_x, float *tot_y);
 #endif
 
 typedef struct
