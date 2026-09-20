@@ -34,16 +34,30 @@ void Yaw_pid_Init()
                           .p.turn = { (y), 0.0f } }
 #define SEG_END         { .type = MF_SEG_END }
 
-/* 测试路线停等段(test/route): 每个运动段之后插一次, 停稳 3s 供现场读 POSE 查落点。
- * 段表侧 WAIT 的前一段会自动按抛物线减速到 0(seg_next_needs_stop 含 WAIT), 所以
- * "跑完一段→停三秒→继续"是段表原生语义, 无需上层干预。
+/* 测试路线停等段(test/route): 默认**只在一张大段(=一条 nav 表)跑完后插一次**,
+ * 停稳 3s 供现场读 POSE 查落点。段表侧 WAIT 的前一段会自动按抛物线减速到 0
+ * (seg_next_entry_speed 对 WAIT 返回 0), 所以"跑完一条 nav -> 停三秒 -> 继续"
+ * 是段表原生语义, 无需上层干预。自测序列 1->6->2->3->4->7->5 共 6 张大段。
  *
- * 【置 0 = 关闭停等】此时**完全不插 WAIT 段**(见 Nav_GearTable), 段表回到原版形态:
- * 段间速度连续、每条 nav 只首末起步停车。用于 A/B 对比定位误差来源 ——
- * 有/无停等各跑一遍, 终点位姿之差就是"每段停 3s"的净贡献。
+ * 【为何只在大段末停】原策略每个运动段后都插停等, 全链 18 次起停; 而真机比赛时
+ * 底盘按 nav 命令逐条执行, 一条 nav(=一张表)内部**连续跑**, 只在表末因 MF_SEG_END
+ * 自然收到 0。两者执行剖面不同, 自测数据不能直接外推到比赛。改成大段末停后,
+ * 自测剖面 = 比赛剖面 + 每张大段末多停 3s, 起停 18 -> 6 次。
+ * 量化(build_verify/mf_path_test/speed_unify_sim.py, 模式 B(每段停) vs C(大段末停)):
+ *   白走里程(WAIT 段只进 pose、不进段进度的位移) 545.6 -> 153.6mm (无滑)
+ *                                              481.7 -> 153.6mm (打滑 15%)
+ *   再叠 MF_STOP_DECEL_SCALE=0.6:             158.9 -> 32.1mm (两档打滑同值)
+ *   全程耗时 41.6 -> 37.3s (无滑) / 43.3 -> 39.2s (打滑 15%)
+ * 注: 简化模型里终点位置偏差**不随起停次数单调变化**(各次白走方向不同、部分互相
+ * 抵消), 本改动的确定性收益是白走里程、起停次数(静摩擦打滑不可复现)、耗时, 以及
+ * "自测剖面与比赛剖面一致"这条可外推性。位置精度的主治项是标称航向 + 减速裕度。
+ *
+ * 【置 0 = 关闭停等】此时**完全不插 WAIT 段**, 段表回到原版形态(段间速度连续、
+ * 每条 nav 只首末起步停车), 即纯比赛剖面。用于 A/B 对比定位误差来源 ——
+ * 有/无停等各跑一遍, 终点位姿之差就是"停等 3s"的净贡献。
  *
  * 【为何停等会改变里程累积】不是停等本身"算错", 而是它把整条路线的运动学剖面改了:
- *   1) 起停次数 8 段×1 → 18 段×18, 每次起步的履带静摩擦打滑都不可复现
+ *   1) 每多一次起停, 就多一次不可复现的履带静摩擦打滑
  *   2) 段完成判据是 remain<=8mm(MF_TOL_ARRIVE_M), 此时车速还有 ~0.19m/s,
  *      进 WAIT 段后靠斜坡减到 0 的这段滑行(~12mm)只进 pose、不进段进度 → 白走
  *   3) WAIT 段 300 拍的位移全部不计入任何段的 dist_accum(见 mf_path_tick),
@@ -54,6 +68,10 @@ void Yaw_pid_Init()
  * 堵转看门狗 —— 已由 Car_Nav_Task 里的 mf_is_waiting() 分支豁免。
  * 改这个时长或删掉豁免, 车会在每次停等结束时报 NAV_FAULT 并中途停车 */
 #define ROUTE_TEST_PAUSE_MS  3000u
+
+/* 停等插桩粒度: 0 = 只在大段(nav 表)末尾插一次(默认, 与比赛剖面一致);
+ * 1 = 每个运动段后都插(旧策略), 仅作 A/B 对照 —— 起停 18 次, 白走里程约 3.5 倍 */
+#define ROUTE_TEST_PAUSE_EACH_SEG  0u
 #define SEG_WAIT_MS(ms) { .type = MF_SEG_WAIT, .reset_pid = 0, .p.wait = { (ms) } }
 #define SEG_PAUSE       SEG_WAIT_MS(ROUTE_TEST_PAUSE_MS)
 
@@ -131,9 +149,9 @@ static const mf_seg_t tbl_rebase_return[] = /* NAV_REBASE_RETURN: flag17 携人�
  *     推进到 3, 现场表现为"在排爆作业点不做停留"; 3 打靶区的段内跟瞄需 Brain 下发
  *     TRACKING_START, 自测不跟瞄, 只走段表直线。
  *
- * 【停 3s 在哪加的】不是这里 —— 由 Nav_GearTable() 在把段表拷进 RAM 时自动在每个
- * 运动段之后插一个 SEG_PAUSE(3s)。所以原版每张表一个字不改, 只在自测时展开成
- * "跑一段→停 3s" 的节奏; 空表(2)没有运动段, 自然不停。
+ * 【停 3s 在哪加的】不是这里 —— 由 Nav_GearTable() 在把段表拷进 RAM 时自动在**每张
+ * 大段(一条 nav 表)末尾**插一个 SEG_PAUSE(3s)。所以原版每张表一个字不改, 只在自测时
+ * 展开成"跑完一条 nav -> 停 3s"的节奏; 空表(2)没有运动段, 自然不停。
  * 【位姿连续性】跨 nav 只换段表指针, 里程计 odom 不重置, 故重锚段 6/7 的 TURN_TO
  * 绝对角仍依赖前面所有段的累积航向, 与真机一次跑完的基准一致 */
 static const uint8_t route_test_seq[] =
@@ -166,7 +184,8 @@ static const mf_seg_t *const nav_routes[CAR_NAV_ID_COUNT] =
 typedef char nav_route_count_check[(sizeof(nav_routes) / sizeof(nav_routes[0])) == CAR_NAV_ID_COUNT ? 1 : -1];
 
 #if ROUTE_TEST_EN
-#define NAV_GEAR_BUF_LEN 24u      /* 自测展开后最长: tbl_bomb 9 运动段 + 9 停等 + END = 19 */
+#define NAV_GEAR_BUF_LEN 24u      /* 最长 tbl_bomb 9 运动段: 大段末停态 9+1+END=11;
+                                   * 逐段停态(EACH_SEG=1) 9+9+END=19 —— 取 24 兼覆盖 */
 #else
 #define NAV_GEAR_BUF_LEN 12u      /* 最长表 tbl_bomb: 9 段 + END */
 #endif
@@ -183,9 +202,11 @@ static float Nav_GearSpeed(uint8_t speed_gear)
 }
 
 /* speed_gear 覆盖需改写段速度，拷入 RAM 缓冲后启动。
- * test/route: 拷的同时在每个运动段之后插一个 SEG_PAUSE(3s) —— 原版每张表不动,
- * 只在自测时展开成"跑一段→停 3s"。停等是段表原生语义(WAIT 前一段自动抛物线减速
- * 到 0), 所以"跑完一段停三秒再继续"不需要上层再造状态机 */
+ * test/route: 拷的同时在**每张大段(nav 表)末尾**插一个 SEG_PAUSE(3s) —— 原版每张表
+ * 一个字不动, 只在自测时展开成"跑完一条 nav -> 停 3s"。表内段间连续跑, 与真机比赛
+ * 逐条执行 nav 命令的剖面一致。停等是段表原生语义(WAIT 前一段自动抛物线减速到 0),
+ * 所以"跑完大段停三秒再继续"不需要上层再造状态机。
+ * ROUTE_TEST_PAUSE_EACH_SEG=1 可切回逐段停(仅 A/B 对照用) */
 static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed_gear)
 {
 	static mf_seg_t buf[NAV_GEAR_BUF_LEN];
@@ -224,25 +245,38 @@ static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed
 			}
 		}
 		o++;
-#if ROUTE_TEST_EN
-		/* 运动段之后插停等; WAIT 段本身不再插(防表里已有 WAIT 时连停两次)。
-		 * ROUTE_TEST_PAUSE_MS=0 时**完全不插** —— 段表回到原版形态(段间速度连续,
-		 * 只在本条 nav 的首末起步/停车), 用于 A/B 对比: 有停等 vs 无停等各跑一遍,
-		 * 终点偏差之差就是"每段停 3s"对路程累积的净贡献 */
-  #if (ROUTE_TEST_PAUSE_MS > 0u)
+#if ROUTE_TEST_EN && (ROUTE_TEST_PAUSE_MS > 0u)
+  #if ROUTE_TEST_PAUSE_EACH_SEG
+		/* 逐段停(旧策略, 仅 A/B 对照用): 每个运动段之后插停等; WAIT 段本身不再插
+		 * (防表里已有 WAIT 时连停两次) */
 		if ((src[i].type != MF_SEG_WAIT) && (o < NAV_GEAR_BUF_LEN))
+		{
+			buf[o++] = pause_seg;
+		}
+  #else
+		/* 默认: 只在本张大段(一条 nav 表)的**最后一个运动段**之后插一次停等 ——
+		 * 判据就是"下一项已经是 END"。表内段间连续跑, 与真机比赛逐条执行 nav 命令
+		 * 的剖面一致, 自测数据可直接外推。空表(如 2 NAV_TO_BUCKET)首项即 END,
+		 * 循环当场 break, 不会插入。
+		 * src[i] 非 END 时才取 src[i+1]; 每张表都以 END 收尾且长度远小于
+		 * NAV_GEAR_BUF_LEN, 所以 i+1 必在界内(再留一道边界判据兜底) */
+		if ((src[i].type != MF_SEG_WAIT)
+		    && ((i + 1u) < NAV_GEAR_BUF_LEN)
+		    && (src[i + 1u].type == MF_SEG_END)
+		    && (o < NAV_GEAR_BUF_LEN))
 		{
 			buf[o++] = pause_seg;
 		}
   #endif
 #endif
 	}
-	/* 缓冲耗尽时兜底收尾: 宁可截断也必须以 END 结束, 否则段表会越过缓冲读飞 */
+	/* 兜底收尾: 缓冲耗尽时截断, 宁可丢尾段也必须以 END 结束, 否则段表会越过缓冲
+	 * 读飞。正常路径下 buf[o] 是上面拷进来的 END, 这里重写是等价的 */
 	if (o >= NAV_GEAR_BUF_LEN)
 	{
 		o = (uint8_t)(NAV_GEAR_BUF_LEN - 1u);
-		buf[o].type = MF_SEG_END;
 	}
+	buf[o].type = MF_SEG_END;
 	return buf;
 }
 
