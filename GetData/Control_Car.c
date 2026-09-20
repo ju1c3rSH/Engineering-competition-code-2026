@@ -30,7 +30,13 @@ void Yaw_pid_Init()
                           .p.move_dist = { (v), (d), MF_KEEP, SEG_ACC_MPS2 } }
 #define SEG_ARC(v, r)   { .type = MF_SEG_ARC, .reset_pid = 1, \
                           .p.arc = { (v), (r), ((r) > 0.0f ? 90.0f : -90.0f), SEG_ACC_MPS2 } }
+/* 重锚转向的到位容差: 段默认 MF_TOL_YAW_DEG=1.0° 太松 —— 重锚角是后续所有段的
+ * 航向基准(见 NAV_REBASE_*_YAW_DEG 的说明), 1° 的欠账会被后面的长直线原样继承
+ * 并放大成几十 mm 横向偏差。实测 NAV_REBASE_RETURN 目标 -179.8°, 实际停在 -179.2°
+ * (欠 0.6°, 落在 1° 窗内就被判完成)。收紧到 0.5°: 驻留判据(100ms)不变, 噪声
+ * ±0.1° 仍可收敛。本宏只被两张重锚表使用, 不影响其它转向 */
 #define SEG_TURN_TO(y)  { .type = MF_SEG_TURN_TO, .reset_pid = 1, \
+                          .tol_yaw_deg = 0.5f, \
                           .p.turn = { (y), 0.0f } }
 #define SEG_END         { .type = MF_SEG_END }
 
@@ -1044,9 +1050,9 @@ void mf_app_init(void)
 		.max_vy_mps    = 0.0f,
 		.max_wz_dps    = 150.0f,         /* Middle 弧线稳态 57dps + 修正余量 */
 		.yaw_kp        = 16.0f,    /* 走直线蛇形修复: 外环降带宽匹配轮速内环(原32.4欠阻尼~1s极限环) */
-		.yaw_ki        = 0.0f,
+		.yaw_ki        = 2.0f,
 		.yaw_kd        = 0.8f,     /* 航向环加阻尼项, 抑制匀速直行左右摆 */
-		.yaw_i_max     = 0.0f,
+		.yaw_i_max     = 8.0f,
 		.yaw_out_max   = 172.8f,
 		.pv_kp         = 2.0f,
 		.wheel_kp      = 0.6f,     /* 蛇形修复: 0.3 内环响应过慢(全靠 I 慢爬);

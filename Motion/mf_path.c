@@ -62,9 +62,16 @@ void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path)
     p->dist_base_m = 0.0f;
     p->carry_link = 0u;
 #if MF_SEG_NOM_HEADING_EN
-    /* 标称航向重定基准: 首段进段时用当时的实测航向初始化, 之后纯几何累积。
-     * 整条路线重跑时不会沿用上次的累积值 */
+  #if MF_NOM_HEADING_PERSIST_EN
+    /* 标称航向跨 nav 表延续: **不清** 初始化标志, 让 nom_yaw 沿路线几何走,
+     * 只在 ARC(累加转角) / TURN_TO(绝对目标角) 推进。
+     * 旧行为是每张表首段用实测航向重新定锚 —— 那会把上一腿的终点残差写成下一腿
+     * 的基准(实测 ~0.25°/腿, 沿腿链累加成终点 ~1°)。详见 mf_config.h 的说明。
+     * 注意: 整条路线重跑(非本次)仍有 mf_path_init() 兜底清零 */
+  #else
+    /* 旧行为: 标称航向重定基准 —— 首段进段时用当时的实测航向初始化, 之后纯几何累积 */
     p->nom_yaw_init = 0u;
+  #endif
 #endif
 }
 
