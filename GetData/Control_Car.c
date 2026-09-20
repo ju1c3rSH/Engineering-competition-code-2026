@@ -500,12 +500,22 @@ static void RouteTest_OnNavDone(void)
 	Nav_DoRequest(route_test_seq[rt_idx], ROUTE_TEST_GEAR);
 }
 
-/* 上电起跑: main.c 在看门狗初始化之后调用一次, 相当于 Brain 发的第一条 REQ_NAV */
+/* 上电起跑: main.c 在看门狗初始化之后调用一次, 相当于 Brain 发的第一条 REQ_NAV。
+ *
+ * ⚠️ 必须**投递到命令信箱**, 不能直接调 Nav_DoRequest():
+ * 本函数在 while(1) 之前跑, 那时第一个 TIM4 中断(10ms)还没到, g_mf 尚未 mf_init;
+ * 同步调用 Nav_DoRequest 会把段表挂到未初始化的 mf 上, 随后 Car_Nav_Task 第一拍的
+ * mf_app_init() -> mf_init() -> mf_path_init() 把它连同 state 一起抹掉, 而 nav.state
+ * 已被置成 NAV_RUN —— 结果是 mf_is_done() 永假(IDLE≠DONE)、mf_tick 无输出、车一动
+ * 不动, 3s 后堵转看门狗报 NAV_FAULT 收场(连 NAV_DONE 都不发)。
+ * 走信箱则消费发生在 mf_app_init() 之后(见 Car_Nav_Task: 先 init 后 while(mail)),
+ * 顺序天然正确, 且与 Brain 下发命令的路径完全一致。
+ * 信箱深度 8, 这里单生产者只投一次; ISR 只改 mail_tail 不改 mail_head, 无竞争 */
 void Car_RouteTest_BootStart(void)
 {
 	rt_idx = 0u;
 	rt_finished = 0u;
-	Nav_DoRequest(route_test_seq[0], ROUTE_TEST_GEAR);
+	Car_Nav_MailPush(CAR_SUB_REQ_NAV, route_test_seq[0], ROUTE_TEST_GEAR);
 }
 
 /* 供调试口显示进度: idx=当前序列下标, total=序列长度, finished=是否已到返回区 */
