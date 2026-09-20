@@ -11,6 +11,15 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->pid_yaw = pid_yaw;
     p->pid_point_v = pid_point_v;
     p->started = 0;
+    p->arc_cx_m = 0.0f;
+    p->arc_cy_m = 0.0f;
+    p->arc_r_abs = 0.0f;
+    p->arc_sgn = 1.0f;
+    p->arc_ey_m = 0.0f;
+    p->arc_exit_ey_m = 0.0f;
+    p->arc_exit_yawerr_deg = 0.0f;
+    p->arc_exit_seg = 0u;
+    p->arc_exit_new = 0u;
 }
 
 void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path)
@@ -168,13 +177,22 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
 }
 
 /* 定半径弧线：航向目标按弧长推进，走够 d_yaw 完成（panzer 转弯的声明式版）
- * 下一段要求停稳时按剩余弧长抛物线减速, 段末速度≈0 */
+ * 下一段要求停稳时按剩余弧长抛物线减速, 段末速度≈0
+ *
+ * 航向设定值的来源是这段控制的关键（旧律在这里跑偏）：
+ *   旧律 = entry.yaw + dist_accum/R，而 dist_accum 是轮上位移均值，履带转弯时它
+ *   系统性大于真实车体位移(见 mf_odom.c)，于是设定的偏航速率比车体真能达到的快，
+ *   航向环只能多转，实际半径被压成 R/k —— 表现就是"弧线往里切、越跑越偏"。
+ *   现在设定值取"名义切线航向"= 圆心→车体方位角 + sgn·90°，它由里程计位置推出；
+ *   位置积分用的是 ds_for_xy(已按 IMU/编码器比值修正打滑)，所以设定值的偏航速率
+ *   天然是"真实车体位移/R"。完成判据仍用 IMU 实测航向差（抗打滑，且与"转 d_yaw
+ *   度"的语义严格一致）。横向偏差另走一项, 让"离弧多远"也进环 */
 static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
                        const mf_pose_t *pose, float dt,
                        mf_body_cmd_t *out)
 {
     const mf_arc_t *a = &s->p.arc;
-    float err, acc, target, v_stop, v_next,yaw_sp;
+    float acc, target, v_stop, v_next;
     float yaw_done, remain_yaw, remain_m, radius_abs;
 
     v_next = seg_next_entry_speed(p);
@@ -199,15 +217,36 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
     out->vx_mps = seg_speed_ramp(p, target, acc, dt);
     out->vy_mps = 0.0f;
 
-    yaw_sp = p->entry.yaw_deg
-           + (p->dist_accum / a->radius_m) * (180.0f / MF_PI_F);
-    err = mf_wrap_deg(yaw_sp - pose->yaw_deg);
-    /* 曲率前馈 wz_ff = v/R(带符号 radius, 左转+/右转-): 稳态角速度开环直给,
-     * PID 不再靠误差积累(纯P需滞后~3.6°才出稳态差速=进弯晚的根因), 只修打滑残差;
-     * 速度源用 cur_speed(斜坡后实际值), 起步/减速前馈自动缩放。
-     * 注意: 勿套 seg_wz_ramp —— 进弯缓起 = 进弯前固定多走直线(实测 10~30cm, ac83518) */
-    out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt)
-                + (p->cur_speed / a->radius_m) * (180.0f / MF_PI_F);
+    /* 几何量: 半径方向偏差 e_y(正=弧外) 与名义切线航向偏差 e_psi。
+     * 两者都在世界系解算, 与 dist_accum / entry.yaw 的累积无关 */
+    {
+        float rx    = pose->x_m - p->arc_cx_m;
+        float ry    = pose->y_m - p->arc_cy_m;
+        float rho   = sqrtf(rx * rx + ry * ry);
+        float phi   = atan2f(ry, rx) * (180.0f / MF_PI_F);
+        float e_psi = mf_wrap_deg((phi + p->arc_sgn * 90.0f) - pose->yaw_deg);
+
+        p->arc_ey_m = rho - p->arc_r_abs;       /* 正=弧外 */
+        p->arc_exit_yawerr_deg = e_psi;         /* 出口记录取最后这一拍的值 */
+
+        /* 曲率前馈 wz_ff = v/R(带符号 radius, 左转+/右转-): 稳态角速度开环直给,
+         * PID 不再靠误差积累(纯P需滞后~3.6°才出稳态差速=进弯晚的根因), 只修打滑
+         * 残差; 速度源用 cur_speed(斜坡后实际值), 起步/减速前馈自动缩放。
+         * 注意: 勿套 seg_wz_ramp —— 进弯缓起 = 进弯前固定多走直线(实测 10~30cm) */
+#if MF_ARC_XTRACK_EN
+        out->wz_dps = mf_pid_calc(p->pid_yaw, e_psi, dt)
+                    + (p->cur_speed / a->radius_m) * (180.0f / MF_PI_F)
+                    + MF_ARC_XTRACK_K * p->arc_ey_m;
+#else
+        {
+            float yaw_sp = p->entry.yaw_deg
+                         + (p->dist_accum / a->radius_m) * (180.0f / MF_PI_F);
+            float err = mf_wrap_deg(yaw_sp - pose->yaw_deg);
+            out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt)
+                        + (p->cur_speed / a->radius_m) * (180.0f / MF_PI_F);
+        }
+#endif
+    }
 
     return (uint8_t)(remain_yaw <= MF_TOL_ARRIVE_DEG);
 }
@@ -317,6 +356,22 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
 
     switch (s->type)
     {
+    case MF_SEG_ARC:
+        /* 名义圆弧解算到世界系: 圆心 = 进段位姿 + R·左法线。
+         * radius 带符号, 左转圆心落在车体左侧、右转落在右侧, 一条式子两向通用。
+         * 用进段位姿定圆心, 等价于"车此刻正站在名义弧上且切线对齐" —— 与后续
+         * 位姿误差无关, 是本段自己的参考系 */
+        {
+            float r = s->p.arc.radius_m;
+            float yaw_rad = pose->yaw_deg * (MF_PI_F / 180.0f);
+
+            p->arc_sgn = (s->p.arc.d_yaw_deg >= 0.0f) ? 1.0f : -1.0f;
+            p->arc_r_abs = fabsf(r);
+            p->arc_cx_m = pose->x_m - r * sinf(yaw_rad);
+            p->arc_cy_m = pose->y_m + r * cosf(yaw_rad);
+            p->arc_ey_m = 0.0f;     /* 进段必然在名义弧上 */
+        }
+        break;
     case MF_SEG_GOTO_XY:
         p->target.x_m = s->p.goto_xy.x_m;
         p->target.y_m = s->p.goto_xy.y_m;
@@ -402,6 +457,14 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
 
     if (done)
     {
+        if (s->type == MF_SEG_ARC)
+        {
+            /* 弧线出口质量记录: 横向偏差 + 航向偏差(都是段完成这一拍的实测值)，
+             * 由上层主循环取走打 ARC: 行。旧律/新律都记, 指标同源可直接 A/B */
+            p->arc_exit_ey_m = p->arc_ey_m;
+            p->arc_exit_seg = p->idx;
+            p->arc_exit_new = 1u;
+        }
         p->idx++;
         p->started = 0;     /* 下一段下拍重新进段 */
         if (p->path[p->idx].type == MF_SEG_END)
@@ -433,6 +496,20 @@ uint8_t mf_path_is_waiting(const mf_path_ctx_t *p)
         return 0u;
     }
     return (uint8_t)(p->path[p->idx].type == MF_SEG_WAIT);
+}
+
+uint8_t mf_path_pop_arc_report(mf_path_ctx_t *p, uint16_t *seg_index,
+                               float *ey_m, float *yaw_err_deg)
+{
+    if ((p == 0) || (p->arc_exit_new == 0u))
+    {
+        return 0u;
+    }
+    p->arc_exit_new = 0u;
+    if (seg_index != 0)   { *seg_index   = p->arc_exit_seg; }
+    if (ey_m != 0)        { *ey_m        = p->arc_exit_ey_m; }
+    if (yaw_err_deg != 0) { *yaw_err_deg = p->arc_exit_yawerr_deg; }
+    return 1u;
 }
 static float seg_next_entry_speed(const mf_path_ctx_t *p)
 {

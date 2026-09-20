@@ -82,6 +82,33 @@
 #define MF_TOL_HOLD_MS      100u
 #endif
 
+/* ================= ARC 段几何跟踪（修"弧线越跑越偏"） ================= */
+/* 旧律把弧线的航向设定值按 dist_accum 推进, 而 dist_accum 来自轮上位移均值;
+ * 履带转弯时该均值系统性大于真实车体位移(见 mf_odom.c 注释), 于是设定的偏航速率
+ * 比车体真能达到的快 —— 航向环被迫多转, 实际弧半径被压成 R/k, 出口位置沿半径
+ * 向内偏, 误差随打滑放大且每段累积。改用:
+ *   1) 进段把名义圆弧解算到世界系(圆心/半径), 段内设定值取"名义切线航向",
+ *      它由里程计位置(x/y, 已用 ds_for_xy 修正过打滑)推出 —— 设定值的偏航速率
+ *      天然等于"真实车体位移/R", 不再逼航向环多转;
+ *   2) 再加横向偏差比例项, 让"离名义弧多远"本身也进环(旧律完全没有这个维度:
+ *      与弧等半径的纯横向平移对它是不可见的)。
+ * 量化与归因见 build_verify/mf_path_test/arc_xtrack_sim.py:
+ *   打滑 15% 时出口横向偏差 -117mm(旧) -> -0.2mm(新); 出口位置误差 178mm -> 2mm
+ *
+ * 置 0 = 回旧律, 供 A/B 对比。出口诊断(ARC: 行)两种模式都算, 用的是同一个几何
+ * 指标, 所以现场可以直接拿两版的 ARC 行对比 */
+#ifndef MF_ARC_XTRACK_EN
+#define MF_ARC_XTRACK_EN     1
+#endif
+
+/* 横向偏差增益, dps per m（正偏差=弧外时向弧内补转向）。
+ * 只治"轮子没跟上指令"这类真实扰动（单侧打滑/外力推/地面塌陷）——对履带刮擦
+ * 造成的半径偏差无能为力, 那个只能靠把设定值的里程源用对（上面第1条）来治。
+ * 宁小勿大: 0.1m 偏差 -> 25dps, 与弧线前馈 43dps 同量级; 再大就会和航向环抢带宽、引发摆动 */
+#ifndef MF_ARC_XTRACK_K
+#define MF_ARC_XTRACK_K      250.0f
+#endif
+
 #if (MF_CHASSIS_TYPE == MF_CHASSIS_DIFF || MF_CHASSIS_TYPE == MF_CHASSIS_TRACK)
 #define MF_WHEEL_COUNT 2
 #elif (MF_CHASSIS_TYPE == MF_CHASSIS_MECANUM)

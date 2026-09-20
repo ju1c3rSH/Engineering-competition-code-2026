@@ -551,6 +551,7 @@ void Car_DebugTask(void)
 		}
 	}
 	Car_SegChange_Log();   /* 段切换: 变化才打, 主循环上下文(唯一 printf 点) */
+	Car_ArcExit_Log();     /* 弧线出口质量: 每条 ARC 跑完打一行(出口横向偏差/航向偏差) */
 
 #if ROUTE_TEST_EN
 	/* 自测进度: 序列跑完(到返回区)打一次 RT:FINISH i/n, 中途靠 EVT NAV_DONE 与

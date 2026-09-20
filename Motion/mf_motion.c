@@ -91,6 +91,12 @@ uint8_t mf_is_waiting(const mf_ctx_t *m)
     return mf_path_is_waiting(&m->path);
 }
 
+uint8_t mf_pop_arc_report(mf_ctx_t *m, uint16_t *seg_index,
+                          float *ey_m, float *yaw_err_deg)
+{
+    return mf_path_pop_arc_report(&m->path, seg_index, ey_m, yaw_err_deg);
+}
+
 const mf_status_t *mf_get_status(mf_ctx_t *m)
 {
     m->status.state = mf_path_get_state(&m->path);

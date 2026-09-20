@@ -92,6 +92,12 @@ void mf_start_path(mf_ctx_t *m, const mf_seg_t *path);
 void mf_stop(mf_ctx_t *m);
 uint8_t mf_is_done(const mf_ctx_t *m);
 uint8_t mf_is_waiting(const mf_ctx_t *m);   /* 当前段是否为 WAIT(主动停等), 见 mf_path_is_waiting */
+/**
+ * @brief 取走最近一次 ARC 段出口质量记录（读后清标志），见 mf_path_pop_arc_report
+ * @return 1=取到新记录
+ */
+uint8_t mf_pop_arc_report(mf_ctx_t *m, uint16_t *seg_index,
+                          float *ey_m, float *yaw_err_deg);
 const mf_status_t *mf_get_status(mf_ctx_t *m);
 
 /* 单步便捷指令：内部各自打包成单段路径，即“一条段的路径” */

@@ -35,6 +35,20 @@ typedef struct
     uint8_t subphase;       /* GOTO 段：0=接近点，1=收尾转向 */
     uint8_t started;
 
+    /* ARC 段几何解算（进段时由 entry 位姿 + R·左法线解出，段内只读）：
+     * 半径带符号，左转圆心在车体左侧、右转在右侧，用同一个式子即可两向通用 */
+    float arc_cx_m;         /* 名义圆心 X（世界系） */
+    float arc_cy_m;         /* 名义圆心 Y（世界系） */
+    float arc_r_abs;        /* |radius_m| */
+    float arc_sgn;          /* +1=左转 / -1=右转（d_yaw 符号；与 radius 同号） */
+    float arc_ey_m;         /* 本拍带符号横向偏差 m，正=弧外（诊断与横向环共用） */
+
+    /* ARC 段出口质量记录（段完成那一拍落一次，等上层取走） */
+    float arc_exit_ey_m;    /* 出口横向偏差 m，正=弧外 */
+    float arc_exit_yawerr_deg;  /* 出口航向偏差 deg，正=车头偏向弧外切线外侧 */
+    uint16_t arc_exit_seg;  /* 出口所在的段下标 */
+    uint8_t  arc_exit_new;  /* 1=有新记录待取 */
+
     /* 由运动层注入的控制器（所有权在 mf_motion） */
     mf_pid_t *pid_yaw;      /* 航向保持 / 原地转向 / 方位角 P */
     mf_pid_t *pid_point_v;  /* 点到点前向速度 P */
@@ -70,5 +84,20 @@ uint16_t mf_path_get_seg_index(const mf_path_ctx_t *p);
  * @return 1=正在 WAIT 段；0=非运行态/其它段
  */
 uint8_t mf_path_is_waiting(const mf_path_ctx_t *p);
+
+/**
+ * @brief 取走最近一次 ARC 段出口的质量记录（读后清标志）
+ *
+ * 弧线段是整条路线里唯一位姿误差会"转成"航向误差的段：出口横向偏差反映本段有没有
+ * 跑偏，出口航向偏差决定其后直线段的方向（MF_KEEP 直线会把它当基准锁住）。
+ * 上层在主循环调用、自行加中断保护即可打点，用于现场逐段验收弧线精度。
+ *
+ * @param seg_index   出口所在段下标（可传 0）
+ * @param ey_m        出口横向偏差 m，正=落在名义弧外侧（可传 0）
+ * @param yaw_err_deg 出口航向偏差 deg，正=车头偏向外侧切线（可传 0）
+ * @return 1=本次取到新记录；0=无新记录（出参不变）
+ */
+uint8_t mf_path_pop_arc_report(mf_path_ctx_t *p, uint16_t *seg_index,
+                               float *ey_m, float *yaw_err_deg);
 
 #endif /* MF_PATH_H */

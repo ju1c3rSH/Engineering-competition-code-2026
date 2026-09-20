@@ -1155,6 +1155,30 @@ void Car_SegChange_Log(void)
 	       (unsigned)seg_now, (unsigned)state_now,
 	       (int)x_mm, (int)y_mm, (int)yaw_d10);
 }
+
+/* 弧线出口质量: 每跑完一条 ARC 段打一行, 主循环上下文(唯一 printf 点)。
+ * 这是"弧线有没有跑偏"的直接判据 —— 不用自己去对核对表:
+ *   EY = 出口横向偏差 mm, 正=落在名义弧外侧(负=往里切)
+ *   YE = 出口航向偏差 0.1°, 正=车头偏向外侧切线; 它会被紧随其后 MF_KEEP 直线
+ *        当基准锁住, 所以这条直线会不会整段走偏就看它
+ * 旧律(轮上里程推设定值)在履带打滑下 EY 会随打滑放大到 -100mm 量级;
+ * 新律目标是把每个弧的 |EY| 压到 ±10mm 内。见 build_verify/mf_path_test/arc_xtrack_sim.py */
+void Car_ArcExit_Log(void)
+{
+	uint16_t seg;
+	float    ey, yerr;
+	uint8_t  got;
+
+	__disable_irq();
+	got = mf_pop_arc_report(mf_app(), &seg, &ey, &yerr);
+	__enable_irq();
+
+	if (got != 0u)
+	{
+		printf("ARC:%u EY=%d YE=%d\r\n", (unsigned)seg,
+		       (int)(ey * 1000.0f), (int)(yerr * 10.0f));
+	}
+}
 /* TIM5 100ms 转台重发(经 interurp.c 调用)。
  * tt_arm 门控: 上电后首条 TURNTABLE 命令前/急停后不下发——旧版上电即向
  * 绝对 0°(=驱动器上电零点)发位置, 仅 MCU 复位时转台会自行大行程甩动。
