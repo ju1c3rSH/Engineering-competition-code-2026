@@ -11,6 +11,10 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->pid_yaw = pid_yaw;
     p->pid_point_v = pid_point_v;
     p->started = 0;
+    p->dist_accum = 0.0f;
+    p->dist_target_m = 0.0f;
+    p->dist_base_m = 0.0f;
+    p->carry_link = 0u;
     p->arc_cx_m = 0.0f;
     p->arc_cy_m = 0.0f;
     p->arc_r_abs = 0.0f;
@@ -20,6 +24,8 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->arc_exit_yawerr_deg = 0.0f;
     p->arc_exit_seg = 0u;
     p->arc_exit_new = 0u;
+    p->nom_yaw_deg = 0.0f;
+    p->nom_yaw_init = 0u;
 }
 
 void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path)
@@ -50,6 +56,16 @@ void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path)
     p->idx = 0;
     p->state = MF_PATH_RUN;
     p->started = 0;     /* 第一拍做进段快照 */
+    /* 段间累积量：新路径从零起算（MF_SEG_CARRY_EN 下 dist_accum 是全程里程） */
+    p->dist_accum = 0.0f;
+    p->dist_target_m = 0.0f;
+    p->dist_base_m = 0.0f;
+    p->carry_link = 0u;
+#if MF_SEG_NOM_HEADING_EN
+    /* 标称航向重定基准: 首段进段时用当时的实测航向初始化, 之后纯几何累积。
+     * 整条路线重跑时不会沿用上次的累积值 */
+    p->nom_yaw_init = 0u;
+#endif
 }
 
 void mf_path_stop(mf_path_ctx_t *p)
@@ -127,6 +143,22 @@ static uint8_t seg_dwell_reached(mf_path_ctx_t *p, float err, float tol, float d
 
 /* ---------- 各段类型执行（返回 1=完成） ---------- */
 
+/* MOVE 段的航向保持目标:
+ * 段表给了绝对航向 -> 优先用; MF_KEEP 时按开关取「路径标称航向」或「进段实测航向」。
+ * 后者会把上游 ARC/TURN 残留的航向误差锁死并按直线长度放大(见 mf_config.h) */
+static float seg_move_hold_yaw(const mf_path_ctx_t *p, const mf_move_dist_t *m)
+{
+    if (m->heading_deg != MF_KEEP)
+    {
+        return m->heading_deg;
+    }
+#if MF_SEG_NOM_HEADING_EN
+    return p->nom_yaw_deg;
+#else
+    return p->entry.yaw_deg;
+#endif
+}
+
 /* 增量直线：航向保持 + 剩余行程判完成
  * 下一段要求停稳时按 v=sqrt(2·a·s) 抛物线减速, 段末速度≈0 平滑交棒 */
 static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
@@ -138,7 +170,11 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
 
     v_next = seg_next_entry_speed(p);
     dir = (m->dist_m >= 0.0f) ? 1.0f : -1.0f;
+#if MF_SEG_CARRY_EN
+    remain = (p->dist_target_m - p->dist_accum) * dir;  /* 累计名义目标 - 当前里程 */
+#else
     remain = (m->dist_m - p->dist_accum) * dir;     /* 沿行进方向剩余行程 m */
+#endif
     acc = (m->acc_mps2 > 0.0f) ? m->acc_mps2 : MF_DEFAULT_ACC;
     cruise = (m->speed_mps < 0.0f) ? -m->speed_mps : m->speed_mps;
     target = cruise;
@@ -147,7 +183,8 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
     {
         if (remain > 0.0f)
         {
-            v_stop = sqrtf(2.0f * acc * remain + v_next * v_next);
+            v_stop = sqrtf(2.0f * acc * MF_STOP_DECEL_SCALE * remain
+                           + v_next * v_next);
         }
         else
         {
@@ -162,9 +199,7 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
     out->vx_mps = dir * seg_speed_ramp(p, target, acc, dt);
     out->vy_mps = 0.0f;
 
-    err = mf_wrap_deg(((m->heading_deg == MF_KEEP) ? p->entry.yaw_deg
-                                                   : m->heading_deg)
-                      - pose->yaw_deg);
+    err = mf_wrap_deg(seg_move_hold_yaw(p, m) - pose->yaw_deg);
     out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
 
     /* 失控自保 (test/motion-tuning): 编码器/驱动符号矛盾时反馈为负, remain 沿
@@ -207,7 +242,8 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
         radius_abs = fabsf(a->radius_m);
         remain_m = ((remain_yaw > 0.0f) ? remain_yaw : 0.0f)
                  * (MF_PI_F / 180.0f) * radius_abs;
-        v_stop = sqrtf(2.0f * acc * remain_m + v_next * v_next);
+        v_stop = sqrtf(2.0f * acc * MF_STOP_DECEL_SCALE * remain_m
+                       + v_next * v_next);
         if (v_stop < target)
         {
             target = v_stop;
@@ -240,7 +276,8 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
 #else
         {
             float yaw_sp = p->entry.yaw_deg
-                         + (p->dist_accum / a->radius_m) * (180.0f / MF_PI_F);
+                         + ((p->dist_accum - p->dist_base_m) / a->radius_m)
+                           * (180.0f / MF_PI_F);
             float err = mf_wrap_deg(yaw_sp - pose->yaw_deg);
             out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt)
                         + (p->cur_speed / a->radius_m) * (180.0f / MF_PI_F);
@@ -346,7 +383,21 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
     float c, s_yaw, dx, dy;
 
     p->entry = *pose;
+#if MF_SEG_NOM_HEADING_EN
+    if (p->nom_yaw_init == 0u)
+    {
+        /* 首段: 用实测航向给"路径标称航向"定基准, 之后纯几何累积 */
+        p->nom_yaw_deg = pose->yaw_deg;
+        p->nom_yaw_init = 1u;
+    }
+#endif
+#if MF_SEG_CARRY_EN
+    /* 连续累计：不清零，只记本段起点（旧律算段内进度、残差结转都要用） */
+    p->dist_base_m = p->dist_accum;
+#else
     p->dist_accum = 0.0f;
+    p->dist_base_m = 0.0f;
+#endif
     p->time_ms = 0;
     p->tol_hold_ms = 0u;
     p->subphase = 0;
@@ -356,7 +407,26 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
 
     switch (s->type)
     {
+    case MF_SEG_MOVE_DIST:
+#if MF_SEG_CARRY_EN
+        /* 残差结转：目标 = 上一段累计目标 + 本段名义长度，把上一段欠走/多走的量带过来。
+         * 上一段不是位移段（ARC/GOTO 之后）则重新对齐到当前里程。
+         * 注意 remain 的算法也跟着换成"目标 - 当前里程"，见 seg_move_dist */
+        if (p->carry_link)
+        {
+            p->dist_target_m += s->p.move_dist.dist_m;
+        }
+        else
+        {
+            p->dist_target_m  = p->dist_accum + s->p.move_dist.dist_m;
+        }
+        p->carry_link = 1u;
+#endif
+        break;
     case MF_SEG_ARC:
+#if MF_SEG_CARRY_EN
+        p->carry_link = 0u;     /* 转弯后方向变了, 标量残差没有意义 -> 重新对齐 */
+#endif
         /* 名义圆弧解算到世界系: 圆心 = 进段位姿 + R·左法线。
          * radius 带符号, 左转圆心落在车体左侧、右转落在右侧, 一条式子两向通用。
          * 用进段位姿定圆心, 等价于"车此刻正站在名义弧上且切线对齐" —— 与后续
@@ -372,11 +442,25 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
             p->arc_ey_m = 0.0f;     /* 进段必然在名义弧上 */
         }
         break;
+    case MF_SEG_TURN_TO:
+    case MF_SEG_TURN_REL:
+#if MF_SEG_CARRY_EN
+        /* 原地转向后航向变了, 旧的纵向残差在新航向下没有意义 -> 重新对齐。
+         * WAIT 段不在列(它只是停等、方向不变), 所以 MOVE-WAIT-MOVE 仍会结转 */
+        p->carry_link = 0u;
+#endif
+        break;
     case MF_SEG_GOTO_XY:
+#if MF_SEG_CARRY_EN
+        p->carry_link = 0u;     /* GOTO 用绝对位置自纠, 不需要标量残差 */
+#endif
         p->target.x_m = s->p.goto_xy.x_m;
         p->target.y_m = s->p.goto_xy.y_m;
         break;
     case MF_SEG_GOTO_REL:       /* 车体系相对位移 -> 绝对目标 */
+#if MF_SEG_CARRY_EN
+        p->carry_link = 0u;
+#endif
         g = &s->p.goto_xy;
         c = cosf(pose->yaw_deg * (MF_PI_F / 180.0f));
         s_yaw = sinf(pose->yaw_deg * (MF_PI_F / 180.0f));
@@ -431,10 +515,18 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
     {
     case MF_SEG_MOVE_DIST:
     case MF_SEG_ARC:
+#if MF_SEG_CARRY_EN
+        /* 全程连续里程: 每拍都记, 含进段拍。进段拍的 ds 虽然由上一拍指令产生，但它是
+         * 真实走过的路, 绝对里程必须记; 上一段欠走/多走的量改由 MOVE 段的"累计名义
+         * 目标"(残差结转)去补, 不再用"丢一拍"做归属 */
+        (void)entered;              /* 连续累计下该标记不再参与累加 */
+        p->dist_accum += ds;
+#else
         if (entered == 0)   /* 进段拍不计入: 此时的 ds 是上一段尾巴的位移 */
         {
             p->dist_accum += ds;    /* 弧长/里程统一由位移累计 */
         }
+#endif
         break;
     default:
         break;
@@ -457,6 +549,25 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
 
     if (done)
     {
+#if MF_SEG_NOM_HEADING_EN
+        /* 标称航向随路径几何推进: ARC 累加其转角, TURN 取其目标角, 其余不变 */
+        if (s->type == MF_SEG_ARC)
+        {
+            p->nom_yaw_deg = mf_wrap_deg(p->nom_yaw_deg + s->p.arc.d_yaw_deg);
+        }
+        else if (s->type == MF_SEG_TURN_TO)
+        {
+            p->nom_yaw_deg = mf_wrap_deg(s->p.turn.yaw_deg);
+        }
+        else if (s->type == MF_SEG_TURN_REL)
+        {
+            p->nom_yaw_deg = mf_wrap_deg(p->nom_yaw_deg + s->p.turn.yaw_deg);
+        }
+        else
+        {
+            /* MOVE / GOTO / WAIT: 标称航向不变 */
+        }
+#endif
         if (s->type == MF_SEG_ARC)
         {
             /* 弧线出口质量记录: 横向偏差 + 航向偏差(都是段完成这一拍的实测值)，

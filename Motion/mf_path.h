@@ -26,8 +26,15 @@ typedef struct
     mf_pose_t target;       /* GOTO 段解算出的绝对目标点 */
 
     /* 段内累加量（进段清零） */
-    float dist_accum;       /* 已走弧长/位移，m（带符号） */
+    float dist_accum;       /* 已走弧长/位移，m（带符号）；
+                             * MF_SEG_CARRY_EN=1 时为**全程连续里程**（进段不清零） */
     uint32_t time_ms;       /* 段内已用时，ms */
+
+    /* 段间累积（仅 MF_SEG_CARRY_EN=1 生效；见 mf_config.h 的说明）：
+     * MOVE 段的完成判据改用"累计名义目标 - 当前里程"，把上一段欠走/多走的残差结转过来 */
+    float dist_target_m;    /* 累计名义目标里程，m（残差结转的基准） */
+    float dist_base_m;      /* 本段起点处的 dist_accum：段内进度 = dist_accum - dist_base_m */
+    uint8_t carry_link;     /* 1=上一段是位移段，本段可承接残差；ARC/GOTO 后归 0 */
     uint16_t tol_hold_ms;   /* 到位驻留累计：|err|<tol 连续保持时长 */
     float cur_speed;        /* 斜坡后的当前前向速度，m/s（跨段保持，衔接用） */
     float cur_wz;           /* 斜坡后的当前角速度指令，deg/s（TURN/GOTO 入段缓起） */
@@ -48,6 +55,13 @@ typedef struct
     float arc_exit_yawerr_deg;  /* 出口航向偏差 deg，正=车头偏向弧外切线外侧 */
     uint16_t arc_exit_seg;  /* 出口所在的段下标 */
     uint8_t  arc_exit_new;  /* 1=有新记录待取 */
+
+    /* 路径标称航向（仅 MF_SEG_NOM_HEADING_EN=1 生效，见 mf_config.h）：
+     * 由路径几何累积 —— 起点用实测航向初始化，之后每过一条 ARC 加 d_yaw、
+     * 每过一个 TURN 赋其目标角。MOVE 段的目标航向取它，于是上游残留的航向误差
+     * 会被直线段主动纠回来，而不是被 MF_KEEP 锁定后按"航向误差×直线长度"放大 */
+    float nom_yaw_deg;      /* 当前段起点处的标称航向 deg */
+    uint8_t nom_yaw_init;   /* 0=还没用实测航向定过基准（本段进段时补上） */
 
     /* 由运动层注入的控制器（所有权在 mf_motion） */
     mf_pid_t *pid_yaw;      /* 航向保持 / 原地转向 / 方位角 P */
