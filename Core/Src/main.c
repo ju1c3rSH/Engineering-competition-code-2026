@@ -119,6 +119,14 @@ int main(void)
   HAL_Delay(500);
   ResetHWT101();
 	HAL_Delay(2000);
+	{
+		/* 转台上电零点对齐: 把驱动器"当前位置"清零(电机不动)并把 MCU 记账角对齐到同一
+		 * 物理姿态 —— 修"一条命令转好几圈"(绝对定位 + 从不回零, MCU 与驱动器零点脱节)。
+		 * 必须在 htim5 启动前调用: TIM5 一起就开始周期下发绝对位置了。
+		 * 放在 2.5s 静置之后, 等张大头驱动器上电自检完成。 */
+		extern void Car_Turntable_BootZero(void);   /* Control_Car.c */
+		Car_Turntable_BootZero();
+	}
 	HAL_TIM_Base_Start_IT(&GAP_TIM);		
 	HAL_TIM_Base_Start_IT(&htim5);
 

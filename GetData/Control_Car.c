@@ -39,7 +39,7 @@ static const mf_seg_t tbl_qr[] =          /* NAV_TO_QR: flag0 出发首段 43(�
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(43.0f)),
 	SEG_END
 };
-static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: flag0~10 排爆区 */
+static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: 排爆区去程(末段转弯+末段直线已移入重锚表) */
 {
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(43.0f)),
 	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),   /* 左 90 (flag1) */
@@ -50,8 +50,6 @@ static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: flag0~10 排爆区 */
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(35.0f)),
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag6) */
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(48.5f)),
-	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag8) */
-	SEG_MOVE(MF_M_SPEED(Low_speed),    MF_M_DIST(45.5f)),
 	SEG_END
 };
 static const mf_seg_t tbl_bucket[] =      /* NAV_TO_BUCKET: 桶与排爆作业点在车道两侧同一点位,
@@ -76,9 +74,20 @@ static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(170.0f)),
 	SEG_END
 };
-static const mf_seg_t tbl_rebase_bomb[] =   /* NAV_REBASE_BOMB: flag10 排爆区重锚, 对坑前原地转绝对角 */
+static const mf_seg_t tbl_rebase_bomb[] =   /* NAV_REBASE_BOMB: 排爆区末段(原 tbl_bomb 表尾)+绝对航向重锚。
+                                             * 末段转弯与其后的低速直线挪进本表, 与转盘 90° 扫描位并行:
+                                             * 本段入口由底盘自行摆码 7(见 nav_entry_turn), 转台在最后一个
+                                             * 转弯期间就开始转(原工程 flag9 时点)。此刻臂为收起位,
+                                             * 扫掠虽与末段转弯叠加但无干涉; 若目视碍事, 把
+                                             * nav_entry_turn[6] 置 0 由主控在 NAV_DONE 之后再发(=串行) */
 {
-	SEG_TURN_TO(-90.3f),
+	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),      /* 右 90: 原 tbl_bomb 表尾转弯 */
+	SEG_MOVE(MF_M_SPEED(Low_speed),    MF_M_DIST(45.5f)),/* 末段低速进作业点 */
+	SEG_TURN_TO(-90.0f),                                 /* 对坑前重锚: 五个闭环 90° 弧的标称终点。
+	                                                      * 旧值 -90.3 是旧车 flag10 实测搬运; 0.3° 在
+	                                                      * 0.5~0.7m 臂展上仅 3mm 级, 够不着横向偏移问题。
+	                                                      * 要定这个角: 用底盘 '?' 的 POSE 行读到达 YAW
+	                                                      * + 看三坑在相机里的位置, 别猜 */
 	SEG_END
 };
 static const mf_seg_t tbl_rebase_return[] = /* NAV_REBASE_RETURN: flag17 携人质返程前重锚 */
@@ -100,7 +109,7 @@ static const mf_seg_t *const nav_routes[CAR_NAV_ID_COUNT] =
 };
 typedef char nav_route_count_check[(sizeof(nav_routes) / sizeof(nav_routes[0])) == CAR_NAV_ID_COUNT ? 1 : -1];
 
-#define NAV_GEAR_BUF_LEN 12u      /* 最长表 tbl_bomb: 11 段 + END */
+#define NAV_GEAR_BUF_LEN 12u      /* 最长表 tbl_bomb: 9 段 + END */
 
 static float Nav_GearSpeed(uint8_t speed_gear)
 {
@@ -149,7 +158,20 @@ static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed
 #define CAR_TASK_MS            10u
 #define NAV_STALL_MS           3000u
 #define NAV_STALL_DELTA_M      0.001f
-#define TURNTABLE_SETTLE_MS    3000u
+/* 转台 DONE 计时(开环静置, 不校验 Emm 到位)。**按本次行程动态算, 且只增不减**:
+ *   行程(°) = |本次目标角 − 上次目标角|   (绝对定位: 上次目标即电机应已在的位置)
+ *   settle  = clamp(行程 × TURNTABLE_MS_PER_DEG + TURNTABLE_RAMP_MARGIN, MIN, MAX)
+ * 下限取旧固定值 1000ms —— 旧值已覆盖 180RPM/67.16ticks每度 下 270°(桶位码, 最大行程,
+ * 约 0.25s 巡航) 的物理时间, 所以本改动**不缩短任何现有码的等待**, 只在更大行程时加长。
+ * 方向约定: 宁可偏长。报早了 = 主控在转台未停稳时就伸臂/放腕(机构干涉); 报晚了只多花
+ * 几百毫秒。第一条命令(tt_arm==0, 上电后)行程不可知时也由下限 1000ms 兜住。
+ * 【待台架标定】TIM5 每 100ms 重发会重启驱动器梯形规划, 电机未必跑到巡航速度, 故
+ * TURNTABLE_MS_PER_DEG 现按额定值的一半保守取。上机敲桶位码 4/5(270°) 录像量
+ * "发令→实际停稳"时长 t, 置 TURNTABLE_MS_PER_DEG = t/270 即可(看 '?' 块的 WTBL 行) */
+#define TURNTABLE_MS_PER_DEG   1.9f    /* 额定 180RPM ⇒ 0.93ms/°; ×2 计梯形重启欠速 */
+#define TURNTABLE_RAMP_MARGIN  300u    /* 加减速 + 机械/传动裕量 */
+#define TURNTABLE_SETTLE_MIN   1000u   /* 只增不减: 旧固定值, 相对旧行为零回退 */
+#define TURNTABLE_SETTLE_MAX   3000u   /* 上限: 旧基线值, 防异常行程把流程拖死 */
 
 typedef enum
 {
@@ -238,8 +260,13 @@ static struct
 	uint8_t  busy;
 	uint8_t  code;      /* 本次请求码, TURN_DONE 原样回显 */
 	uint16_t ms;
+	uint16_t settle_ms; /* 本次 DONE 计时目标: 按行程动态算(见 Nav_TurnSettle/常量注释) */
 } tt;
 static uint8_t CW_OR_CCW = 1;
+/* 最近一次**实际下发**的脉冲数(仅台架标定位置当量用): '?' 的 WTBL 行 TICK= 回显。
+ * 有了它就不用从"角度×67.16"去反推下发量, 直接在台架上用
+ * 实测转角 θ 解出真当量: WTBL_TICK_PER_DEG_true = TICK / θ */
+static uint32_t tt_last_tick = 0u;
 
 /* 位置当量: ticks/°。旧值 1208.888 按 435200 ticks/圈 假设计算, 但 2026-09-17
  * 台架实测与此不符: 增量台架 `w`(MCU认为+5°=6044 ticks) 实转 90°, `7`(90°=
@@ -249,15 +276,63 @@ static uint8_t CW_OR_CCW = 1;
  * 1208.888×90÷θ; 落角偏差>2° 时改这里重烧, 驱动器侧参数不改 */
 #define WTBL_TICK_PER_DEG   67.16f
 
+/* 上电零点对齐(转台"一条命令转好几圈"的根治)。
+ * 现状问题: 转台是绝对定位(raF=true), 下发的是"驱动器脉冲计数域里的绝对目标",
+ * 而 MCU 侧的 Car_data.Motor_Angle 只是"上次目标角"的开环记账, 从不读驱动器实际
+ * 位置, 也从不回零(全工程零调用 Emm_V5_Reset_CurPos_To_Zero / Emm_V5_Origin_*)。
+ * 于是 MCU 的 0° 与驱动器的 0 脉冲是否指向同一个物理姿态完全靠"上电时碰巧对上":
+ * 一旦脱节(上次跑到哪 / MCU 单独复位而驱动器带电), 第一条命令的实际行程就是
+ * |驱动器计数 − 目标| 而不是 |上次目标 − 本次目标|, 可以是好几圈 —— 而终点仍
+ * 是那个绝对目标(90°=6044 脉冲), 于是表现为"转好几圈最后停在 90°"。
+ *
+ * 修法: 上电发一次 0x0A(清零当前位置, 只把驱动器计数器归零, **电机不动**),
+ * 同时把 MCU 记账角置为 TURNTABLE_BOOT_DEG。两侧零点就此恒等, 此后任何命令的
+ * 行程恒 = |本次目标 − 上次目标| ≤ 270°, 结构上不可能再多圈。
+ *
+ * 约定: TURNTABLE_BOOT_DEG 必须等于"上电那一刻转台的真实姿态"在码表坐标系里的
+ * 角度。现取 0.0 = 沿用原设计的隐含假设(上电姿态即码表 0°), 行为零变化风险。
+ * 若收车后转台实际停在回正位(90°), 别把这宏改成 90 —— 码 3 是 57°, 会出现
+ * "目标 < 零点"的负脉冲, 绝对模式表达不了, 那种情况必须改用相对模式下发。
+ * 要改就先在台架量: 上电后敲 '7', 实际转角 θ≠90° 说明上电姿态不是 0°, 该把
+ * 转盘机械摆正(推荐)而不是改这个宏。 */
+#define TURNTABLE_BOOT_DEG  0.0f
+
+/* 本次转台 DONE 计时(ms): 按行程动态算, 只增不减(下限=旧固定值 1000ms)。
+ * 行程 = |本次目标角 − 上次目标角| —— 绝对定位下, 电机上次就该停在旧目标上。
+ * 方向约定"宁可偏长": 报早了 = 主控在转台未停稳时就伸臂/放腕(机构干涉);
+ * 报晚了只多花几百毫秒。常量与标定方法见上方 TURNTABLE_MS_PER_DEG 注释 */
+static uint16_t Nav_TurnSettle(float prev_deg, float new_deg)
+{
+	float    delta = new_deg - prev_deg;
+	uint32_t ms;
+
+	if (delta < 0.0f)
+	{
+		delta = -delta;
+	}
+	ms = (uint32_t)(delta * TURNTABLE_MS_PER_DEG) + TURNTABLE_RAMP_MARGIN;
+	if (ms < TURNTABLE_SETTLE_MIN)
+	{
+		ms = TURNTABLE_SETTLE_MIN;
+	}
+	if (ms > TURNTABLE_SETTLE_MAX)
+	{
+		ms = TURNTABLE_SETTLE_MAX;
+	}
+	return (uint16_t)ms;
+}
+
 /* 转台定点角: 排爆/人质摆放距离一致, 惯导保证车位, 按码打固定角。
  * 对坑 1~3->123/90/57; 对桶 4~6->270/270/90(入桶摆位沿用实车验证值,
  * 坑3 反向 CW 到 90, 其余 CCW); 7 回正 90。
  * 先写方向后写角度 + tt_arm 先关后开: TIM5 被抢占恢复后读到的一定是
  * 同一对(方向,角度), 不会出现"新角度+旧方向"挥向另一侧 */
+
 static void Nav_Turntable(uint8_t turn_code)
 {
 	uint8_t dir = 1u;
 	float   angle;
+	float   prev_deg = Car_data.Motor_Angle;   /* 绝对定位: 上次目标=电机应已在的位置 */
 
 	tt_arm = 0u;                     /* 更新期间冻结 TIM5 重发 */
 	switch (turn_code)
@@ -277,8 +352,21 @@ static void Nav_Turntable(uint8_t turn_code)
 	tt.busy = 1u;
 	tt.code = turn_code;
 	tt.ms = 0u;
+	tt.settle_ms = Nav_TurnSettle(prev_deg, angle);   /* 按本次行程定 DONE 计时 */
 	Car_Dbg2_TtRecord(1u, turn_code, angle);
 }
+
+/* 段入口自动转台动作: 启动该 nav_id 段时, 底盘自行把转盘摆到指定码位(0=本段不动转台)。
+ * 排爆末段(6=NAV_REBASE_BOMB)入口摆 90° 扫描位(码 7) —— 与末段行驶并行, 复刻原工程
+ * flag9 的时点。**触发权放底盘**的缘由: 本段含"最后一个转弯 + 末段直线 + 原地重锚",
+ * 只有段表拥有者知道它何时开始; 转台扫掠与末段转弯的联合时序因此只在这一处维护,
+ * 不必跨控制器对账(旧版主控在重锚状态入口发码 7、底盘注释却写"车停稳后才开转盘",
+ * 两边说法相反)。主控侧只等 CAR_EVT_TURN_DONE(echo=7), 不再主动发码。
+ * 只在这条"停旧起新"路径触发: 同 id 进行中/已完成补发两条幂等分支不重复开转盘 */
+static const uint8_t nav_entry_turn[CAR_NAV_ID_COUNT] =
+{
+	0u, 0u, 0u, 0u, 0u, 0u, 7u, 0u,   /* 仅 NAV_REBASE_BOMB(6) -> 回正 90° */
+};
 
 /* REQ_NAV 幂等: 同 id 进行中忽略 / 已完成补发 DONE / 其余停旧起新 */
 static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
@@ -304,6 +392,13 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 		/* 段表启动校验未过(如 ARC 半径/符号非法): 立即按进度看门狗原因
 		 * 上报 NAV_FAULT, 不静默空转等 3s 里程看门狗兜底 */
 		Nav_Fault();
+		return;   /* 本段没起来: 段入口的转台动作也不做 */
+	}
+
+	/* 段入口自动转台(见表注释): 与段表同拍下发, 与行驶并行 */
+	if ((navigation_target_id < CAR_NAV_ID_COUNT) && (nav_entry_turn[navigation_target_id] != 0u))
+	{
+		Nav_Turntable(nav_entry_turn[navigation_target_id]);
 	}
 }
 
@@ -571,7 +666,7 @@ void Car_Nav_Task(void)
 	if (tt.busy != 0u)
 	{
 		tt.ms = (uint16_t)(tt.ms + CAR_TASK_MS);
-		if (tt.ms >= TURNTABLE_SETTLE_MS)
+		if (tt.ms >= tt.settle_ms)   /* 本次按行程算出的 DONE 计时, 见 Nav_TurnSettle */
 		{
 			tt.busy = 0u;
 			Car_Event_Send(CAR_EVT_TURN_DONE, tt.code, 0x00u);
@@ -724,8 +819,9 @@ void Car_Debug_Stat_Print(void)
 	const mf_pose_t *pose;
 	mf_ctx_t *m;
 
-	uint8_t  nav_state, nav_id, seg_done, trk_state, trk_found, tt_armed;
-	uint16_t seg_idx, trk_frame_age, trk_hold;
+	uint8_t  nav_state, nav_id, seg_done, trk_state, trk_found, tt_armed, tt_code;
+	uint16_t seg_idx, trk_frame_age, trk_hold, tt_ms, tt_settle;
+	uint32_t tt_tick;
 	int16_t  err_f10k;
 	float    x_m, y_m, yaw_deg, wl_cmd, wl_spd, wr_cmd, wr_spd, tt_deg;
 
@@ -751,6 +847,10 @@ void Car_Debug_Stat_Print(void)
 	wr_spd = m->wheel[1].speed_mps;
 	tt_deg = Car_data.Motor_Angle;
 	tt_armed = tt_arm;
+	tt_ms     = tt.ms;        /* 台架标定用: 本次 DONE 已计时 / 目标 settle */
+	tt_settle = tt.settle_ms;
+	tt_code   = tt.code;
+	tt_tick   = tt_last_tick; /* 台架标定用: 最近一次下发的脉冲数(解位置当量) */
 	__enable_irq();
 
 	printf("CHASSIS:NAV=%c ID=%02u SEG=%u/%u TRK=%c E=%d F=%u AGE=%u HOLD=%u\r\n",
@@ -762,8 +862,10 @@ void Car_Debug_Stat_Print(void)
 	       (int)(wr_cmd * 1000.0f), (int)(wr_spd * 1000.0f));
 	printf("POSE:%d %d %d\r\n",
 	       (int)(x_m * 1000.0f), (int)(y_m * 1000.0f), (int)(yaw_deg * 10.0f));
-	printf("WTBL:%d ARM=%u\r\n",
-	       (int)(tt_deg * 10.0f), (unsigned)tt_armed);
+	printf("WTBL:%d ARM=%u CODE=%u SET=%u/%u TICK=%u\r\n",   /* SET=已计时/本次目标 ms; TICK=最近下发脉冲数(标定当量) */
+	       (int)(tt_deg * 10.0f), (unsigned)tt_armed,
+	       (unsigned)tt_code, (unsigned)tt_ms, (unsigned)tt_settle,
+	       (unsigned)tt_tick);
 	printf("EMM:TF=%u RX=%u OK=%u\r\n",   /* 转台台架: UART6 DMA 失败/RX 应答字节/0x11 应答帧 */
 	       (unsigned)Emm_tx_fail_cnt,
 	       (unsigned)Emm_rx_cnt, (unsigned)Emm_reply_ok_cnt);
@@ -813,6 +915,7 @@ void Car_SegChange_Log(void)
 void Emm_Pos_Control(void)
 {
 	uint8_t  dir;
+	float    deg;
 	uint32_t tick;
 
 	if (tt_arm == 0u)
@@ -820,14 +923,40 @@ void Emm_Pos_Control(void)
 		return;
 	}
 	__disable_irq();
-	dir  = CW_OR_CCW;
-	tick = (uint32_t)(WTBL_TICK_PER_DEG * Car_data.Motor_Angle);
+	dir = CW_OR_CCW;
+	deg = Car_data.Motor_Angle - TURNTABLE_BOOT_DEG;   /* 角度域 -> 驱动器计数域(上电清零后 0 脉冲 = BOOT_DEG) */
 	__enable_irq();
+	if (deg < 0.0f)
+	{
+		/* 防御: 负角转 uint32 是 ~4.29e9 脉冲, 一条命令就能让电机转到天荒地老。
+		 * 正常码表(57~270°)且 BOOT_DEG=0 时不会走到这里 */
+		deg = 0.0f;
+	}
+	tick = (uint32_t)(WTBL_TICK_PER_DEG * deg);
+	tt_last_tick = tick;   /* 台架标定读数('?' 的 WTBL 行 TICK=) */
 	Emm_V5_Pos_Control(EMM_MOTOR_ADDR, dir, 180, 20, tick, true, false);
 }
 
+/* 上电转台零点对齐 —— 见 TURNTABLE_BOOT_DEG 处的长注释。
+ * 发 0x0A「清零当前位置」: 只把驱动器计数器归零, **电机不动**; 随后把 MCU 记账角
+ * 置成同一个物理姿态对应的角度。两侧零点恒等后, 第一条命令的行程就是
+ * |本次目标 − 上电姿态|, 不再是 |驱动器残留计数 − 目标|。
+ * 调用时点必须是 TIM5 启动之前(此时 tt_arm 恒 0, 无重发竞争, huart6 空闲),
+ * 且要在驱动器上电自检完成之后(张大头上电到可收命令约 1s 级)。 */
+void Car_Turntable_BootZero(void)
+{
+	tt_arm = 0u;
+	tt.busy = 0u;
+	tt.code = 0u;
+	tt.ms = 0u;
+	tt.settle_ms = 0u;
+	Car_data.Motor_Angle = TURNTABLE_BOOT_DEG;
+	Emm_V5_Reset_CurPos_To_Zero(EMM_MOTOR_ADDR);
+	Car_Dbg2_TtRecord(3u, 0u, TURNTABLE_BOOT_DEG);   /* kind=3: 上电清零 */
+}
+
 /**
- * @brief 配置 HWT101 输出速率为 200Hz
+  * @brief 配置 HWT101 输出速率为 200Hz
  * @note  配置会保存到 IMU 内部 Flash，后续上电无需重复配置。
  *        建议仅在首次使用或 IMU 恢复出厂设置后调用一次。
  */

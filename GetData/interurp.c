@@ -130,7 +130,7 @@ static volatile struct
 	volatile uint8_t query_fresh;
 	volatile uint8_t periodic_fresh;   /* 调试口 'p': 翻转周期状态输出 */
 	/* 转台事件登记 + 台架命令寄存 */
-	uint8_t  tt_kind;                  /* 登记 kind: 0=停止 1=打码 2=微调 */
+	uint8_t  tt_kind;                  /* 登记 kind: 0=停止 1=打码 2=微调 3=上电零点对齐 */
 	uint8_t  tt_code;                  /* 本次登记的码 */
 	float    tt_ang;                   /* 登记时刻目标角(deg) */
 	volatile uint8_t tt_fresh;
@@ -496,9 +496,13 @@ void Car_DebugTask(void)
 		{
 			printf("TT:CODE=%u ARM=1 @%d\r\n", (unsigned)tt_code, (int)(tt_ang * 10.0f));
 		}
-		else
+		else if (tt_kind == 2u)
 		{
 			printf("TT:NUDGE @%d\r\n", (int)(tt_ang * 10.0f));
+		}
+		else
+		{
+			printf("TT:BOOT ZERO @%d\r\n", (int)(tt_ang * 10.0f));   /* 3=上电零点对齐 */
 		}
 	}
 	if (bench_f != 0u)   /* 台架直转执行(命令打印走 TT/WTBL 行) */
@@ -545,15 +549,20 @@ void Car_DebugTask(void)
 void Uart6_task()
 {
 	//步进电机数据处理
-	/* 台架观测(USART2 '?' 回显): 统计 USART6 应答字节数与首字节 0x11
-	 * (张大头驱动器对合法 FD 位置帧回应答)——区分"MCU 发了但驱动器没收到"
-	 * 与"驱动器收到了已在动" */
+	/* 台架观测(USART2 '?' 回显): 统计 USART6 应答字节数与"位置帧应答"次数——区分
+	 * "MCU 发了但驱动器没收到" 与 "驱动器收到了已在动"。
+	 * 判据修正(2026-09-20): 旧判据是 Rxbuffer6[0]==0x11, 但张大头对 0xFD 位置帧的
+	 * 应答格式是 [addr][0xFD][状态][0x6B], 首字节是地址不是 0x11 → OK 恒为 0,
+	 * 明明 RX 一直在涨(链路通的)却显示"驱动器没应答", 现场会被误导。
+	 * 改成按"回显功能码 0xFD + 帧尾 0x6B"识别, 不依赖地址宏(免为此跨模块暴露常量)。
+	 * 注意: 上电零点对齐的清零帧(0x0A)应答也是 4B[addr][0x0A][状态][0x6B], 不计入 OK,
+	 * 它的存在看 RX 是否 ≥4 即可 */
 	uint8_t sta = (uint8_t)(UART6_RX_STA & 0x0FFFu);
 
 	if ((sta > 0u) && (sta <= RXbuffer6_size))
 	{
 		Emm_rx_cnt += sta;
-		if (Rxbuffer6[0] == 0x11u)
+		if ((sta >= 4u) && (Rxbuffer6[1] == 0xFDu) && (Rxbuffer6[3] == 0x6Bu))
 		{
 			Emm_reply_ok_cnt++;
 		}

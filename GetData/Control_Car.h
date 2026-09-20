@@ -98,6 +98,8 @@ void Yaw_pid_Init(void);
 void Car_Control(void);
 void ResetHWT101(void);
 void Emm_Pos_Control(void);   /* TIM5 转台重发: 内部带 tt_arm 门控+方向/角度成对快照 */
+void Car_Turntable_BootZero(void);   /* 上电零点对齐: 清零驱动器计数 + Motor_Angle=TURNTABLE_BOOT_DEG。
+                                      * 必须在 TIM5 启动前调用一次(见 Control_Car.c 内注释) */
 
 /* ---- 调度层: 段执行由 Motion 库 mf_tick 承担, 本层只做
  *      请求分发/重发幂等/事件上报, 跟瞄叠加见 Tracking_ApplyOverlay ---- */
