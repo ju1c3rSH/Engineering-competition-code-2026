@@ -76,7 +76,21 @@
 
 #define CAR_FAULT_WATCHDOG      0x04u   /* 进度看门狗: 里程 3s 无变化 */
 
-#define CAR_NAV_ID_COUNT        8u      /* NavTarget_t 契约(与 Brain mission_sm.h 一致): 0~5 任务路线, 6~7 重锚伪路线 */
+/* test/route 分支: 上电自动跑全程路线(不依赖 Brain), 每个运动段后停 3s, 一直到返回区。
+ * 用途是逐段核对路线落点。比赛版必须置 0(置 0 后 nav_id 8 消失, 其余行为零变化) */
+#define ROUTE_TEST_EN           1
+#if ROUTE_TEST_EN
+#define ROUTE_TEST_ID           8u      /* 全程自测路线 nav id */
+/* 自测期间转台是否允许动作: 0=完全冻结 —— 段入口自动摆码(nav 6 的码 7)、
+ * Brain 下发的 TURNTABLE 命令、USART2 台架命令一律不驱动电机 */
+#define ROUTE_TEST_TURNTABLE_EN 0u
+#else
+#define ROUTE_TEST_TURNTABLE_EN 1u      /* 非自测: 转台行为保持原样 */
+#endif
+
+#define CAR_NAV_ID_COUNT        (8u + (ROUTE_TEST_EN ? 1u : 0u))
+                                        /* NavTarget_t 契约(与 Brain mission_sm.h 一致): 0~5 任务路线,
+                                         * 6~7 重锚伪路线, 8=全程自测路线(仅 test/route 分支) */
 
 typedef struct
 {

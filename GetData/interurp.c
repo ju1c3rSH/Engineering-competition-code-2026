@@ -443,7 +443,13 @@ void Uart2_task()
 void Car_DebugTask(void)
 {
 	static uint32_t stat_last_tick = 0u;
+/* test/route: 默认开着 1Hz 状态块(CHASSIS/WHEEL/POSE/WTBL), 跑全程时不用手动敲 '?'
+ * 就能录下每段停等时的 X/Y/YAW; 非自测分支仍是敲 'p' 才开 */
+#if ROUTE_TEST_EN
+	static uint8_t  periodic_en = 1u;
+#else
 	static uint8_t  periodic_en = 0u;
+#endif
 	uint32_t now;
 	uint16_t ack_n, nack_n, evt_n;
 	uint8_t  sub, code, evt, evt_echo;

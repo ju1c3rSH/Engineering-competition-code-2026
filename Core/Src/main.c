@@ -143,6 +143,17 @@ int main(void)
   while ((IWDG->SR & IWDG_SR_RVU) != 0U) { }            /* 等重载值生效 */
   IWDG->KR = 0xAAAAU;                                   /* 首喂 */
 
+#if ROUTE_TEST_EN
+  /* test/route: 上电即跑全程路线自测表(nav_id=ROUTE_TEST_ID = 8), 不依赖 Brain。
+   * gear=0 = 用段表默认速度; 每个运动段后停 ROUTE_TEST_PAUSE_MS(3s) 供读 POSE;
+   * 跑到返回区(完赛区)即 NAV_DONE 停车, 不循环。
+   * 信箱深度 8, 只需入队一次, TIM4 每 10ms 由 Car_Nav_Task 消费 */
+  {
+    extern void Car_Nav_MailPush(uint8_t cmd, uint8_t a0, uint8_t a1);
+    Car_Nav_MailPush(0x01u /*REQ_NAVIGATION*/, ROUTE_TEST_ID, 0u);  /* gear=0 段表默认速度 */
+  }
+#endif
+
   /* USER CODE END 2 */
 
   /* Infinite loop */

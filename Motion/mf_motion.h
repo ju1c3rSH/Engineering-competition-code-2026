@@ -91,6 +91,7 @@ void mf_tick(mf_ctx_t *m, const mf_state_in_t *in);
 void mf_start_path(mf_ctx_t *m, const mf_seg_t *path);
 void mf_stop(mf_ctx_t *m);
 uint8_t mf_is_done(const mf_ctx_t *m);
+uint8_t mf_is_waiting(const mf_ctx_t *m);   /* 当前段是否为 WAIT(主动停等), 见 mf_path_is_waiting */
 const mf_status_t *mf_get_status(mf_ctx_t *m);
 
 /* 单步便捷指令：内部各自打包成单段路径，即“一条段的路径” */

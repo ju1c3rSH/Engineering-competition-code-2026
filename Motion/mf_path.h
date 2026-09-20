@@ -62,4 +62,13 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
 mf_path_state_t mf_path_get_state(const mf_path_ctx_t *p);
 uint16_t mf_path_get_seg_index(const mf_path_ctx_t *p);
 
+/**
+ * @brief 当前是否正处在 MF_SEG_WAIT（定时停等）段
+ *
+ * 上层（如底盘堵转看门狗）用它区分"段表主动要求的原地停等"与"真堵转":
+ * WAIT 段内车体本就应静止，里程 3s 无变化不能判成故障。
+ * @return 1=正在 WAIT 段；0=非运行态/其它段
+ */
+uint8_t mf_path_is_waiting(const mf_path_ctx_t *p);
+
 #endif /* MF_PATH_H */

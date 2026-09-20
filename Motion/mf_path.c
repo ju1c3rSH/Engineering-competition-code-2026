@@ -425,6 +425,15 @@ uint16_t mf_path_get_seg_index(const mf_path_ctx_t *p)
 {
     return p->idx;
 }
+
+uint8_t mf_path_is_waiting(const mf_path_ctx_t *p)
+{
+    if ((p == 0) || (p->path == 0) || (p->state != MF_PATH_RUN))
+    {
+        return 0u;
+    }
+    return (uint8_t)(p->path[p->idx].type == MF_SEG_WAIT);
+}
 static float seg_next_entry_speed(const mf_path_ctx_t *p)
 {
     const mf_seg_t *next;

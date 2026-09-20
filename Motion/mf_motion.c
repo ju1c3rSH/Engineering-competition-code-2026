@@ -86,6 +86,11 @@ uint8_t mf_is_done(const mf_ctx_t *m)
     return (mf_path_get_state(&m->path) == MF_PATH_DONE);
 }
 
+uint8_t mf_is_waiting(const mf_ctx_t *m)
+{
+    return mf_path_is_waiting(&m->path);
+}
+
 const mf_status_t *mf_get_status(mf_ctx_t *m)
 {
     m->status.state = mf_path_get_state(&m->path);
