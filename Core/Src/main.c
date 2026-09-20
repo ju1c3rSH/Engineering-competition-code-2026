@@ -144,14 +144,10 @@ int main(void)
   IWDG->KR = 0xAAAAU;                                   /* 首喂 */
 
 #if ROUTE_TEST_EN
-  /* test/route: 上电即跑全程路线自测表(nav_id=ROUTE_TEST_ID = 8), 不依赖 Brain。
-   * gear=0 = 用段表默认速度; 每个运动段后停 ROUTE_TEST_PAUSE_MS(3s) 供读 POSE;
-   * 跑到返回区(完赛区)即 NAV_DONE 停车, 不循环。
-   * 信箱深度 8, 只需入队一次, TIM4 每 10ms 由 Car_Nav_Task 消费 */
-  {
-    extern void Car_Nav_MailPush(uint8_t cmd, uint8_t a0, uint8_t a1);
-    Car_Nav_MailPush(0x01u /*REQ_NAVIGATION*/, ROUTE_TEST_ID, 0u);  /* gear=0 段表默认速度 */
-  }
+  /* test/route: 上电即按**原版命令状态机**的 nav 顺序自跑, 不依赖 Brain。
+   *   序列 1→6→2→3→4→7→5(不走 QR), 跑完一条自动发下一条
+   * 每个运动段后停 ROUTE_TEST_PAUSE_MS(3s) 供读 POSE; 到返回区(完赛区)停车, 不循环 */
+  Car_RouteTest_BootStart();
 #endif
 
   /* USER CODE END 2 */

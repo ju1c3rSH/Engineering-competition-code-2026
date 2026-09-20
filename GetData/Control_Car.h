@@ -77,20 +77,29 @@
 #define CAR_FAULT_WATCHDOG      0x04u   /* 进度看门狗: 里程 3s 无变化 */
 
 /* test/route 分支: 上电自动跑全程路线(不依赖 Brain), 每个运动段后停 3s, 一直到返回区。
- * 用途是逐段核对路线落点。比赛版必须置 0(置 0 后 nav_id 8 消失, 其余行为零变化) */
+ * 用途是逐段核对路线落点。比赛版必须置 0(置 0 后自测序列与停等展开全部消失,
+ * 各 nav 表恢复原样, 其余行为零变化)
+ * 【推进方式】不是把路线合成一张长表, 而是底盘自己扮演 Brain, 按原版命令状态机的
+ * nav 顺序逐条下发 REQ_NAV(走 Nav_DoRequest 同一入口), 跑完一条自动发下一条。
+ * 这样核对的是**原版每张表本身**, 改表即改标定对象, 不会被长表的二次转录带偏 */
 #define ROUTE_TEST_EN           1
 #if ROUTE_TEST_EN
-#define ROUTE_TEST_ID           8u      /* 全程自测路线 nav id */
 /* 自测期间转台是否允许动作: 0=完全冻结 —— 段入口自动摆码(nav 6 的码 7)、
  * Brain 下发的 TURNTABLE 命令、USART2 台架命令一律不驱动电机 */
 #define ROUTE_TEST_TURNTABLE_EN 0u
+#define ROUTE_TEST_GEAR         0u      /* 0=段表默认速度; 1/2/3=低/中/高强制覆盖 */
 #else
 #define ROUTE_TEST_TURNTABLE_EN 1u      /* 非自测: 转台行为保持原样 */
 #endif
 
-#define CAR_NAV_ID_COUNT        (8u + (ROUTE_TEST_EN ? 1u : 0u))
-                                        /* NavTarget_t 契约(与 Brain mission_sm.h 一致): 0~5 任务路线,
-                                         * 6~7 重锚伪路线, 8=全程自测路线(仅 test/route 分支) */
+#define CAR_NAV_ID_COUNT        8u      /* NavTarget_t 契约(与 Brain mission_sm.h 一致): 0~5 任务路线, 6~7 重锚伪路线 */
+
+#if ROUTE_TEST_EN
+/* test/route 自测推进器: 上电起跑(供 main.c 调用一次) + 进度查询(供调试口显示)。
+ * 推进本身在 Car_Nav_Task 内部完成(跑完一条自动发下一条), 不需要外部干预 */
+void Car_RouteTest_BootStart(void);
+void Car_RouteTest_Progress(uint8_t *idx, uint8_t *total, uint8_t *finished);
+#endif
 
 typedef struct
 {

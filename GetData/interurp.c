@@ -551,6 +551,22 @@ void Car_DebugTask(void)
 		}
 	}
 	Car_SegChange_Log();   /* 段切换: 变化才打, 主循环上下文(唯一 printf 点) */
+
+#if ROUTE_TEST_EN
+	/* 自测进度: 序列跑完(到返回区)打一次 RT:FINISH i/n, 中途靠 EVT NAV_DONE 与
+	 * SEG 行观察。打印放在主循环(唯一 printf 点), 推进本身在 10ms 定时里 */
+	{
+		uint8_t rt_i, rt_n, rt_f;
+		static uint8_t rt_done_printed = 0u;
+
+		Car_RouteTest_Progress(&rt_i, &rt_n, &rt_f);
+		if ((rt_f != 0u) && (rt_done_printed == 0u))
+		{
+			rt_done_printed = 1u;
+			printf("RT:FINISH %u/%u\r\n", (unsigned)rt_i, (unsigned)rt_n);
+		}
+	}
+#endif
 }
 void Uart6_task()
 {

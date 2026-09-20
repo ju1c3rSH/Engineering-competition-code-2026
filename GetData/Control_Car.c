@@ -107,55 +107,37 @@ static const mf_seg_t tbl_rebase_return[] = /* NAV_REBASE_RETURN: flag17 携人�
 };
 
 #if ROUTE_TEST_EN
-/* ================== test/route: 全程路线自测表(nav_id = ROUTE_TEST_ID) ==================
- * 用途: 不接 Brain, 上电即跑, 逐段核对路线落点(停 3s 读 POSE), 一直到返回区(完赛区)。
+/* ================== test/route: 自测命令序列(底盘自己扮演 Brain) ==================
+ * 推进方式: 不接 Brain, 底盘按**原版命令状态机**的 nav 顺序逐条自己下发 REQ_NAV,
+ * 跑完一条(NAV_DONE)自动发下一条, 直到返回区(完赛区)停车, 不循环。
+ *   序列 = 1→6→2→3→4→7→5     (去掉 NAV_TO_QR: 出发首段不走)
+ * 与 Brain Engine/mission_sm.c 的对应:
+ *   ST_NAV_BOMB(1) → ST_NAV_REBASE_BOMB(6) → ST_NAV_BUCKET(2) → ST_NAV_TARGET(3)
+ *   → ST_NAV_HOSTAGE(4) → ST_NAV_REBASE_RETURN(7) → ST_NAV_RETURN(5)
+ * 注: 2 NAV_TO_BUCKET 是空表(桶与排爆作业点同点位, 无底盘位移), 会即时 DONE 并自动
+ *     推进到 3, 现场表现为"在排爆作业点不做停留"; 3 打靶区的段内跟瞄需 Brain 下发
+ *     TRACKING_START, 自测不跟瞄, 只走段表直线。
  *
- * 内容 = 把 Brain 真机顺序 0→1→6→2→3→4→7→5 的所有运动段**原样串联**成一张长表,
- * 每个运动段后插一个 3s 停等段。之所以合并成单表而不是让底盘按 nav_id 依次自请:
- *   1) 段表连续 => 位姿连续积分, 与真机一次跑完时的里程/航向基准完全一致(重锚段
- *      6/7 的 TURN_TO 是绝对角, 依赖前面所有段的累积航向);
- *   2) 停 3s 是段表原生语义(WAIT 前一段自动减速停稳), 不必在上层再造一个状态机;
- *   3) 中途不需要任何外部握手点(转盘/扫码/抓取全部跳过)。
- * NAV_TO_BUCKET(2) 原本就是空表(与排爆作业点同点位, 无底盘位移), 本表不体现。
- *
- * 核对方法: 每个停等开始时主循环会打一行 SEG:<idx> ST=1 X=.. Y=.. YAW=..,
- * 拿 X/Y/YAW 与路线设计值对; 也可以敲 '?' 读四行状态块。
- * 跑完(SEG 打到最后 + NAV=D)即抵达返回区, 车停在原地不再动作(不循环)。
- *
- * 【改表须知】改这里 = 改标定对象。距离/角度仍用原表的"轮转单位"(MF_M_DIST),
- * 与 tbl_bomb 等保持一致, 别一边用米一边用单位 */
-static const mf_seg_t tbl_route_test[] =
+ * 【停 3s 在哪加的】不是这里 —— 由 Nav_GearTable() 在把段表拷进 RAM 时自动在每个
+ * 运动段之后插一个 SEG_PAUSE(3s)。所以原版每张表一个字不改, 只在自测时展开成
+ * "跑一段→停 3s" 的节奏; 空表(2)没有运动段, 自然不停。
+ * 【位姿连续性】跨 nav 只换段表指针, 里程计 odom 不重置, 故重锚段 6/7 的 TURN_TO
+ * 绝对角仍依赖前面所有段的累积航向, 与真机一次跑完的基准一致 */
+static const uint8_t route_test_seq[] =
 {
-	/* --- 0 NAV_TO_QR: 出发首段 --- */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(43.0f)),          SEG_PAUSE,
-	/* --- 1 NAV_TO_BOMB: 排爆区去程(末段转弯+末段直线在重锚表) --- */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(43.0f)),          SEG_PAUSE,
-	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),                SEG_PAUSE,  /* 左 90 */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(12.0f)),          SEG_PAUSE,
-	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),                SEG_PAUSE,  /* 右 90 */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(46.0f)),          SEG_PAUSE,
-	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),                SEG_PAUSE,  /* 左 90 */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(35.0f)),          SEG_PAUSE,
-	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),                SEG_PAUSE,  /* 右 90 */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(48.5f)),          SEG_PAUSE,
-	/* --- 6 NAV_REBASE_BOMB: 末段转弯 + 低速进作业点 + 航向重锚 --- */
-	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),                SEG_PAUSE,  /* 右 90 */
-	SEG_MOVE(MF_M_SPEED(Low_speed),    MF_M_DIST(45.5f)),          SEG_PAUSE,
-	SEG_TURN_TO(-90.0f),                                           SEG_PAUSE,  /* 重锚 */
-	/* --- 2 NAV_TO_BUCKET: 空表, 无底盘位移 --- */
-	/* --- 3 NAV_TO_TARGET: 打靶区 --- */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(175.0f)),         SEG_PAUSE,
-	/* --- 4 NAV_TO_HOSTAGE: 人质区 --- */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(37.5f)),          SEG_PAUSE,
-	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),                SEG_PAUSE,  /* 右 90 */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(60.0f)),          SEG_PAUSE,
-	/* --- 7 NAV_REBASE_RETURN: 返程前航向重锚 --- */
-	SEG_TURN_TO(-179.8f),                                          SEG_PAUSE,
-	/* --- 5 NAV_TO_RETURN: 返回区(完赛区) --- */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(170.0f)),         SEG_PAUSE,
-	SEG_END
+	1u,   /* NAV_TO_BOMB         排爆区去程 */
+	6u,   /* NAV_REBASE_BOMB     末段转弯+低速进作业点+航向重锚 */
+	2u,   /* NAV_TO_BUCKET       空表(同点位, 无底盘位移) */
+	3u,   /* NAV_TO_TARGET       打靶区 */
+	4u,   /* NAV_TO_HOSTAGE      人质区 */
+	7u,   /* NAV_REBASE_RETURN   返程前航向重锚 */
+	5u,   /* NAV_TO_RETURN       返回区=完赛区 */
 };
+#define ROUTE_TEST_SEQ_LEN  ((uint8_t)(sizeof(route_test_seq) / sizeof(route_test_seq[0])))
+static uint8_t rt_idx;        /* 当前正在跑的序列下标 */
+static uint8_t rt_finished;   /* 1=序列已跑完(停在返回区), 主循环打印一次 */
 #endif
+
 
 static const mf_seg_t *const nav_routes[CAR_NAV_ID_COUNT] =
 {
@@ -167,14 +149,11 @@ static const mf_seg_t *const nav_routes[CAR_NAV_ID_COUNT] =
 	tbl_return,         /* 5 NAV_TO_RETURN     */
 	tbl_rebase_bomb,    /* 6 NAV_REBASE_BOMB   */
 	tbl_rebase_return,  /* 7 NAV_REBASE_RETURN */
-#if ROUTE_TEST_EN
-	tbl_route_test,     /* 8 ROUTE_TEST        */
-#endif
 };
 typedef char nav_route_count_check[(sizeof(nav_routes) / sizeof(nav_routes[0])) == CAR_NAV_ID_COUNT ? 1 : -1];
 
 #if ROUTE_TEST_EN
-#define NAV_GEAR_BUF_LEN 44u      /* 最长表 tbl_route_test: 19 运动段 + 19 停等 + END */
+#define NAV_GEAR_BUF_LEN 24u      /* 自测展开后最长: tbl_bomb 9 运动段 + 9 停等 + END = 19 */
 #else
 #define NAV_GEAR_BUF_LEN 12u      /* 最长表 tbl_bomb: 9 段 + END */
 #endif
@@ -190,34 +169,59 @@ static float Nav_GearSpeed(uint8_t speed_gear)
 	}
 }
 
-/* speed_gear 覆盖需改写段速度，拷入 RAM 缓冲后启动 */
+/* speed_gear 覆盖需改写段速度，拷入 RAM 缓冲后启动。
+ * test/route: 拷的同时在每个运动段之后插一个 SEG_PAUSE(3s) —— 原版每张表不动,
+ * 只在自测时展开成"跑一段→停 3s"。停等是段表原生语义(WAIT 前一段自动抛物线减速
+ * 到 0), 所以"跑完一段停三秒再继续"不需要上层再造状态机 */
 static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed_gear)
 {
 	static mf_seg_t buf[NAV_GEAR_BUF_LEN];
 	const mf_seg_t *src = nav_routes[navigation_target_id];
-	uint8_t i;
+	uint8_t i, o;
 	float v;
-
+#if ROUTE_TEST_EN
+	const mf_seg_t pause_seg = SEG_PAUSE;
+#else
 	if (speed_gear == 0u)
 	{
 		return src;
 	}
-	v = Nav_GearSpeed(speed_gear);
-	for (i = 0u; i < NAV_GEAR_BUF_LEN; i++)
+#endif
+
+	v = (speed_gear == 0u) ? 0.0f : Nav_GearSpeed(speed_gear);
+	o = 0u;
+	for (i = 0u; (i < NAV_GEAR_BUF_LEN) && (o < NAV_GEAR_BUF_LEN); i++)
 	{
-		buf[i] = src[i];
-		if (buf[i].type == MF_SEG_END)
+		buf[o] = src[i];
+		if (buf[o].type == MF_SEG_END)
 		{
 			break;
 		}
-		if (buf[i].type == MF_SEG_MOVE_DIST)
+		if (speed_gear != 0u)
 		{
-			buf[i].p.move_dist.speed_mps = v;
+			if (buf[o].type == MF_SEG_MOVE_DIST)
+			{
+				buf[o].p.move_dist.speed_mps = v;
+			}
+			else if (buf[o].type == MF_SEG_ARC)
+			{
+				buf[o].p.arc.speed_mps = v;
+			}
 		}
-		else if (buf[i].type == MF_SEG_ARC)
+		o++;
+#if ROUTE_TEST_EN
+		/* 运动段之后插停等; WAIT 段本身不再插(防表里已有 WAIT 时连停两次) */
+		if ((src[i].type != MF_SEG_WAIT) && (o < NAV_GEAR_BUF_LEN))
 		{
-			buf[i].p.arc.speed_mps = v;
+			buf[o++] = pause_seg;
 		}
+#endif
+	}
+	/* 缓冲耗尽时兜底收尾: 宁可截断也必须以 END 结束, 否则段表会越过缓冲读飞 */
+	if (o >= NAV_GEAR_BUF_LEN)
+	{
+		o = (uint8_t)(NAV_GEAR_BUF_LEN - 1u);
+		buf[o].type = MF_SEG_END;
 	}
 	return buf;
 }
@@ -441,9 +445,6 @@ static void Nav_Turntable(uint8_t turn_code)
 static const uint8_t nav_entry_turn[CAR_NAV_ID_COUNT] =
 {
 	0u, 0u, 0u, 0u, 0u, 0u, 7u, 0u,   /* 仅 NAV_REBASE_BOMB(6) -> 回正 90° */
-#if ROUTE_TEST_EN
-	0u,                               /* 8 ROUTE_TEST: 本分支转台冻结, 恒不动 */
-#endif
 };
 
 /* REQ_NAV 幂等: 同 id 进行中忽略 / 已完成补发 DONE / 其余停旧起新 */
@@ -479,6 +480,42 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 		Nav_Turntable(nav_entry_turn[navigation_target_id]);
 	}
 }
+
+#if ROUTE_TEST_EN
+/* ---- test/route: 自测推进器(底盘自己扮演 Brain 的命令状态机) ----
+ * 当前 nav 跑完(NAV_DONE)后按 route_test_seq 自动下发下一条 REQ_NAV。
+ * 走的是 Brain 下发命令的**同一个入口 Nav_DoRequest**, 区别只是命令不来自串口信箱,
+ * 所以段表装载/转台入口/幂等语义与原版完全一致, 核对的就是原版每张表。
+ * 调用点在 Car_Nav_Task(10ms 定时)里, 与 nav 状态机同上下文, 无访问竞争 */
+static void RouteTest_OnNavDone(void)
+{
+	if (rt_idx >= ROUTE_TEST_SEQ_LEN)            return;   /* 序列已跑完: 停在返回区 */
+	if (nav.nav_id != route_test_seq[rt_idx])    return;   /* 不是本序列的 nav(手动下发): 不接管 */
+	rt_idx++;
+	if (rt_idx >= ROUTE_TEST_SEQ_LEN)
+	{
+		rt_finished = 1u;   /* 到返回区了, 主循环打一次 RT:FINISH */
+		return;
+	}
+	Nav_DoRequest(route_test_seq[rt_idx], ROUTE_TEST_GEAR);
+}
+
+/* 上电起跑: main.c 在看门狗初始化之后调用一次, 相当于 Brain 发的第一条 REQ_NAV */
+void Car_RouteTest_BootStart(void)
+{
+	rt_idx = 0u;
+	rt_finished = 0u;
+	Nav_DoRequest(route_test_seq[0], ROUTE_TEST_GEAR);
+}
+
+/* 供调试口显示进度: idx=当前序列下标, total=序列长度, finished=是否已到返回区 */
+void Car_RouteTest_Progress(uint8_t *idx, uint8_t *total, uint8_t *finished)
+{
+	if (idx != 0)      { *idx = rt_idx; }
+	if (total != 0)    { *total = ROUTE_TEST_SEQ_LEN; }
+	if (finished != 0) { *finished = rt_finished; }
+}
+#endif
 
 /* 急停冻结转台: 弃用在途位置帧(DMA 中途可被共享 rxb 的 memset 撕裂, 且
  * Emm_V5 内部 HAL_UART_Transmit_DMA 遇 BUSY 会静默吞掉停止帧), 改用局部
@@ -765,6 +802,9 @@ void Car_Nav_Task(void)
 	{
 		nav.state = NAV_DONE;
 		Car_Event_Send(CAR_EVT_NAV_DONE, nav.nav_id, 0x00u);
+#if ROUTE_TEST_EN
+		RouteTest_OnNavDone();   /* 自测: 按原版命令序列自动推进到下一条 nav */
+#endif
 		return;
 	}
 
