@@ -28,6 +28,15 @@ void Yaw_pid_Init()
 /* nav_id 段表: 原 flags 路线逐段复刻(基线 git 4f3ceb2 true_BOOM_Finish) */
 #define SEG_MOVE(v, d)  { .type = MF_SEG_MOVE_DIST, .reset_pid = 1, \
                           .p.move_dist = { (v), (d), MF_KEEP, SEG_ACC_MPS2 } }
+/* MOVE 段、但航向目标写死成**绝对角**(不用 MF_KEEP):
+ * MF_KEEP 的目标是路径标称航向 nom_yaw —— 它是个**推算值**(首段进段时用实测航向
+ * 定锚, 之后每条 ARC 加 ±90°、每个 TURN_TO 取其目标角)。上游哪一段少转了零点几度,
+ * 这条直线就会忠实"保持错误", 并按「航向偏差(rad) × 段长」放大成横向偏移; 长直线
+ * 是最大的放大器(最后那条 5.34m: 偏 1° 就是 93mm)。写成绝对角则该段航向不再溯源
+ * 推算链, 车会主动把自己掰回绝对基准 —— 这就是"既要走到、又要走在车道线上"的手段。
+ * 完成判据仍只看剩余行程(seg_move_dist 末尾), 不等航向到位, 因此不会卡段 */
+#define SEG_MOVE_HD(v, d, hdg) { .type = MF_SEG_MOVE_DIST, .reset_pid = 1, \
+                          .p.move_dist = { (v), (d), (hdg), SEG_ACC_MPS2 } }
 #define SEG_ARC(v, r)   { .type = MF_SEG_ARC, .reset_pid = 1, \
                           .p.arc = { (v), (r), ((r) > 0.0f ? 90.0f : -90.0f), SEG_ACC_MPS2 } }
 /* 重锚转向的到位容差: 段默认 MF_TOL_YAW_DEG=1.0° 太松 —— 重锚角是后续所有段的
@@ -116,9 +125,59 @@ static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~16 人质区
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(60.0f)),
 	SEG_END
 };
+/* ---- 返程段 / 终点的绝对航向: 需求是任务终点 YAW 严格 -180° ----
+ *
+ * -180° 是**几何真值**, 不是拍脑袋拍出来的常数: 扫码后的 GYRO_ZERO 把当时车头朝向
+ * 定义为 0°, 出发首段沿该方向前进, 于是 -180° = 与出发首段严格反向 —— IMU 直接可读。
+ * 这条路线所有段原本都用 MF_KEEP(继承推算出来的 nom_yaw), 于是**终点停在什么角度、
+ * 停在车道线的哪一侧, 都取决于推算链攒下多少残差**。想要一个确定的终点航向, 就
+ * 必须给最后的段注入绝对真值, 而不是指望前面调准。
+ *
+ * NAV_RETURN_LEG_YAW_DEG 一次管两件事, 且两者必须同值(否则互相打架):
+ *   1) tbl_return 那条 5.34m 长直线的**行进目标航向**(SEG_MOVE_HD 的绝对角) ——
+ *      决定终点**位置**落在中线的哪一侧;
+ *   2) 表尾收尾 TURN_TO 的**停车姿态** —— 决定终点 POSE 的 YAW 读数。
+ * 给两个不同的值, 车会先斜着走到点位、到位后再原地掰正(多一次的行为, 且横向不再
+ * 对称); 同值则是"一路对着基准走过去"。
+ *
+ * 【NAV_RETURN_TRIM_DEG = 现场标定项, 默认 0】
+ * 写回几何标称 -180 之后, 若车实物仍系统性偏在车道某一侧, 说明 IMU 读数与真实车体
+ * 朝向之间还有刻度/零点误差 —— 这类误差闭环看不见(它只保证"读数=目标"), EY 行和
+ * POSE 行也看不出来。这时**不要去加 PID 增益**, 而是把实测横向偏差换算成角度填进来:
+ *
+ * 写在标称 -180 之上: 先把 trim 保持 0 跑一遍, 量出残余横向偏差后按下式填一次即可。
+ *
+ *        ΔY  —— 终点横向偏差, mm: ΔY = (终点 Y) - (中线 Y)
+ *        L   —— 这条腿的长度 5341mm
+ *        93.2 = L × π/180, 即这条腿上 1° 航向偏差对应的横向位移
+ *
+ *        trim(度) = ΔY / 93.2
+ *
+ *   【推导】这条腿上沿航向 ψ = -180°+ε 走 L, 横向位移 ΔY = L·sin(ψ) ≈ -93.2·ε。
+ *   闭环只保证"IMU 读数 = 目标"; 若 IMU 读数与真实车体朝向差 e, 车实际就会按
+ *   ψ = -180°+e 走, 产生 ΔY = -93.2·e。要把偏移抹平, 就得把读数目标反向偏 -e,
+ *   而 e = -ΔY/93.2, 故 trim = -e = **+ΔY/93.2**。符号很容易写反, 写完务必拿
+ *   实测复算一遍: 车偏 +Y 时 trim 应为正(让目标转回偏 -Y 侧去补偿)。
+ *
+ *   【方向约定】本条腿车头朝 -180°、即沿 -X 行驶, 于是 车体右侧 = +Y, 车体左侧 = -Y。
+ *   注意站在出发点沿出发方向看过去时左右是**反**的(那边眼中的"右" = -Y)。
+ *     ΔY > 0(偏向车体右侧 / +Y) -> trim 取正;
+ *     ΔY < 0(偏向车体左侧 / -Y) -> trim 取负。
+ *   验收必须看实物(角尺/场地线), 不能看 POSE 读数 —— 读数恒等于目标值, 它不会
+ *   告诉你车歪没歪。
+ *
+ * 【完赛区必须容得下原地转向】若验收不允许终点有任何转动, 把
+ * NAV_RETURN_FINAL_REBASE_EN 置 0 = 去掉表尾的收尾转向(回退成"跑完即停") */
+#define NAV_RETURN_TRIM_DEG        (0.0f)
+#define NAV_RETURN_LEG_YAW_DEG     (-180.0f + NAV_RETURN_TRIM_DEG)
+#define NAV_RETURN_FINAL_REBASE_EN 1u
+
 static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 */
 {
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(170.0f)),
+	SEG_MOVE_HD(MF_M_SPEED(Middle_speed), MF_M_DIST(170.0f), NAV_RETURN_LEG_YAW_DEG),
+#if NAV_RETURN_FINAL_REBASE_EN
+	SEG_TURN_TO(NAV_RETURN_LEG_YAW_DEG),   /* 终点姿态收尾: 注入 -180° 绝对真值 */
+#endif
 	SEG_END
 };
 /* ---- 重锚角 = 几何标称 + 台架标定补偿(不是几何常量!) ----
@@ -141,7 +200,18 @@ static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 
  * 5.34m 长直线上放大成 ~29mm + ~28mm 横向偏差并继续累积; 只有"臂末端 3mm"那点
  * 影响是可以忽略的, 沿路径的放大不能忽略 */
 #define NAV_REBASE_BOMB_YAW_DEG     (-90.3f)
-#define NAV_REBASE_RETURN_YAW_DEG   (-179.8f)
+/* 返程重锚: 旧值 -179.8f(几何标称 -180 + 0.2 的标定补偿)。改回 -180.0f 的理由:
+ *   1) 原注释说补偿的是"IMU 航向累积漂移 = 陀螺零偏 × 时间"。该模型已被 2026-09-20
+ *      实测证伪 —— 终点停车静置 70s, YAW 死稳定在 -1781 纹丝不动(若按时间积分,
+ *      70s 足够爬出可见量)。既然不随时间漂, 这个 0.2° 就不是当时该给的量。
+ *   2) 更要紧的: +0.2° 是**方向确定**的偏置。它经其后 5.34m 的返程长直线放大成
+ *      Δy = -5341 × 0.2 × π/180 = -18.6mm 的横向偏移, 与实车"系统性偏向某一侧"
+ *      的现象同向(实车实测 ΔY = -224mm, 远不止这一项, 但它是可消除的固定一项)。
+ *   3) 返程方位不再靠它 —— tbl_return 的行进目标已改成 SEG_MOVE_HD 的绝对角
+ *      NAV_RETURN_LEG_YAW_DEG, 本值只决定重锚那一刻的停车姿态。几何标称回归。
+ * 若之后发现实车确实还需要这 0.2° 的偏置, 把它加进 NAV_RETURN_TRIM_DEG(那边给的
+ * 是横向偏差换算, 有明确物理依据), 不要直接改回这里 */
+#define NAV_REBASE_RETURN_YAW_DEG   (-180.0f)
 
 static const mf_seg_t tbl_rebase_bomb[] =   /* NAV_REBASE_BOMB: 排爆区末段(原 tbl_bomb 表尾)+绝对航向重锚。
                                              * 末段转弯与其后的低速直线挪进本表, 与转盘 90° 扫描位并行:
