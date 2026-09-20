@@ -115,6 +115,28 @@ static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(170.0f)),
 	SEG_END
 };
+/* ---- 重锚角 = 几何标称 + 台架标定补偿(不是几何常量!) ----
+ * 提交 86ff34b 原文: "nav_id 6/7 = MF_SEG_TURN_TO -90.3/-179.8 度(原 flag10/flag17
+ * 重锚值, 台架标定项)"。几何标称是 -90.0 / -180.0, 但台架实测要 -90.3 / -179.8 才
+ * 能对准 —— 差值 -0.3 / +0.2 度就是当年实测到的**IMU 航向累积漂移**。
+ *
+ * 它补偿的是"跑到那个点时 IMU 已经漂了多少", 而漂移 = 陀螺零偏 × 上电起累计时间。
+ * 所以这是个随时间量, 不是常量:
+ *   - 固件改了路径行为或耗时(ARC 几何/标称航向/减速裕度/停等次数都会改耗时)后,
+ *     漂移量随之改变, 旧标定值即失效 —— 必须重新标定, 不能照搬旧值。
+ *   - 漂移的**符号**决定该加还是该减。仿真 drift_sim.py: 正零偏下 -90.3 反而略差
+ *     于 -90.0(终点 -1.27 vs -1.20 deg), 负零偏下 -90.3 明显更好。符号只能实测。
+ *   - 两个标定值一负一正(-0.3 / +0.2), 说明它们来自不同条件, 不能互推。
+ *
+ * 【重新标定方法】车跑到该点、臂对准目标时, 用底盘 '?' 的 POSE 行读 YAW —— 那就是
+ * "对准时的 IMU 读数", 直接填进来。配合相机看三坑位置交叉验证。
+ *
+ * 【别小看这 0.3 度】这两个角是**后续所有段的航向基准**。0.3° 在其后的 5.5m 与
+ * 5.34m 长直线上放大成 ~29mm + ~28mm 横向偏差并继续累积; 只有"臂末端 3mm"那点
+ * 影响是可以忽略的, 沿路径的放大不能忽略 */
+#define NAV_REBASE_BOMB_YAW_DEG     (-90.3f)
+#define NAV_REBASE_RETURN_YAW_DEG   (-179.8f)
+
 static const mf_seg_t tbl_rebase_bomb[] =   /* NAV_REBASE_BOMB: 排爆区末段(原 tbl_bomb 表尾)+绝对航向重锚。
                                              * 末段转弯与其后的低速直线挪进本表, 与转盘 90° 扫描位并行:
                                              * 本段入口由底盘自行摆码 7(见 nav_entry_turn), 转台在最后一个
@@ -124,16 +146,14 @@ static const mf_seg_t tbl_rebase_bomb[] =   /* NAV_REBASE_BOMB: 排爆区末段(
 {
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),      /* 右 90: 原 tbl_bomb 表尾转弯 */
 	SEG_MOVE(MF_M_SPEED(Low_speed),    MF_M_DIST(45.5f)),/* 末段低速进作业点 */
-	SEG_TURN_TO(-90.0f),                                 /* 对坑前重锚: 五个闭环 90° 弧的标称终点。
-	                                                      * 旧值 -90.3 是旧车 flag10 实测搬运; 0.3° 在
-	                                                      * 0.5~0.7m 臂展上仅 3mm 级, 够不着横向偏移问题。
-	                                                      * 要定这个角: 用底盘 '?' 的 POSE 行读到达 YAW
-	                                                      * + 看三坑在相机里的位置, 别猜 */
+	SEG_TURN_TO(NAV_REBASE_BOMB_YAW_DEG),                /* 对坑前重锚: 五个闭环 90° 弧的终点。
+	                                                      * 标定项, 含 IMU 累积漂移补偿 —— 见上面
+	                                                      * NAV_REBASE_BOMB_YAW_DEG 的说明与重新标定方法 */
 	SEG_END
 };
 static const mf_seg_t tbl_rebase_return[] = /* NAV_REBASE_RETURN: flag17 携人质返程前重锚 */
 {
-	SEG_TURN_TO(-179.8f),
+	SEG_TURN_TO(NAV_REBASE_RETURN_YAW_DEG),
 	SEG_END
 };
 
