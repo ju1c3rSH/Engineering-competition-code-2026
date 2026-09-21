@@ -37,6 +37,12 @@ __IO uint16_t UART3_RX_STA = 0;
 __IO uint16_t UART4_RX_STA = 0;
 __IO uint16_t UART6_RX_STA = 0;
 
+/* 调试口(USART2)链路健康计数 —— 用于把"日志空档/串口没反应"定位到具体一层。
+ * 生产者: fputc(主循环) 与 HAL_UART_ErrorCallback(ISR); 消费者: Car_Debug_Stat_Print
+ * 的 LINK 行(主循环, 1Hz)。均为单字读写, 无需临界区。 */
+volatile uint32_t Dbg2_TxFail_Cnt = 0u;   /* HAL_UART_Transmit 非 OK = 该字符没发出去 */
+volatile uint32_t Dbg2_RxErr_Cnt  = 0u;   /* USART2 RX 错误回调次数(ORE/FE/NE/PE) */
+
 
 /* USER CODE END TD */
 
@@ -570,6 +576,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
   }
   else if (huart == &huart2)
   {
+    Dbg2_RxErr_Cnt++;   /* 调试口 RX 帧错/噪声/溢出: 持续增长=RX 线接触不良或受扰 */
     RxRearm(&huart2, Rxbuffer2, RXbuffer2_size, 4u);
   }
   else if (huart == &huart6)

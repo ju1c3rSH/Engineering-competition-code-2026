@@ -1215,6 +1215,8 @@ void ResetHWT101(void)
  * 原 9 参 Car_Debug_Snapshot 一并内聚于此(printf 本身仍在 main 上下文) */
 void Car_Debug_Stat_Print(void)
 {
+	extern volatile uint32_t Dbg2_TxFail_Cnt;   /* stm32f4xx_it.c: 调试口链路健康计数 */
+	extern volatile uint32_t Dbg2_RxErr_Cnt;
 	const mf_status_t *st;
 	const mf_pose_t *pose;
 	mf_ctx_t *m;
@@ -1269,6 +1271,17 @@ void Car_Debug_Stat_Print(void)
 	printf("EMM:TF=%u RX=%u OK=%u\r\n",   /* 转台台架: UART6 DMA 失败/RX 应答字节/0x11 应答帧 */
 	       (unsigned)Emm_tx_fail_cnt,
 	       (unsigned)Emm_rx_cnt, (unsigned)Emm_reply_ok_cnt);
+	/* 调试口链路健康行 —— 把"日志空档 / 串口没反应"定位到具体一层(见 stm32f4xx_it.c):
+	 * MS  = MCU 自身 uptime(ms)。日志出现空档后只看这一列即可判决:
+	 *       空档后 MS 跳过整段(例 5000 -> 21000) = MCU 一直在跑、一直在打印,
+	 *         丢的是 PC/线缆/USB 转接头那一段(车照常跑完全程即佐证);
+	 *       MS 归小(≈1000 量级) = MCU 复位过, 再看开机横幅的 RST=/FAULT-LAST: 行定性;
+	 *       MS 连续无跳变却有空档 = 数据在 PC 侧被吃(终端缓存/换驱动)。
+	 * TF  = fputc 发送失败(丢字符)次数, 非 0 = MCU 发送侧自己坏(线缆无关);
+	 * RXE = USART2 接收错误回调次数(ORE/FE/NE/PE), 持续增长 = RX 线噪声/接触不良。 */
+	printf("LINK:MS=%u TF=%u RXE=%u\r\n",
+	       (unsigned)HAL_GetTick(),
+	       (unsigned)Dbg2_TxFail_Cnt, (unsigned)Dbg2_RxErr_Cnt);
 }
 
 /* 段切换观测(替代原 mf_path.c 库层内的 printf): 库层打印 + 经 mf_tick 在
