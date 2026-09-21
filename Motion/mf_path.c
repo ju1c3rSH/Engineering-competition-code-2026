@@ -277,9 +277,16 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
          * 残差; 速度源用 cur_speed(斜坡后实际值), 起步/减速前馈自动缩放。
          * 注意: 勿套 seg_wz_ramp —— 进弯缓起 = 进弯前固定多走直线(实测 10~30cm) */
 #if MF_ARC_XTRACK_EN
+        /* 横向项必须乘 arc_sgn —— 2026-09-21 实车修正(此前漏乘, 右转弧越修越偏)。
+         * e_y = rho - R 是"离进段锚定圆心多远", 恒正=弧外, 与左右无关;
+         * 但"往哪边打方向才能回到弧内"是分左右的: 左转圆心在车左 → 往左补(+wz),
+         * 右转圆心在车右 → 必须往右补(-wz)。漏乘 arc_sgn 时右转弧被推向弧外,
+         * 正是实测右转弧 EY=+103mm 明显差于左转弧 +77mm 的原因(见 2026-09-21 日志)。
+         * 镜像仿真 arc_xtrack_sim.py 的 seg_arc 只写了左转(psi_path = phi + 90),
+         * 从未跑过右转弧, 所以这个符号错误在仿真里不会暴露 —— 改仿真时务必补右转用例。 */
         out->wz_dps = mf_pid_calc(p->pid_yaw, e_psi, dt)
                     + (p->cur_speed / a->radius_m) * (180.0f / MF_PI_F)
-                    + MF_ARC_XTRACK_K * p->arc_ey_m;
+                    + MF_ARC_XTRACK_K * p->arc_ey_m * p->arc_sgn;
 #else
         {
             float yaw_sp = p->entry.yaw_deg
