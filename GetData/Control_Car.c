@@ -1142,9 +1142,9 @@ void mf_app_init(void)
 		.max_vy_mps    = 0.0f,
 		.max_wz_dps    = 150.0f,         /* Middle 弧线稳态 57dps + 修正余量 */
 		.yaw_kp        = 16.0f,    /* 走直线蛇形修复: 外环降带宽匹配轮速内环(原32.4欠阻尼~1s极限环) */
-		.yaw_ki        = 2.0f,
+		.yaw_ki        = 0.0f,     /* 2026-09-21: 2.0 未做 A/B 且实车反而更差, 回退到 09-20 可跑值 */
 		.yaw_kd        = 0.8f,     /* 航向环加阻尼项, 抑制匀速直行左右摆 */
-		.yaw_i_max     = 8.0f,
+		.yaw_i_max     = 0.0f,     /* 与 yaw_ki 同步回退(ki=0 时 I 项本就不累积) */
 		.yaw_out_max   = 172.8f,
 		.pv_kp         = 2.0f,
 		.wheel_kp      = 0.6f,     /* 蛇形修复: 0.3 内环响应过慢(全靠 I 慢爬);

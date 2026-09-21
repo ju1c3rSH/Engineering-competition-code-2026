@@ -255,7 +255,10 @@
  *
  * 置 0 恢复"每条 nav 表重新定锚"的旧行为, 供 A/B。 */
 #ifndef MF_NOM_HEADING_PERSIST_EN
-#define MF_NOM_HEADING_PERSIST_EN   1
+/* 2026-09-21 实车复盘: 置 1 后其它腿反而更差, 暂关, 回退到 09-20 23:00 的可跑状态。
+ * 注意: 终点的绝对航向修复(返程腿 SEG_MOVE_HD + 表尾收尾 TURN_TO)不经过 nom_yaw,
+ * 与本项无关, 关掉不影响终点航向。 */
+#define MF_NOM_HEADING_PERSIST_EN   0
 #endif
 
 #if (MF_CHASSIS_TYPE == MF_CHASSIS_DIFF || MF_CHASSIS_TYPE == MF_CHASSIS_TRACK)
