@@ -82,7 +82,15 @@ void Yaw_pid_Init()
  * 【配套约束】WAIT 段内车体静止, 里程 3s 无变化会撞上 NAV_STALL_MS(3000ms)
  * 堵转看门狗 —— 已由 Car_Nav_Task 里的 mf_is_waiting() 分支豁免。
  * 改这个时长或删掉豁免, 车会在每次停等结束时报 NAV_FAULT 并中途停车 */
-#define ROUTE_TEST_PAUSE_MS  3000u
+/* 【2026-09-21 置 0: 去掉大段末的 3s 停等】现场实测终点航向未改善、且其它路线反而
+ * 更差, 决定先排掉"停等"这个变量 —— 自测剖面 = 纯比赛剖面(一条 nav 跑完立刻承接下一条)。
+ * 置 0 后 Nav_GearTable 的整个插桩分支被裁掉(`#if (ROUTE_TEST_PAUSE_MS > 0u)` 不成立),
+ * 段表回原版形态。自测推进不受影响: RouteTest_OnNavDone() 走 NAV_DONE -> Nav_DoRequest,
+ * 与 WAIT 段无关, 只是不再有 3s 静止窗口。
+ * 副作用: PD: 白走里程诊断行不再打印(它在 WAIT 段内取样); 但 SEG:<段> ST=1 X Y YAW
+ * 是**每段进段**由 Car_SegChange_Log 打的, 逐段落点数据仍然完整。
+ * 想恢复停等: 改回 3000u 即可(改大必看 Car_Nav_Task 里 mf_is_waiting() 的堵转豁免) */
+#define ROUTE_TEST_PAUSE_MS  0u
 
 /* 停等插桩粒度: 0 = 只在大段(nav 表)末尾插一次(默认, 与比赛剖面一致);
  * 1 = 每个运动段后都插(旧策略), 仅作 A/B 对照 —— 起停 18 次, 白走里程约 3.5 倍 */

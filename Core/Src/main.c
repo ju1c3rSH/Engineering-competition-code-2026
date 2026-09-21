@@ -146,7 +146,7 @@ int main(void)
 #if ROUTE_TEST_EN
   /* test/route: 上电即按**原版命令状态机**的 nav 顺序自跑, 不依赖 Brain。
    *   序列 1→6→2→3→4→7→5(不走 QR), 跑完一条自动发下一条
-   * 每个运动段后停 ROUTE_TEST_PAUSE_MS(3s) 供读 POSE; 到返回区(完赛区)停车, 不循环 */
+   * 停等见 ROUTE_TEST_PAUSE_MS(现 0 = 不停, 纯比赛剖面); 到返回区(完赛区)停车, 不循环 */
   Car_RouteTest_BootStart();
 #endif
 
