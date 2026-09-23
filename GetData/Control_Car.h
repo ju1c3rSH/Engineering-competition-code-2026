@@ -71,6 +71,17 @@
 #define TRACKING_MAX_YAW_RATE_DPS       60.0f   /* 跟瞄角速度限幅 */
 #define TRACKING_STATIC_ERROR_MAX       0.30f   /* 段走完后的原地静瞄仅当|e|不超过此值(护住后续段表航向基准) */
 
+/* ---- 进近/悬停护栏(2026-09-23 现场问题定位: 打靶段"有误差但车不往前走") ----
+ * 现场现象: 收到 TRACKING_START 后车几乎不动。两条机制都能造成"车停住":
+ *   ① 车正朝靶标前进 ⇒ 靶心天然接近画面中心(|e|<0.05) ⇒ 连续 500ms 就判"收敛"→ LOCKED
+ *      并每拍把段表 vx 覆盖成 0; LOCKED 是黏性态, 同 id 重发 REQ_NAV 走 early return、
+ *      重发 START 只补 DONE ⇒ 无法自愈; 且 tracking != IDLE 时进度看门狗也被清零 ⇒ 不报 FAULT。
+ *   ② found=0 / 误差流断 >500ms ⇒ 悬停 HoldStill ⇒ "车不动→靶进不了视野→车不动"死锁。
+ * 见 Control_Car.c 的 Tracking_CheckConverged / Tracking_ApplyOverlay 注释 */
+#define TRACKING_CONVERGE_GATE_EN       1u      /* 1=进近未完成不许收敛锁停(0=回旧行为做 A/B) */
+#define TRACKING_CONVERGE_REMAIN_M      1.0f    /* 距段尾该里程内才允许"收敛即刹停" */
+#define TRACKING_HOVER_MAX_MS           2000u   /* 丢目标悬停上限: 超时放行段表继续前进(0=关) */
+
 /* 旧短名兼容别名: interurp.c 收发沿用, 值与全称一致, 新代码用全称 */
 #define CAR_SUB_REQ_NAV         CAR_SUB_REQ_NAVIGATION
 

@@ -236,6 +236,7 @@ static struct
 	uint8_t target_found_flag;          /* 最新有效标志 */
 	uint16_t frame_age_ms;              /* 距上次误差帧时长 */
 	uint16_t hold_ms;                   /* |e|小于阈值维持时长 */
+	uint16_t hover_ms;                  /* 丢目标/丢帧的悬停累计(超 TRACKING_HOVER_MAX_MS 放行段表) */
 	uint8_t tracking_speed_level;       /* 0=段表速度/1=低速跟瞄 */
 } tracking;
 
@@ -503,6 +504,7 @@ static void Tracking_Start(uint8_t tracking_speed_level)
 	tracking.tracking_speed_level = tracking_speed_level;
 	tracking.frame_age_ms = 0u;
 	tracking.hold_ms = 0u;
+	tracking.hover_ms = 0u;
 	tracking.target_found_flag = 0u;
 	tracking.horizontal_error_normalized = 0.0f;
 	tracking_error_pending = 0u;   /* 丢弃上轮残帧, 首拍不等旧误差 */
@@ -546,6 +548,22 @@ static void Tracking_Stop(uint8_t tracking_stop_mode)
 static uint8_t Tracking_CheckConverged(mf_ctx_t *motion)
 {
 	float absolute_error = tracking.horizontal_error_normalized;
+
+#if (TRACKING_CONVERGE_GATE_EN > 0u)
+	/* 进近门控(2026-09-23 现场问题定位): 段表还没走完且离段尾还远时, |e|<0.05 只能说明
+	 * "车头正对着靶标"—— 车本来就是朝靶走的, 靶心自然趋近画面中心, 这**不是**"已到靶前"。
+	 * 旧逻辑据此判收敛 ⇒ 进近途中就 HoldStill 把 vx 压 0 并进黏性 LOCKED;
+	 * 而 LOCKED 无法自愈(同 id 重发 REQ_NAV 走 early return, 重发 START 只补 DONE),
+	 * tracking != IDLE 时进度看门狗又被清零 ⇒ 既不前进也不报 FAULT。
+	 * 现改为: 只有接近段尾(或段已完成)才允许"误差小 = 收敛刹停"。 */
+	if ((mf_is_done(motion) == 0u) &&
+	    (mf_path_remain_m(&motion->path) > TRACKING_CONVERGE_REMAIN_M))
+	{
+		tracking.hold_ms = 0u;
+		return 0u;
+	}
+#endif
+
 	if (absolute_error < 0.0f)
 	{
 		absolute_error = -absolute_error;
@@ -606,9 +624,24 @@ static uint8_t Tracking_ApplyOverlay(void)
 	if (tracking.target_found_flag == 0u || tracking.frame_age_ms > TRACKING_FRAME_TIMEOUT_MS)
 	{
 		tracking.hold_ms = 0u;
+#if (TRACKING_HOVER_MAX_MS > 0u)
+		/* 悬停有上限(2026-09-23): 旧逻辑"看不到目标就一直停"会在"车不动 ⇒ 目标进不了视野
+		 * ⇒ 车不动"时死锁(打靶起点远、阈值偏紧时最容易命中)。超时后放行段表
+		 * (返回 0 = 不改 cmd, 沿用 mf_tick 已解算的轮速), 让车继续朝靶区走;
+		 * 目标重新进入视野后由 AGE/误差判定接管。段表速度与到位判据不受影响 */
+		tracking.hover_ms = (uint16_t)(tracking.hover_ms + CAR_TASK_MS);
+		if (tracking.hover_ms < TRACKING_HOVER_MAX_MS)
+		{
+			Tracking_HoldStill(motion);
+			return 1u;
+		}
+		return 0u;
+#else
 		Tracking_HoldStill(motion);
 		return 1u;
+#endif
 	}
+	tracking.hover_ms = 0u;   /* 本拍收到有效目标帧: 悬停计时清零 */
 	absolute_error = (tracking.horizontal_error_normalized < 0.0f)
 	                 ? -tracking.horizontal_error_normalized
 	                 : tracking.horizontal_error_normalized;

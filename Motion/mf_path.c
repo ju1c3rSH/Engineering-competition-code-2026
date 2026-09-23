@@ -648,3 +648,46 @@ static float seg_next_entry_speed(const mf_path_ctx_t *p)
             return -1.0f;
     }
 }
+
+/* 当前路径剩余里程估算（声明与语义见 mf_path.h）。只算位移段, 且 ARC 按整段名义里程
+ * 全额计入(刻意偏保守)。打靶跟瞄的收敛门控依赖它区分"车正对着靶"与"已到靶前" */
+float mf_path_remain_m(const mf_path_ctx_t *p)
+{
+    uint16_t i;
+    float remain = 0.0f;
+
+    if (p == NULL || p->path == NULL || p->state != MF_PATH_RUN)
+    {
+        return 0.0f;
+    }
+
+    if (p->path[p->idx].type == MF_SEG_MOVE_DIST)
+    {
+        const mf_move_dist_t *m = &p->path[p->idx].p.move_dist;
+        float done = fabsf(p->dist_accum - p->dist_base_m);   /* 本段已走量(倒车也取正) */
+        float total = fabsf(m->dist_m);
+        if (total > done)
+        {
+            remain += (total - done);
+        }
+    }
+    else if (p->path[p->idx].type == MF_SEG_ARC)
+    {
+        const mf_arc_t *a = &p->path[p->idx].p.arc;
+        remain += fabsf(a->d_yaw_deg) * (3.14159265f / 180.0f) * fabsf(a->radius_m);
+    }
+
+    for (i = (uint16_t)(p->idx + 1u); p->path[i].type != MF_SEG_END; i++)
+    {
+        if (p->path[i].type == MF_SEG_MOVE_DIST)
+        {
+            remain += fabsf(p->path[i].p.move_dist.dist_m);
+        }
+        else if (p->path[i].type == MF_SEG_ARC)
+        {
+            remain += fabsf(p->path[i].p.arc.d_yaw_deg) * (3.14159265f / 180.0f)
+                      * fabsf(p->path[i].p.arc.radius_m);
+        }
+    }
+    return remain;
+}
