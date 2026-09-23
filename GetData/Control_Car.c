@@ -58,13 +58,13 @@ static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: 排爆区去程(末段
 {
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(47.0f)),
 	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),   /* 左 90 (flag1) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(15.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(17.0f)),
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag2) */
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(49.0f)),
 	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),   /* 左 90 (flag4) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(40.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(39.0f)),
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag6) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(48.5f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(52.0f)),
 	SEG_END
 };
 static const mf_seg_t tbl_bucket[] =      /* NAV_TO_BUCKET: 桶与排爆作业点在车道两侧同一点位,
@@ -81,7 +81,7 @@ static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~16 人质区
 {
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(54.5f)),
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag14) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(65.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(80.0f)),
 	SEG_END
 };
 /* ---- 返程段 / 终点的绝对航向: 任务终点 YAW 严格 -180° ----
@@ -91,13 +91,13 @@ static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~16 人质区
  *   93.2 = 5341mm × π/180 = 这条腿上 1° 航向偏差对应的横向位移
  * 填完跑一趟看实物: 残余偏差变小则对, 变大就翻符号重跑(一次即定)。
  * 推导、±180° 卷绕、完赛区要求: Motion/README.md「返程与终点航向」 */
-#define NAV_RETURN_TRIM_DEG        (0.0f)
+#define NAV_RETURN_TRIM_DEG        (0.2f)
 #define NAV_RETURN_LEG_YAW_DEG     (-180.0f + NAV_RETURN_TRIM_DEG)
 #define NAV_RETURN_FINAL_REBASE_EN 1u
 
 static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 */
 {
-	SEG_MOVE_HD(MF_M_SPEED(Middle_speed), MF_M_DIST(188.0f), NAV_RETURN_LEG_YAW_DEG),
+	SEG_MOVE_HD(MF_M_SPEED(Middle_speed), MF_M_DIST(171.0f), NAV_RETURN_LEG_YAW_DEG),
 #if NAV_RETURN_FINAL_REBASE_EN
 	SEG_TURN_TO(NAV_RETURN_LEG_YAW_DEG),   /* 终点姿态收尾: 注入 -180° 绝对真值 */
 #endif
@@ -106,8 +106,8 @@ static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 
 /* 重锚角 = 几何标称 + 台架标定补偿。标定: 车跑到该点、臂对准目标时读 '?' 的 POSE: YAW, 直接填进来;
  * 改了任何影响耗时的行为(ARC 几何 / 标称航向 / 减速 / 停等)后需重标 */
 #define NAV_REBASE_BOMB_YAW_DEG     (-90.3f)
-/* 返程重锚角 = 几何标称 -180.0(旧标定值 -179.8 已作废) */
-#define NAV_REBASE_RETURN_YAW_DEG   (-180.0f)
+/* 返程重锚角 = 几何标称 -180.0 */
+#define NAV_REBASE_RETURN_YAW_DEG   (-179.5f) //如果最后有偏，可以改这个
 
 static const mf_seg_t tbl_rebase_bomb[] =   /* NAV_REBASE_BOMB: 排爆区末段(原 tbl_bomb 表尾)+绝对航向重锚。
                                              * 末段转弯与其后的低速直线挪进本表, 与转盘 90° 扫描位并行:
