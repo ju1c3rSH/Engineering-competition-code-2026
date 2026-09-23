@@ -69,18 +69,41 @@
 #define TRACKING_FRAME_TIMEOUT_MS       500u    /* 误差流超此时长无更新: 悬停等待 */
 #define TRACKING_PROPORTIONAL_GAIN      60.0f   /* P 增益 dps/单位误差, 内部取负(e>0→顺时针); 镜像摄像头翻符号 */
 #define TRACKING_MAX_YAW_RATE_DPS       60.0f   /* 跟瞄角速度限幅 */
-#define TRACKING_STATIC_ERROR_MAX       0.30f   /* 段走完后的原地静瞄仅当|e|不超过此值(护住后续段表航向基准) */
+/* =========================================================================
+ * 段内跟瞄参数(状态机实现见 Control_Car.c 的 Tracking_ApplyOverlay / Tracking_Goto)
+ *
+ * 重构说明(2026-09-23): 旧实现是"IDLE/RUN/LOCKED 三态 + overlay 覆盖 cmd", 把"到位"与
+ * "收敛"混在一起, 现场表现为打靶段"有误差但车不往前走"。现改为六态机
+ * (OFF / APPROACH / AIM / HOLD / LOCKED / FAULT), 四条不变量:
+ *   · APPROACH 不碰 vx(速度权归段表), 只写 wz;  wz 由跟瞄**覆盖**而非叠加;
+ *   · 只有"段表到位后的 AIM"才允许判收敛, DONE 的含义 = 到位且收敛;
+ *   · APPROACH 丢目标不停车(停了就看不到靶), AIM 丢目标才压零且有上限;
+ *   · LOCKED/FAULT 可被 START / 同 id REQ_NAV / STOP 解除, 不留黏性态。
+ * 各量的物理意义与现场调法写在下面; 调参只改这一段, 不要再散落到别处。
+ * ========================================================================= */
 
-/* ---- 进近/悬停护栏(2026-09-23 现场问题定位: 打靶段"有误差但车不往前走") ----
- * 现场现象: 收到 TRACKING_START 后车几乎不动。两条机制都能造成"车停住":
- *   ① 车正朝靶标前进 ⇒ 靶心天然接近画面中心(|e|<0.05) ⇒ 连续 500ms 就判"收敛"→ LOCKED
- *      并每拍把段表 vx 覆盖成 0; LOCKED 是黏性态, 同 id 重发 REQ_NAV 走 early return、
- *      重发 START 只补 DONE ⇒ 无法自愈; 且 tracking != IDLE 时进度看门狗也被清零 ⇒ 不报 FAULT。
- *   ② found=0 / 误差流断 >500ms ⇒ 悬停 HoldStill ⇒ "车不动→靶进不了视野→车不动"死锁。
- * 见 Control_Car.c 的 Tracking_CheckConverged / Tracking_ApplyOverlay 注释 */
-#define TRACKING_CONVERGE_GATE_EN       1u      /* 1=进近未完成不许收敛锁停(0=回旧行为做 A/B) */
-#define TRACKING_CONVERGE_REMAIN_M      1.0f    /* 距段尾该里程内才允许"收敛即刹停" */
-#define TRACKING_HOVER_MAX_MS           2000u   /* 丢目标悬停上限: 超时放行段表继续前进(0=关) */
+#define TRACKING_ERROR_THRESHOLD        0.05f   /* 收敛阈值: 归一化横向误差 = 横向像素/半幅宽。
+                                                 * 物理上 ≈ tan(半视场角)·e, 应按"激光光斑允许
+                                                 * 半径对应的角度"反推。现场若因抖动收不敛,
+                                                 * 先查视觉去抖与帧率, 不要一味放大它 */
+#define TRACKING_HOLD_TIME_MS           500u    /* 收敛需连续达标时长: 取车体摆动周期的 1~2 倍 */
+#define TRACKING_FRAME_TIMEOUT_MS       500u    /* 测量失效阈值: 应 > 主控透传周期(30ms)×N +
+                                                 * 视觉帧周期(50ms)×N; 太小会被偶发丢帧打断 */
+#define TRACKING_PROPORTIONAL_GAIN      60.0f   /* wz = -Kp·e (dps/单位误差)。**符号即镜像方向**:
+                                                 * 台架给固定 e, 车头应朝靶转; 反向就取负 */
+#define TRACKING_MAX_YAW_RATE_DPS       60.0f   /* 跟瞄角速度限幅(仍受底盘 max_wz_dps 二次钳位) */
+#define TRACKING_PATH_WZ_KEEP_PCT       0u      /* 跟瞄态保留段表 wz 的比例(%): 0 = 跟瞄独占 wz
+                                                 * (段表航向环让出, 避免两个控制器对抗); 若视觉
+                                                 * 帧率低、修正带宽不够, 可给 20~40 做前馈 */
+
+/* ---- 有界收尾: 三种"瞄不上"都必须有终点, 否则主控只能等自己的超时 ---- */
+#define TRACKING_AIM_LOST_MAX_MS        3000u   /* AIM(已到位)丢目标上限 -> FAULT(丢目标); 0=关 */
+#define TRACKING_AIM_FAULT_MS           5000u   /* AIM 下 |e| 超阈上限 -> FAULT(未收敛); 0=关 */
+
+/* TRACKING_FAULT(事件 0x06)的 reason 码: 上报给主控做决策(重试/容错发射) */
+#define TRK_FAULT_NOT_CONVERGED         0x01u   /* 到位后长时间未收敛 */
+#define TRK_FAULT_NO_TARGET             0x02u   /* 到位后丢失目标(遮挡/阈值/相机) */
+#define TRK_FAULT_NO_PATH               0x03u   /* 收到 START 时无活动段表(未发 REQ_NAV/段启动失败) */
 
 /* 旧短名兼容别名: interurp.c 收发沿用, 值与全称一致, 新代码用全称 */
 #define CAR_SUB_REQ_NAV         CAR_SUB_REQ_NAVIGATION
@@ -132,6 +155,7 @@ void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);  /* interurp.c
 void Car_Debug_Stat_Print(void);   /*'. '?'/p 周期: 四行状态块(CHASSIS/WHEEL/POSE/WTBL) */
 void Car_SegChange_Log(void);      /* 主循环: seg_index/state 变化时打一行 SEG(原库层 ISR printf) */
 void Car_ArcExit_Log(void);        /* 主循环: 每条 ARC 段跑完打一行 ARC(出口横向/航向偏差) */
+void Car_TrkChange_Log(void);      /* 主循环: 跟瞄状态迁移(六态机)打一行 TRK:旧>新 */
 
 /* 台架直转(USART2 'w'/'e'/'1'~'7'/'x', Car_DebugTask 主循环执行): 微调不报
  * TURN_DONE, 打码走协议码表 */
