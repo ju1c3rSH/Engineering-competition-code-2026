@@ -51,18 +51,18 @@ void Yaw_pid_Init()
 
 static const mf_seg_t tbl_qr[] =          /* NAV_TO_QR: flag0 出发首段 43(台架单段用) */
 {
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(43.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(47.0f)),
 	SEG_END
 };
 static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: 排爆区去程(末段转弯+末段直线已移入重锚表) */
 {
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(43.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(47.0f)),
 	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),   /* 左 90 (flag1) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(12.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(15.0f)),
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag2) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(46.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(49.0f)),
 	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),   /* 左 90 (flag4) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(35.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(40.0f)),
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag6) */
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(48.5f)),
 	SEG_END
@@ -79,9 +79,9 @@ static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 
 };
 static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~16 人质区 */
 {
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(37.5f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(54.5f)),
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag14) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(60.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(65.0f)),
 	SEG_END
 };
 /* ---- 返程段 / 终点的绝对航向: 任务终点 YAW 严格 -180° ----
@@ -97,7 +97,7 @@ static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~16 人质区
 
 static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 */
 {
-	SEG_MOVE_HD(MF_M_SPEED(Middle_speed), MF_M_DIST(170.0f), NAV_RETURN_LEG_YAW_DEG),
+	SEG_MOVE_HD(MF_M_SPEED(Middle_speed), MF_M_DIST(188.0f), NAV_RETURN_LEG_YAW_DEG),
 #if NAV_RETURN_FINAL_REBASE_EN
 	SEG_TURN_TO(NAV_RETURN_LEG_YAW_DEG),   /* 终点姿态收尾: 注入 -180° 绝对真值 */
 #endif
