@@ -144,9 +144,7 @@ int main(void)
   IWDG->KR = 0xAAAAU;                                   /* 首喂 */
 
 #if ROUTE_TEST_EN
-  /* test/route: 上电即按**原版命令状态机**的 nav 顺序自跑, 不依赖 Brain。
-   *   序列 1→6→2→3→4→7→5(不走 QR), 跑完一条自动发下一条
-   * 停等见 ROUTE_TEST_PAUSE_MS(现 0 = 不停, 纯比赛剖面); 到返回区(完赛区)停车, 不循环 */
+  /* test/route: 上电自跑全程路线(不接 Brain), 序列 1→6→2→3→4→7→5, 到返回区停车 */
   Car_RouteTest_BootStart();
 #endif
 

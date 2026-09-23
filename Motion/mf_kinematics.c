@@ -15,10 +15,7 @@ void mf_inverse_kinematics(const mf_body_cmd_t *cmd, float track_w,
     (void)half_wid;
 
 #if MF_DIFF_BOOST_EN
-    /* 差速前馈补偿: 履带转弯时内侧刹不住/外侧跟不上, 实际差速只有指令的
-     * 0.74~0.89(右转更差), 导致实际半径大于名义 -> 弧线往外飘(ARC 出口 EY 恒正)。
-     * 按转向方向放大差速指令, 让实际差速回到目标。系数是实车标定项,
-     * 现场按 ARC:<段> EY=<mm> 微调, 详见 mf_config.h 的说明。 */
+    /* 差速前馈补偿: 按转向方向放大差速指令(系数 MF_DIFF_BOOST_POS/NEG, 标定见 mf_config.h) */
     wz_rad *= (cmd->wz_dps >= 0.0f) ? MF_DIFF_BOOST_POS : MF_DIFF_BOOST_NEG;
 #endif
 

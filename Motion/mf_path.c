@@ -33,9 +33,7 @@ void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path)
     uint16_t i;
     const float r_min = 1.0e-3f;
 
-    /* 启动前校验段表: ARC 半径过小会除零; d_yaw 与半径反号会原地兜圈,
-     * 且轮一直在动, 堵转看门狗无法兜底。非法则拒绝启动(保持 IDLE),
-     * 调用方以 state != MF_PATH_RUN 感知并自行上报故障 */
+    /* 启动前校验段表: ARC 半径过小或与 d_yaw 反号会除零/原地兜圈, 非法则拒绝启动(保持 IDLE) */
     for (i = 0u; (i < 255u) && (path[i].type != MF_SEG_END); i++)
     {
         if (path[i].type == MF_SEG_ARC)
@@ -150,9 +148,7 @@ static uint8_t seg_dwell_reached(mf_path_ctx_t *p, float err, float tol, float d
 
 /* ---------- 各段类型执行（返回 1=完成） ---------- */
 
-/* MOVE 段的航向保持目标:
- * 段表给了绝对航向 -> 优先用; MF_KEEP 时按开关取「路径标称航向」或「进段实测航向」。
- * 后者会把上游 ARC/TURN 残留的航向误差锁死并按直线长度放大(见 mf_config.h) */
+/* MOVE 段的航向保持目标: 段表给了绝对航向就优先用; MF_KEEP 时按开关取标称航向或进段实测航向 */
 static float seg_move_hold_yaw(const mf_path_ctx_t *p, const mf_move_dist_t *m)
 {
     if (m->heading_deg != MF_KEEP)
@@ -218,17 +214,8 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
     return (uint8_t)(remain <= MF_TOL_ARRIVE_M);
 }
 
-/* 定半径弧线：航向目标按弧长推进，走够 d_yaw 完成（panzer 转弯的声明式版）
- * 下一段要求停稳时按剩余弧长抛物线减速, 段末速度≈0
- *
- * 航向设定值的来源是这段控制的关键（旧律在这里跑偏）：
- *   旧律 = entry.yaw + dist_accum/R，而 dist_accum 是轮上位移均值，履带转弯时它
- *   系统性大于真实车体位移(见 mf_odom.c)，于是设定的偏航速率比车体真能达到的快，
- *   航向环只能多转，实际半径被压成 R/k —— 表现就是"弧线往里切、越跑越偏"。
- *   现在设定值取"名义切线航向"= 圆心→车体方位角 + sgn·90°，它由里程计位置推出；
- *   位置积分用的是 ds_for_xy(已按 IMU/编码器比值修正打滑)，所以设定值的偏航速率
- *   天然是"真实车体位移/R"。完成判据仍用 IMU 实测航向差（抗打滑，且与"转 d_yaw
- *   度"的语义严格一致）。横向偏差另走一项, 让"离弧多远"也进环 */
+/* 定半径弧线: 走够 d_yaw 即完成(判据只用 IMU 转角); 设定值取"名义切线航向"
+ * = 圆心→车体方位角 + sgn·90°(由里程计位置推出), 再加横向偏差比例项。旧律对比见 Motion/README.md */
 static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
                        const mf_pose_t *pose, float dt,
                        mf_body_cmd_t *out)
@@ -277,13 +264,9 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
          * 残差; 速度源用 cur_speed(斜坡后实际值), 起步/减速前馈自动缩放。
          * 注意: 勿套 seg_wz_ramp —— 进弯缓起 = 进弯前固定多走直线(实测 10~30cm) */
 #if MF_ARC_XTRACK_EN
-        /* 横向项必须乘 arc_sgn —— 2026-09-21 实车修正(此前漏乘, 右转弧越修越偏)。
-         * e_y = rho - R 是"离进段锚定圆心多远", 恒正=弧外, 与左右无关;
-         * 但"往哪边打方向才能回到弧内"是分左右的: 左转圆心在车左 → 往左补(+wz),
-         * 右转圆心在车右 → 必须往右补(-wz)。漏乘 arc_sgn 时右转弧被推向弧外,
-         * 正是实测右转弧 EY=+103mm 明显差于左转弧 +77mm 的原因(见 2026-09-21 日志)。
-         * 镜像仿真 arc_xtrack_sim.py 的 seg_arc 只写了左转(psi_path = phi + 90),
-         * 从未跑过右转弧, 所以这个符号错误在仿真里不会暴露 —— 改仿真时务必补右转用例。 */
+        /* 横向项**必须乘 arc_sgn**(左+1/右-1): e_y 恒正=弧外、不分左右, 但"回弧内往哪边打"分左右
+         * —— 漏乘会把右转弧推向弧外(实测右转 EY +103 vs 左转 +77)。
+         * 注意 arc_xtrack_sim.py 只有左转用例, 这个符号错在仿真里不会暴露; 改仿真务必补右转用例。 */
         out->wz_dps = mf_pid_calc(p->pid_yaw, e_psi, dt)
                     + (p->cur_speed / a->radius_m) * (180.0f / MF_PI_F)
                     + MF_ARC_XTRACK_K * p->arc_ey_m * p->arc_sgn;
