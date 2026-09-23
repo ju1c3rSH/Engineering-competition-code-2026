@@ -6,8 +6,8 @@
 Parameter_TypeDef_Car Car_data;
 Yaw_TypeDef Yaw_struct;
 
-/* 张大头驱动器命令地址: 实车电机设为 2(2026-09 台架核对), 改电机地址就翻这。
- * 位置帧与急停帧都取此宏——场上曾因写死 1 而地址为 2 臂到驱动器全程静默 */
+/* 张大头驱动器命令地址
+   配置错误会导致驱动起执行静默失效*/
 #define EMM_MOTOR_ADDR   2u
 
 void Yaw_pid_Init()
