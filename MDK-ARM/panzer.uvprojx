@@ -341,7 +341,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F405xx</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../GetData;../Emm_V5;../Motion</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../GetData;../Emm_V5;../Motion;../Selftest</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -742,6 +742,26 @@
               <FileName>Car_Sense.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\GetData\Car_Sense.h</FilePath>
+            </File>
+            <File>
+              <FileName>car_config.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\GetData\car_config.h</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Selftest</GroupName>
+          <Files>
+            <File>
+              <FileName>selftest.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Selftest\selftest.c</FilePath>
+            </File>
+            <File>
+              <FileName>selftest.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Selftest\selftest.h</FilePath>
             </File>
           </Files>
         </Group>

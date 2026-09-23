@@ -1,5 +1,6 @@
 ﻿#include "interurp.h"
 #include "protocol.h"
+#include "selftest.h"
 
 int16_t YawL = 0;
 int16_t YawH = 0;
@@ -443,13 +444,8 @@ void Uart2_task()
 void Car_DebugTask(void)
 {
 	static uint32_t stat_last_tick = 0u;
-/* test/route: 默认开着 1Hz 状态块(CHASSIS/WHEEL/POSE/WTBL), 跑全程时不用手动敲 '?'
- * 就能录下每段停等时的 X/Y/YAW; 非自测分支仍是敲 'p' 才开 */
-#if ROUTE_TEST_EN
-	static uint8_t  periodic_en = 1u;
-#else
-	static uint8_t  periodic_en = 0u;
-#endif
+	/* 自测形态由 car_config.h 切到 1: 跑全程不用手动敲 'p' 就能录下每段停等的 X/Y/YAW */
+	static uint8_t  periodic_en = (uint8_t)DBG_PERIODIC_DEFAULT_EN;
 	uint32_t now;
 	uint16_t ack_n, nack_n, evt_n;
 	uint8_t  sub, code, evt, evt_echo;
@@ -553,38 +549,8 @@ void Car_DebugTask(void)
 	Car_SegChange_Log();   /* 段切换: 变化才打, 主循环上下文(唯一 printf 点) */
 	Car_ArcExit_Log();     /* 弧线出口质量: 每条 ARC 跑完打一行(出口横向偏差/航向偏差) */
 
-#if ROUTE_TEST_EN
-	/* 自测进度: 序列跑完(到返回区)打一次 RT:FINISH i/n, 中途靠 EVT NAV_DONE 与
-	 * SEG 行观察。打印放在主循环(唯一 printf 点), 推进本身在 10ms 定时里 */
-	{
-		uint8_t rt_i, rt_n, rt_f;
-		static uint8_t rt_done_printed = 0u;
-
-		Car_RouteTest_Progress(&rt_i, &rt_n, &rt_f);
-		if ((rt_f != 0u) && (rt_done_printed == 0u))
-		{
-			rt_done_printed = 1u;
-			printf("RT:FINISH %u/%u\r\n", (unsigned)rt_i, (unsigned)rt_n);
-		}
-
-		/* 停等漂移: 每次停等结束打一行, 单位 mm。
-		 * SEG=本段实际位移(对核对表)  PAUSE=停 3s 车体自己挪了多少(期望≈0)
-		 * TOT=全程白走累计(单向溜车会持续累加, 来回抖动会互相抵消) */
-		{
-			uint16_t pd_n;
-			float    sdx, sdy, pdx, pdy, tx, ty;
-
-			if (Car_RouteTest_Drift(&pd_n, &sdx, &sdy, &pdx, &pdy, &tx, &ty) != 0u)
-			{
-				printf("PD:%u SEG[%d,%d] PAUSE[%d,%d] TOT[%d,%d]\r\n",
-				       (unsigned)pd_n,
-				       (int)(sdx * 1000.0f), (int)(sdy * 1000.0f),
-				       (int)(pdx * 1000.0f), (int)(pdy * 1000.0f),
-				       (int)(tx  * 1000.0f), (int)(ty  * 1000.0f));
-			}
-		}
-	}
-#endif
+	/* RT:FINISH / PD: 漂移行; 推进本身在 10ms 定时里, 打印只能在主循环 */
+	SELFTEST_DEBUG_POLL();
 }
 void Uart6_task()
 {

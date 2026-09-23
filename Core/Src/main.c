@@ -27,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 #include "Encode.h"
 #include "interurp.h"
+#include "selftest.h"
 #include "stdint.h"
 
 /* USER CODE END Includes */
@@ -143,10 +144,8 @@ int main(void)
   while ((IWDG->SR & IWDG_SR_RVU) != 0U) { }            /* 等重载值生效 */
   IWDG->KR = 0xAAAAU;                                   /* 首喂 */
 
-#if ROUTE_TEST_EN
-  /* test/route: 上电自跑全程路线(不接 Brain), 序列 1→6→2→3→4→7→5, 到返回区停车 */
-  Car_RouteTest_BootStart();
-#endif
+  /* 上电自跑全程路线(不接 Brain): 总闸 car_config.h 的 SELFTEST_EN */
+  SELFTEST_BOOT_START();
 
   /* USER CODE END 2 */
 

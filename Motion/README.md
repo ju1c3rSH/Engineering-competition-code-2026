@@ -89,7 +89,7 @@ if (mf_is_done(&mf)) { ... } /* 段间插入动作（转盘/抓取/等主控） 
 | 1 | [ARC 段：航向设定值来源为何关键](#arc-段为什么航向设定值的来源是关键) | 弧线"往里切、越跑越偏"的根因 = 设定值用轮上里程均值推；修复后取名义切线航向 | 调试口 `ARC:<段> EY=<mm> YE=<0.1°>` |
 | 2 | [转段/停车误差](#转段停车误差到位容差与进段丢一拍) | 终点偏差主要来自里程刻度 > 段末减速/滑停 > 到位容差；唯一稳定收益项是 `MF_STOP_DECEL_SCALE=0.6` | 仿真 `seg_handoff_sim.py` / `route_fix_sim.py` |
 | 3 | [直线段航向基准](#直线段航向基准为什么-mf_keep-会把误差放大) | `MF_KEEP` 把上游航向残差按直线长度放大（最大单项）；`MF_SEG_NOM_HEADING_EN=1` 主动纠回 | 串口 `ARC:` 行的 `YE` 是否收敛 |
-| 4 | [自测停等粒度](#自测停等粒度为什么改成只在大段末停) | test/route 停等策略演变：逐段停 → 大段末停 → 现关闭（`ROUTE_TEST_PAUSE_MS=0`） | 串口 `PD:` 行（开启时） |
+| 4 | [自测停等粒度](#自测停等粒度为什么改成只在大段末停) | 自测停等策略演变：逐段停 → 大段末停 → 现关闭（`SELFTEST_PAUSE_MS=0`） | 串口 `PD:` 行（开启时） |
 | 5 | [差速前馈补偿](#差速前馈补偿转弯半径旋钮是怎么定出来的) | 转弯半径旋钮 `MF_DIFF_BOOST_POS/NEG`；左右不对称属机械极限，轮速环已闭环仍差 21% | 跑一趟看 `ARC:` 的 `EY` 调 |
 | 6 | [返程与终点航向](#返程与终点航向-180从哪来trim-怎么用) | -180° 是几何真值；`NAV_RETURN_TRIM_DEG=ΔY/93.2`；±180° 卷绕陷阱 | 终点 POSE 的 Y 读数 |
 | 7 | [track_width_m 四处作用链与禁忌](#track_width_m-的四处作用链与禁忌) | 它是整条转向链全局增益，**禁止拿它调半径**；改前先台架定 k | `MF_M_DIST(43)` 卷尺量位移 |
@@ -238,9 +238,13 @@ test/route 的自测序列 `1→6→2→3→4→7→5` 共 18 个运动段。原
 的首末起步/停车。所以逐段停的自测数据**不能外推到比赛**。改成只在每张 nav 表末尾插一次：
 
 ```c
-/* Control_Car.c: ROUTE_TEST_PAUSE_EACH_SEG */
-#define ROUTE_TEST_PAUSE_EACH_SEG  0u   /* 0=只在大段末停(默认)  1=逐段停(旧, A/B 用) */
+/* Selftest/selftest.c: SELFTEST_PAUSE_EACH_SEG */
+#define SELFTEST_PAUSE_EACH_SEG  0u   /* 0=只在大段末停(默认)  1=逐段停(旧, A/B 用) */
 ```
+
+插桩只发生在**段表拷贝路径**上，而 `Nav_GearTable()` 在 `speed_gear==0` 时直接返回 flash
+原表（不拷贝）——所以开停等必须把 `SELFTEST_GEAR` 设成非 0，代价是段速被强制覆盖、不再是
+比赛剖面。`SELFTEST_PAUSE_MS>0` 而 `SELFTEST_GEAR==0` 会直接 `#error`。
 
 判据是「下一项已经是 `MF_SEG_END`」——表内段间连续跑，空表（2 NAV_TO_BUCKET）首项即 END，
 循环当场 break，不会插入。用 `build_verify/mf_path_test/verify_gear_table.py` 逐表核对展开结果：
@@ -252,7 +256,8 @@ test/route 的自测序列 `1→6→2→3→4→7→5` 共 18 个运动段。原
 | 大段末停 + 减速裕度0.6 | 18 | 6 | 7 | 11 项 | **32.1 mm** |
 | 不停等（**现行**，见下节） | 18 | **0** | 7 | 原表长度 | WAIT 内白走消失 |
 
-缓冲 `NAV_GEAR_BUF_LEN=24` 对最长表（tbl_bomb 展开 11 项）绰绰有余。
+缓冲 `NAV_GEAR_BUF_LEN`：比赛形态 12（`car_config.h`），自测插停等时切到 24，
+对最长表（tbl_bomb 展开 11 项）绰绰有余。
 
 **为什么停等会偷里程**：不是停等本身算错，而是 `mf_path_tick` 只在 MOVE/ARC 段累加
 `dist_accum`，WAIT 段 3 秒（300 拍）里车体的任何挪动——减速尾巴、惯性滑行、履带回弹——
@@ -265,15 +270,16 @@ test/route 的自测序列 `1→6→2→3→4→7→5` 共 18 个运动段。原
 ### 现状：大段末停等也已关闭（2026-09-21）
 
 现场实测新固件「终点航向未改善、其它路线反而更差」，先把停等这个变量排掉，于是把
-`ROUTE_TEST_PAUSE_MS` 由 `3000u` 置 **`0u`** —— `Nav_GearTable()` 的插桩分支整体被裁掉
-（`#if (ROUTE_TEST_PAUSE_MS > 0u)` 不成立），段表回原版形态，一条 nav 跑完立刻承接下一条，
+`SELFTEST_PAUSE_MS` 由 `3000u` 置 **`0u`** —— `Selftest_TablePost()` 的插桩分支整体被裁掉
+（`#if (SELFTEST_PAUSE_MS > 0u)` 不成立），段表回原版形态，一条 nav 跑完立刻承接下一条，
 大段之间不再有 3 s 静止窗口。
 
-- 自测推进不受影响：`RouteTest_OnNavDone()` 靠 `NAV_DONE → Nav_DoRequest` 推进，与 WAIT 段无关。
+- 自测推进不受影响：`Selftest_NextNav()` 靠 `NAV_DONE → Nav_DoRequest` 推进，与 WAIT 段无关。
 - 失去 `PD:` 白走里程诊断行（它在 WAIT 段内取样）。但 `SEG:<段> ST=1 X Y YAW` 由
   `Car_SegChange_Log` 每段进段打印，**逐段落点数据仍然完整**。
-- 恢复停等只需改回 `3000u`。**若改回，必须同时保留** `Car_Nav_Task` 里 `mf_is_waiting()`
-  的堵转豁免（停等时长与 `NAV_STALL_MS=3000` 同宽，删掉豁免会在每次停等结束时报 `NAV_FAULT`）。
+- 恢复停等只需改回 `3000u`（并同时把 `SELFTEST_GEAR` 设成非 0，见上节）。`Car_Nav_Task` 里
+  `mf_is_waiting()` 的堵转豁免是**无条件**的（WAIT 段本来就要求车体静止，不豁免则停等
+  与 `NAV_STALL_MS=3000` 同宽时会在每次停等结束时误报 `NAV_FAULT`），不用额外保留。
 
 ## 差速前馈补偿：转弯半径旋钮是怎么定出来的
 

@@ -30,6 +30,7 @@
 "panzer\control_car.o"
 "panzer\protocol.o"
 "panzer\car_sense.o"
+"panzer\selftest.o"
 "panzer\mf_motion.o"
 "panzer\mf_path.o"
 "panzer\mf_odom.o"

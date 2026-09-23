@@ -76,27 +76,9 @@
 
 #define CAR_FAULT_WATCHDOG      0x04u   /* 进度看门狗: 里程 3s 无变化 */
 
-/* test/route 自测总闸: 置 1 = 上电自动跑全程路线(不接 Brain), 比赛版必须置 0 */
-#define ROUTE_TEST_EN           1
-#if ROUTE_TEST_EN
-#define ROUTE_TEST_TURNTABLE_EN 0u      /* 自测期间转台完全冻结(不驱动电机) */
-#define ROUTE_TEST_GEAR         0u      /* 0=段表默认速度; 1/2/3=低/中/高强制覆盖 */
-#else
-#define ROUTE_TEST_TURNTABLE_EN 1u      /* 非自测: 转台行为保持原样 */
-#endif
-
+/* 固件形态(自测总闸 / 转台使能 / 调试口默认值 / 段表缓冲尺寸)见 GetData/car_config.h,
+ * 自测覆盖见 Selftest/selftest.h —— 本文件不再持有任何测试宏 */
 #define CAR_NAV_ID_COUNT        8u      /* NavTarget_t 契约(与 Brain mission_sm.h 一致): 0~5 任务路线, 6~7 重锚伪路线 */
-
-#if ROUTE_TEST_EN
-/* 自测推进器: 上电起跑(main.c 调一次) + 进度查询(调试口显示) */
-void Car_RouteTest_BootStart(void);
-void Car_RouteTest_Progress(uint8_t *idx, uint8_t *total, uint8_t *finished);
-/* 停等漂移诊断(只测不改), 返回 1=有新数据(读走即清):
- * SEG=本段实际位移(m) / PAUSE=停等期间自挪量(m, 期望≈0) / TOT=白走累计(m) */
-uint8_t Car_RouteTest_Drift(uint16_t *seq, float *seg_dx, float *seg_dy,
-                            float *pau_dx, float *pau_dy,
-                            float *tot_x, float *tot_y);
-#endif
 
 typedef struct
 {

@@ -1,5 +1,6 @@
 ﻿#include "Control_Car.h"
 #include "Car_Sense.h"
+#include "selftest.h"
 #include "mf_math.h"
 #include "mf_kinematics.h"
 
@@ -38,16 +39,6 @@ void Yaw_pid_Init()
                           .tol_yaw_deg = 0.5f, \
                           .p.turn = { (y), 0.0f } }
 #define SEG_END         { .type = MF_SEG_END }
-
-/* 测试路线停等时长: 置 0 = 不插 WAIT(纯比赛剖面); 非 0 时由 Nav_GearTable 在每张大段末插
- * SEG_PAUSE 供现场读 POSE 查落点。改回非 0 必看 Motion/README.md「自测停等粒度」的堵转豁免 */
-#define ROUTE_TEST_PAUSE_MS  0u
-
-/* 停等插桩粒度: 0 = 只在大段(nav 表)末尾插一次(默认, 与比赛剖面一致);
- * 1 = 每个运动段后都插(旧策略), 仅作 A/B 对照 —— 起停 18 次, 白走里程约 3.5 倍 */
-#define ROUTE_TEST_PAUSE_EACH_SEG  0u
-#define SEG_WAIT_MS(ms) { .type = MF_SEG_WAIT, .reset_pid = 0, .p.wait = { (ms) } }
-#define SEG_PAUSE       SEG_WAIT_MS(ROUTE_TEST_PAUSE_MS)
 
 static const mf_seg_t tbl_qr[] =          /* NAV_TO_QR: flag0 出发首段 43(台架单段用) */
 {
@@ -129,26 +120,6 @@ static const mf_seg_t tbl_rebase_return[] = /* NAV_REBASE_RETURN: flag17 携人�
 	SEG_END
 };
 
-#if ROUTE_TEST_EN
-/* ================== test/route: 自测命令序列(底盘自己扮演 Brain) ==================
- * 不接 Brain: 底盘按原版状态机的 nav 顺序逐条自己下发 REQ_NAV(1→6→2→3→4→7→5, 不走 QR),
- * 跑完一条(NAV_DONE)自动发下一条, 到返回区停车, 不循环 */
-static const uint8_t route_test_seq[] =
-{
-	1u,   /* NAV_TO_BOMB         排爆区去程 */
-	6u,   /* NAV_REBASE_BOMB     末段转弯+低速进作业点+航向重锚 */
-	2u,   /* NAV_TO_BUCKET       空表(同点位, 无底盘位移) */
-	3u,   /* NAV_TO_TARGET       打靶区 */
-	4u,   /* NAV_TO_HOSTAGE      人质区 */
-	7u,   /* NAV_REBASE_RETURN   返程前航向重锚 */
-	5u,   /* NAV_TO_RETURN       返回区=完赛区 */
-};
-#define ROUTE_TEST_SEQ_LEN  ((uint8_t)(sizeof(route_test_seq) / sizeof(route_test_seq[0])))
-static uint8_t rt_idx;        /* 当前正在跑的序列下标 */
-static uint8_t rt_finished;   /* 1=序列已跑完(停在返回区), 主循环打印一次 */
-#endif
-
-
 static const mf_seg_t *const nav_routes[CAR_NAV_ID_COUNT] =
 {
 	tbl_qr,             /* 0 NAV_TO_QR         */
@@ -162,12 +133,7 @@ static const mf_seg_t *const nav_routes[CAR_NAV_ID_COUNT] =
 };
 typedef char nav_route_count_check[(sizeof(nav_routes) / sizeof(nav_routes[0])) == CAR_NAV_ID_COUNT ? 1 : -1];
 
-#if ROUTE_TEST_EN
-#define NAV_GEAR_BUF_LEN 24u      /* 最长 tbl_bomb 9 运动段: 大段末停态 9+1+END=11;
-                                   * 逐段停态(EACH_SEG=1) 9+9+END=19 —— 取 24 兼覆盖 */
-#else
-#define NAV_GEAR_BUF_LEN 12u      /* 最长表 tbl_bomb: 9 段 + END */
-#endif
+/* NAV_GEAR_BUF_LEN: car_config.h 按 SELFTEST_EN 切换(比赛 12 / 自测 24) */
 
 static float Nav_GearSpeed(uint8_t speed_gear)
 {
@@ -180,30 +146,23 @@ static float Nav_GearSpeed(uint8_t speed_gear)
 	}
 }
 
-/* speed_gear 覆盖需改写段速度，拷入 RAM 缓冲后启动。
- * test/route: 拷的同时在**每张大段(nav 表)末尾**插一个 SEG_PAUSE(3s) —— 原版每张表
- * 一个字不动, 只在自测时展开成"跑完一条 nav -> 停 3s"。表内段间连续跑, 与真机比赛
- * 逐条执行 nav 命令的剖面一致。停等是段表原生语义(WAIT 前一段自动抛物线减速到 0),
- * 所以"跑完大段停三秒再继续"不需要上层再造状态机。
- * ROUTE_TEST_PAUSE_EACH_SEG=1 可切回逐段停(仅 A/B 对照用) */
+/* speed_gear 覆盖需改写段速度, 拷入 RAM 缓冲后启动; gear=0 直接用 flash 原表。
+ * gear=0 一律不拷贝, 让自测与比赛走同一条路径 —— 否则自测结论不可外推到比赛。
+ * 代价: 自测插停等段(SEG_PAUSE)必须走拷贝路径, 故自测 gear 不能为 0
+ * (见 selftest.c 的 SELFTEST_GEAR, 配错会 #error) */
 static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed_gear)
 {
 	static mf_seg_t buf[NAV_GEAR_BUF_LEN];
 	const mf_seg_t *src = nav_routes[navigation_target_id];
 	uint8_t i, o;
 	float v;
-#if ROUTE_TEST_EN
-  #if (ROUTE_TEST_PAUSE_MS > 0u)
-	const mf_seg_t pause_seg = SEG_PAUSE;
-  #endif
-#else
+
 	if (speed_gear == 0u)
 	{
 		return src;
 	}
-#endif
 
-	v = (speed_gear == 0u) ? 0.0f : Nav_GearSpeed(speed_gear);
+	v = Nav_GearSpeed(speed_gear);
 	o = 0u;
 	for (i = 0u; (i < NAV_GEAR_BUF_LEN) && (o < NAV_GEAR_BUF_LEN); i++)
 	{
@@ -212,36 +171,16 @@ static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed
 		{
 			break;
 		}
-		if (speed_gear != 0u)
+		if (buf[o].type == MF_SEG_MOVE_DIST)
 		{
-			if (buf[o].type == MF_SEG_MOVE_DIST)
-			{
-				buf[o].p.move_dist.speed_mps = v;
-			}
-			else if (buf[o].type == MF_SEG_ARC)
-			{
-				buf[o].p.arc.speed_mps = v;
-			}
+			buf[o].p.move_dist.speed_mps = v;
+		}
+		else if (buf[o].type == MF_SEG_ARC)
+		{
+			buf[o].p.arc.speed_mps = v;
 		}
 		o++;
-#if ROUTE_TEST_EN && (ROUTE_TEST_PAUSE_MS > 0u)
-  #if ROUTE_TEST_PAUSE_EACH_SEG
-		/* 逐段停(旧策略, 仅 A/B 对照用) */
-		if ((src[i].type != MF_SEG_WAIT) && (o < NAV_GEAR_BUF_LEN))
-		{
-			buf[o++] = pause_seg;
-		}
-  #else
-		/* 默认: 只在本张大段(一条 nav 表)的最后一个运动段之后插一次停等(判据: 下一项已是 END) */
-		if ((src[i].type != MF_SEG_WAIT)
-		    && ((i + 1u) < NAV_GEAR_BUF_LEN)
-		    && (src[i + 1u].type == MF_SEG_END)
-		    && (o < NAV_GEAR_BUF_LEN))
-		{
-			buf[o++] = pause_seg;
-		}
-  #endif
-#endif
+		SELFTEST_TABLE_POST(src, i, buf, &o, NAV_GEAR_BUF_LEN);
 	}
 	/* 兜底: 缓冲耗尽时截断, 必须以 END 结束(否则段表会越过缓冲读飞) */
 	if (o >= NAV_GEAR_BUF_LEN)
@@ -401,10 +340,9 @@ static uint16_t Nav_TurnSettle(float prev_deg, float new_deg)
 
 static void Nav_Turntable(uint8_t turn_code)
 {
-#if !ROUTE_TEST_TURNTABLE_EN
-	/* test/route: 转台整体冻结 —— 排爆末段的自动摆码(码 7)、Brain 下发的
-	 * TURNTABLE 命令都不驱动电机。本分支只验证底盘路线, 转盘挂在车上会碍事。
-	 * tt_arm 因此恒 0, TIM5 的 Emm_Pos_Control 不会下发任何位置帧 */
+#if !TURNTABLE_ENABLE
+	/* 转台冻结(TURNTABLE_ENABLE=0, 由 car_config.h 随 SELFTEST_EN 切换):
+	 * tt_arm 恒 0, TIM5 不下发任何位置帧 */
 	(void)turn_code;
 	return;
 #endif
@@ -474,100 +412,6 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 	}
 }
 
-#if ROUTE_TEST_EN
-/* ---- test/route: 自测推进器(底盘自己扮演 Brain) ----
- * 当前 nav 跑完(NAV_DONE)后按 route_test_seq 自动下发下一条 REQ_NAV, 走的是 Brain 下发命令的
- * **同一入口 Nav_DoRequest** —— 区别只是命令不来自串口信箱, 所以段表装载/转台入口/幂等语义
- * 与原版完全一致, 核对的就是原版每张表。调用点在 Car_Nav_Task(10ms)里, 同上下文无竞争 */
-static void RouteTest_OnNavDone(void)
-{
-	if (rt_idx >= ROUTE_TEST_SEQ_LEN)            return;   /* 序列已跑完: 停在返回区 */
-	if (nav.nav_id != route_test_seq[rt_idx])    return;   /* 不是本序列的 nav(手动下发): 不接管 */
-	rt_idx++;
-	if (rt_idx >= ROUTE_TEST_SEQ_LEN)
-	{
-		rt_finished = 1u;   /* 到返回区了, 主循环打一次 RT:FINISH */
-		return;
-	}
-	Nav_DoRequest(route_test_seq[rt_idx], ROUTE_TEST_GEAR);
-}
-
-/* 停等漂移诊断: SEG=本段实际位移, PAUSE=停等期间车体挪动量(期望≈0), TOT=白走里程累计 */
-static uint8_t  pd_in_wait;                     /* 1=当前在 WAIT 段内(entry 已抓) */
-static uint8_t  pd_valid;                       /* 1=有一组新数据待主循环打印 */
-static uint16_t pd_seq;                         /* 停等序号 */
-static float    pd_entry_x, pd_entry_y;         /* WAIT 进段位姿 */
-static float    pd_seg_x,  pd_seg_y;            /* 本段起点(=上次停等结束位姿) */
-static float    pd_seg_dx, pd_seg_dy;           /* 本段实际位移 m */
-static float    pd_pau_dx, pd_pau_dy;           /* 停等期间位移 m */
-static float    pd_total_x, pd_total_y;         /* 白走里程累计(有符号分量 m):
-                                                 * 单向漂移会线性累加, 来回抖动会互相抵消,
-                                                 * 据此可区分"系统性溜车"与"随机抖动" */
-
-static void RouteTest_DriftSample(const mf_ctx_t *m)
-{
-	const mf_pose_t *p = mf_get_pose(m);
-
-	if (mf_is_waiting(m) != 0u)
-	{
-		if (pd_in_wait == 0u)               /* WAIT 进沿 */
-		{
-			pd_in_wait = 1u;
-			pd_entry_x = p->x_m;
-			pd_entry_y = p->y_m;
-			pd_seg_dx  = p->x_m - pd_seg_x; /* 本段实际位移 */
-			pd_seg_dy  = p->y_m - pd_seg_y;
-		}
-	}
-	else if (pd_in_wait != 0u)              /* WAIT 出沿 */
-	{
-		pd_in_wait = 0u;
-		pd_pau_dx  = p->x_m - pd_entry_x;   /* 停等白走 */
-		pd_pau_dy  = p->y_m - pd_entry_y;
-		pd_total_x += pd_pau_dx;            /* 有符号累加: 看漂移方向是否一致 */
-		pd_total_y += pd_pau_dy;
-		pd_seq++;
-		pd_valid   = 1u;
-		pd_seg_x   = p->x_m;                /* 下一段起点 */
-		pd_seg_y   = p->y_m;
-	}
-}
-
-/* 供调试口读取: 返回 1 表示有新数据; 读走后 pd_valid 自动清零 */
-uint8_t Car_RouteTest_Drift(uint16_t *seq, float *seg_dx, float *seg_dy,
-                            float *pau_dx, float *pau_dy,
-                            float *tot_x, float *tot_y)
-{
-	if (pd_valid == 0u) { return 0u; }
-	pd_valid = 0u;
-	if (seq != 0)    { *seq    = pd_seq; }
-	if (seg_dx != 0) { *seg_dx = pd_seg_dx; }
-	if (seg_dy != 0) { *seg_dy = pd_seg_dy; }
-	if (pau_dx != 0) { *pau_dx = pd_pau_dx; }
-	if (pau_dy != 0) { *pau_dy = pd_pau_dy; }
-	if (tot_x != 0)  { *tot_x  = pd_total_x; }
-	if (tot_y != 0)  { *tot_y  = pd_total_y; }
-	return 1u;
-}
-
-/* 上电起跑(相当于 Brain 发的第一条 REQ_NAV): 必须投递到命令信箱 ——
- * 直接调 Nav_DoRequest() 会在 mf_init 之前挂段表, 结果车一动不动、3s 后报 NAV_FAULT */
-void Car_RouteTest_BootStart(void)
-{
-	rt_idx = 0u;
-	rt_finished = 0u;
-	Car_Nav_MailPush(CAR_SUB_REQ_NAV, route_test_seq[0], ROUTE_TEST_GEAR);
-}
-
-/* 供调试口显示进度: idx=当前序列下标, total=序列长度, finished=是否已到返回区 */
-void Car_RouteTest_Progress(uint8_t *idx, uint8_t *total, uint8_t *finished)
-{
-	if (idx != 0)      { *idx = rt_idx; }
-	if (total != 0)    { *total = ROUTE_TEST_SEQ_LEN; }
-	if (finished != 0) { *finished = rt_finished; }
-}
-#endif
-
 /* 急停冻结转台: 弃用在途位置帧(DMA 中途可被共享 rxb 的 memset 撕裂, 且
  * Emm_V5 内部 HAL_UART_Transmit_DMA 遇 BUSY 会静默吞掉停止帧), 改用局部
  * 缓冲阻塞直发(5B@115200≈0.43ms, 仅 STOP 时一次)。残窗: TIM5 恰在
@@ -608,8 +452,8 @@ static void Nav_DoStop(void)
  * 微调不置 tt.busy —— 台架期间不发 TURN_DONE 事件, 不会误喂 Brain 状态机 */
 void Car_Turntable_BenchNudge(float delta_deg)
 {
-#if !ROUTE_TEST_TURNTABLE_EN
-	(void)delta_deg;   /* test/route: 转台冻结, 台架微调亦不开电机 */
+#if !TURNTABLE_ENABLE
+	(void)delta_deg;   /* 转台冻结: 台架微调亦不开电机 */
 	return;
 #endif
 	__disable_irq();
@@ -849,18 +693,14 @@ void Car_Nav_Task(void)
 	}
 
 	m = mf_app();
-#if ROUTE_TEST_EN
-	/* 停等漂移采样(只测不改)。必须放在 mf_is_done 分支**之前**: 最后一段的
-	 * WAIT 出沿与 path 置 DONE 同拍发生, 放后面会因提前 return 而漏采 */
-	RouteTest_DriftSample(m);
-#endif
+	/* 必须在 mf_is_done 分支**之前**: 最后一段的 WAIT 出沿与 path 置 DONE 同拍发生,
+	 * 放后面会因提前 return 而漏采 */
+	SELFTEST_DRIFT_SAMPLE(m);
 	if (mf_is_done(m))
 	{
 		nav.state = NAV_DONE;
 		Car_Event_Send(CAR_EVT_NAV_DONE, nav.nav_id, 0x00u);
-#if ROUTE_TEST_EN
-		RouteTest_OnNavDone();   /* 自测: 按原版命令序列自动推进到下一条 nav */
-#endif
+		SELFTEST_NEXT_NAV(nav.nav_id);
 		return;
 	}
 
@@ -878,9 +718,7 @@ void Car_Nav_Task(void)
 		}
 		else if (mf_is_waiting(m) != 0u)
 		{
-			/* 段表 WAIT 段(测试路线每段后的 3s 停等)本就要求车体静止。
-			 * 不豁免的话: ROUTE_TEST_PAUSE_MS=3000 与 NAV_STALL_MS=3000 正好
-			 * 同宽, 每次停等到点必判堵转 -> NAV_FAULT 中途停车, 路线跑不完 */
+			/* WAIT 段本就要求车体静止: 停等时长与 NAV_STALL_MS 同宽时不豁免必误报 */
 			nav.stall_ms = 0u;
 		}
 		else if (d > NAV_STALL_DELTA_M)
