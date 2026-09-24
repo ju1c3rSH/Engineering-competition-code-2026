@@ -69,18 +69,8 @@
 #define TRACKING_FRAME_TIMEOUT_MS       500u    /* 误差流超此时长无更新: 悬停等待 */
 #define TRACKING_PROPORTIONAL_GAIN      60.0f   /* P 增益 dps/单位误差, 内部取负(e>0→顺时针); 镜像摄像头翻符号 */
 #define TRACKING_MAX_YAW_RATE_DPS       60.0f   /* 跟瞄角速度限幅 */
-/* =========================================================================
- * 段内跟瞄参数(状态机实现见 Control_Car.c 的 Tracking_ApplyOverlay / Tracking_Goto)
- *
- * 重构说明(2026-09-23): 旧实现是"IDLE/RUN/LOCKED 三态 + overlay 覆盖 cmd", 把"到位"与
- * "收敛"混在一起, 现场表现为打靶段"有误差但车不往前走"。现改为六态机
- * (OFF / APPROACH / AIM / HOLD / LOCKED / FAULT), 四条不变量:
- *   · APPROACH 不碰 vx(速度权归段表), 只写 wz;  wz 由跟瞄**覆盖**而非叠加;
- *   · 只有"段表到位后的 AIM"才允许判收敛, DONE 的含义 = 到位且收敛;
- *   · APPROACH 丢目标不停车(停了就看不到靶), AIM 丢目标才压零且有上限;
- *   · LOCKED/FAULT 可被 START / 同 id REQ_NAV / STOP 解除, 不留黏性态。
- * 各量的物理意义与现场调法写在下面; 调参只改这一段, 不要再散落到别处。
- * ========================================================================= */
+/* 跟瞄参数(状态机见 Control_Car.c)。不变量: APPROACH 不碰 vx 只写 wz; 只有 AIM 判收敛;
+ * APPROACH 丢目标不停车、AIM 才压零。调参只改这一段 */
 
 #define TRACKING_ERROR_THRESHOLD        0.05f   /* 收敛阈值: 归一化横向误差 = 横向像素/半幅宽。
                                                  * 物理上 ≈ tan(半视场角)·e, 应按"激光光斑允许

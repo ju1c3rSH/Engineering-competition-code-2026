@@ -222,19 +222,8 @@ static void Nav_Fault(void);   /* 前置声明: Nav_DoRequest 段表校验失败
  * 靶标前一段由中控发 TRACKING_START 开启, 底盘按指定速度边走边修航向;
  * horizontal_error_normalized 归零即段内刹停等发射, 发射后 TRACKING_STOP
  * (mode=1) 继续走完当前段。履带动, 转盘不动 */
-/* ---- 段内跟瞄: 显式状态机(2026-09-23 重构, 取代原 IDLE/RUN/LOCKED 三态 overlay) ----
- * 四条设计原则(每条都对应一个曾经真实发生的现场故障):
- *   ① **速度权唯一**: 任一拍只有"段表"或"跟瞄"之一写 vx。APPROACH 只接管 wz、完全不碰 vx ——
- *      于是"车正对着靶前进、误差天然很小"不会再被误判成"已瞄准该停车"(现场: 车只走 0.35m
- *      就锁停, 永远到不了靶前)。wz 同样在跟瞄态由跟瞄**覆盖**而非叠加, 消除与段表航向环
- *      (pid_yaw 追 nom_yaw)两个控制器对抗、稳态误差无法标定的问题。
- *   ② **到位与收敛解耦**: 到位 = 段表跑完(mf_is_done, 事实); 收敛 = |e| 稳定(测量)。
- *      APPROACH 只在"段到位"后才升到 AIM, DONE 只在 AIM 且收敛时发 —— 它的语义因此
- *      就是"已到位并瞄准, 可发射", 主控可放心拿它当到位用。
- *   ③ **丢目标分阶段**: APPROACH 丢目标不停车(停了就再也看不到靶), 只停 wz 修正、段表照常
- *      推进; AIM 丢目标才压零(已到位, 动会破坏瞄准基准)且有上限, 超时上报 FAULT。
- *   ④ **所有出口有界**: LOCKED/FAULT 都能被 START / STOP / 新 nav 解除或复位, 不留黏性态
- *      (旧版 LOCKED 同 id 重发 REQ_NAV 走 early return、重发 START 只补 DONE ⇒ 只能急停)。 */
+/* 段内跟瞄六态机: APPROACH 不碰 vx 只写 wz(覆盖, 非叠加); 段表 done 才进 AIM,
+ * DONE = 到位且收敛; APPROACH 丢目标不停车、AIM 才压零; LOCKED/FAULT 可被解除 */
 typedef enum
 {
 	TRACKING_OFF = 0,     /* 不干预: 段表全权(原 TRACKING_IDLE) */
@@ -438,9 +427,7 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 {
 	if (nav.state == NAV_RUN && nav.nav_id == navigation_target_id)
 	{
-		/* 同段进行中: 幂等忽略。但若跟瞄正压在 LOCKED/FAULT —— 主控重发 REQ_NAV 明显是想让车
-		 * 继续走 —— 一并解除, 否则重发对"卡死的 LOCKED"完全无效(旧版只能急停; 2026-09-23
-		 * 现场: 打靶段车停死、既不前进也不报故障) */
+		/* 同段进行中: 幂等忽略; 但若跟瞄卡在 LOCKED/FAULT, 一并解除(否则重发无效) */
 		if (tracking.state != TRACKING_OFF)
 		{
 			Tracking_Goto(TRACKING_OFF);
@@ -552,9 +539,7 @@ static void Tracking_HoldStill(mf_ctx_t *motion)
 	motion->path.prev_wz = 0.0f;
 }
 
-/* 收到 TRACKING_START: 按"段表是否已到位"决定进 APPROACH 还是直接 AIM。
- * 无活动段表时**拒绝**并上报 FAULT(无段表) —— 旧版会静默进 RUN, 表现为"跟瞄生效但车不动"
- * (段表根本没跑), 只能靠超时暴露 */
+/* 收到 TRACKING_START: 段表已到位进 AIM, 否则进 APPROACH; 无段表直接 FAULT */
 static void Tracking_Start(uint8_t tracking_speed_level)
 {
 	mf_ctx_t *motion = mf_app();
@@ -597,8 +582,7 @@ static void Tracking_ConsumeErrorFrame(void)
 	__enable_irq();
 }
 
-/* 收到 TRACKING_STOP: mode=0 就地刹停(等发射, 段表锚点保留) / mode=1 解除压零让段表续跑。
- * mode=0 进 LOCKED 但**不发 DONE** —— 那是"主控要求停在这里", 不是"本地判定的收敛" */
+/* TRACKING_STOP: 0=就地刹停(mode=0 不发 DONE, 那是主控要求而非本地收敛) / 1=让段表续跑 */
 static void Tracking_Stop(uint8_t tracking_stop_mode)
 {
 	if (tracking_stop_mode == 0u)
@@ -612,8 +596,7 @@ static void Tracking_Stop(uint8_t tracking_stop_mode)
 	}
 }
 
-/* 本地判定"瞄不上": 锁停 + 上报 0x06 TRACKING_FAULT(reason), 等主控决策(重试/容错)。
- * 旧版这两种情况都"既不收敛也不报错"地静默卡死(现场: 车停着打偏, 主控白等 10s×4 次) */
+/* 本地判定瞄不上: 锁停 + 上报 0x06 FAULT, 等主控决策(重试/容错) */
 static void Tracking_RaiseFault(uint8_t reason)
 {
 	tracking.fault_reason = reason;
@@ -622,10 +605,7 @@ static void Tracking_RaiseFault(uint8_t reason)
 	Car_Event_Send(CAR_EVT_TRACKING_FAULT, reason, 0x00u);
 }
 
-/* 视觉 P 控制: **覆盖** wz(不是 +=)。跟瞄态下 wz 权归跟瞄 —— 段表航向环(pid_yaw 追 nom_yaw)
- * 此时被让出, 否则两个控制器同时作用, 稳态误差与相位都无法单独标定(旧实现是 +=)。
- * e>0(目标偏画面右) -> 顺时针修正; 镜像摄像头翻 TRACKING_PROPORTIONAL_GAIN 的符号。
- * 只对 vx 做**封顶**(level=1 低速跟瞄), 不清零 —— 速度权始终归段表 */
+/* 视觉 P 控制: **覆盖** wz(跟瞄态下段表航向环让出); vx 只封顶不清零 */
 static void Tracking_WriteYaw(mf_ctx_t *motion)
 {
 	float wz = -TRACKING_PROPORTIONAL_GAIN * tracking.horizontal_error_normalized;
@@ -671,8 +651,7 @@ static uint8_t Tracking_ApplyOverlay(void)
 
 	if (fresh == 0u)
 	{
-		/* ---- 测量失效: 按"是否已到位"分阶段(设计原则③) ---- */
-		tracking.hold_ms = 0u;
+		/* 测量失效: 未到位不停车(否则"车不动⇒靶不进视野"死锁), 已到位才压零 */
 		tracking.aim_bad_ms = 0u;
 		if (tracking.state != TRACKING_HOLD)
 		{
@@ -825,10 +804,7 @@ void Car_Nav_Task(void)
 		if ((tracking.state == TRACKING_AIM) || (tracking.state == TRACKING_LOCKED) ||
 		    (tracking.state == TRACKING_FAULT))
 		{
-			/* **有意停**才豁免堵转: 到位后的静瞄/锁停/故障等待 —— 三者都是主控知情的
-			 * (LOCKED/FAULT 有事件上报, AIM 有 TRK2: 观测)。旧版是"tracking != IDLE 全豁免",
-			 * 把"车被跟瞄压住不动"一律当正常 ⇒ F5/F7 那类卡死既不前进也不报故障。
-			 * APPROACH 不再豁免: 它由段表给速度, 本就不该静止。 */
+			/* 有意停才豁免堵转(AIM/LOCKED/FAULT); APPROACH 由段表给速度, 不该静止 */
 			nav.stall_ms = 0u;
 		}
 		else if (mf_is_waiting(m) != 0u)
@@ -1004,9 +980,7 @@ void Car_Debug_Stat_Print(void)
 	       "IRD"[nav_state & 0x03u], (unsigned)nav_id, (unsigned)seg_idx, (unsigned)seg_done,
 	       Tracking_StateChar((TrackingState_t)trk_state), err_f10k, (unsigned)trk_found,
 	       (unsigned)trk_frame_age, (unsigned)trk_hold);
-	/* 跟瞄状态行(2026-09-23 重构后新增): ST 六态 O/A(进近)/M(静瞄)/H(测量失效)/L(锁停)/F(故障);
-	 * SPD=主控给的跟瞄速度档; HOVER=测量失效累计; AIMBAD=静瞄误差超阈累计; RS=段表剩余里程(mm,
-	 * 判断"是否已进入靶前"); FR=FAULT reason(0x01 未收敛 0x02 丢目标 0x03 无段表) */
+	/* ST 六态 O/A/M/H/L/F; RS=段表剩余里程(mm); FR=FAULT reason */
 	printf("TRK2:ST=%c SPD=%u HOVER=%u AIMBAD=%u RS=%u FR=%u\r\n",
 	       Tracking_StateChar((TrackingState_t)trk_state), (unsigned)trk_speed,
 	       (unsigned)trk_hover, (unsigned)trk_aim_bad,
@@ -1030,8 +1004,7 @@ void Car_Debug_Stat_Print(void)
 	       (unsigned)Dbg2_TxFail_Cnt, (unsigned)Dbg2_RxErr_Cnt);
 }
 
-/* 跟瞄状态迁移打点(main 上下文): Tracking_Goto 在 ISR 里只登记一次 (from,to),
- * 这里消费并打一行 —— 现场复盘"哪一拍换了态、换到哪"全靠它(与 SEG/ARC 打点同款) */
+/* 跟瞄状态迁移打点(主循环): Tracking_Goto 在 ISR 只登记, 这里打一行 */
 void Car_TrkChange_Log(void)
 {
 	uint8_t from, to, found;

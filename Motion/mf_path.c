@@ -649,8 +649,7 @@ static float seg_next_entry_speed(const mf_path_ctx_t *p)
     }
 }
 
-/* 当前路径剩余里程估算（声明与语义见 mf_path.h）。只算位移段, 且 ARC 按整段名义里程
- * 全额计入(刻意偏保守)。打靶跟瞄的收敛门控依赖它区分"车正对着靶"与"已到靶前" */
+/* 剩余里程估算(见 mf_path.h) */
 float mf_path_remain_m(const mf_path_ctx_t *p)
 {
     uint16_t i;
