@@ -18,4 +18,5 @@
 .vscode/launch.json
 .vscode/settings.json
 MDK-ARM/build_log.txt
+MDK-ARM/build_log_*.txt
 MDK-ARM/fromelf_full.txt
