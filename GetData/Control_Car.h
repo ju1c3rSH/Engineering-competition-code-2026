@@ -91,6 +91,11 @@
                                                  * (段表航向环让出, 避免两个控制器对抗); 若视觉
                                                  * 帧率低、修正带宽不够, 可给 20~40 做前馈 */
 
+/* ---- TRANSLATE 平移瞄(v2.5.2): 误差仅作刹停判据, 不驱动位移 ----
+ * AIM 下底盘恒静止(HoldStill), |e|≤TRACKING_ERROR_THRESHOLD 保持 500ms 判收敛,
+ * 超阈 TRACKING_AIM_FAULT_MS 判 FAULT 走容错。无位移 ⇒ 段表名义终点=实际终点,
+ * 后续路书不被平移(2026-09 实测: vx 闭环会整体前移后续路线, 弃用) */
+
 /* ---- 有界收尾: 三种"瞄不上"都必须有终点, 否则主控只能等自己的超时 ---- */
 #define TRACKING_AIM_LOST_MAX_MS        3000u   /* AIM(已到位)丢目标上限 -> FAULT(丢目标); 0=关 */
 #define TRACKING_AIM_FAULT_MS           5000u   /* AIM 下 |e| **无进展**时长上限 -> FAULT(未收敛); 0=关。

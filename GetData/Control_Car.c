@@ -707,6 +707,9 @@ static void Tracking_WriteYaw(mf_ctx_t *motion)
 	}
 }
 
+/* TRANSLATE 平移瞄(v2.5.2): 转盘 90° 侧装相机时画面左右 = 车体前后。
+ * 语义 = "静止判定": 误差只当刹停判据, 不驱动任何位移 —— 见 ApplyOverlay AIM 分支 */
+
 /* 每拍在 mf_tick 之后调用。返回 1 = 本拍改写了 cmd(须重算轮速环); 0 = 不干预(段表全权)。
  * 这是跟瞄的唯一执行入口: 状态决定"谁写 vx/wz", 同一拍不存在两个写入者 */
 static uint8_t Tracking_ApplyOverlay(void)
@@ -787,7 +790,36 @@ static uint8_t Tracking_ApplyOverlay(void)
 
 	if (tracking.state == TRACKING_AIM)
 	{
-		Tracking_HoldStill(motion);    /* vx=0: 已到位, 原地精瞄 */
+		if (tracking.aim_axis == TRK_AXIS_TRANSLATE)
+		{
+			/* 平移瞄(v2.5.2): **只判定, 不移动** —— 误差仅作刹停判据, 底盘不因
+			 * 误差产生任何位移(vx/wz 恒 0), 位置零污染, 下一段表起点=段表名义
+			 * 终点。|e|≤阈保持 500ms → LOCKED+DONE; 超阈 5s → FAULT 走容错。
+			 * 收敛完全依赖路书名义终点标定与视觉稳定 */
+			Tracking_HoldStill(motion);
+			if (absolute_error >= TRACKING_ERROR_THRESHOLD)
+			{
+				tracking.hold_ms = 0u;
+				/* 车不动则误差不会自行改善, 用纯超阈时长判 FAULT
+				 * (不用 AimFaultWatch: 视觉噪声抖出 0.005 改善会无限续期) */
+				tracking.aim_bad_ms = (uint16_t)(tracking.aim_bad_ms + CAR_TASK_MS);
+				if ((TRACKING_AIM_FAULT_MS > 0u) && (tracking.aim_bad_ms >= TRACKING_AIM_FAULT_MS))
+				{
+					Tracking_RaiseFault(TRK_FAULT_NOT_CONVERGED);
+				}
+				return 1u;
+			}
+			tracking.aim_bad_ms = 0u;
+			tracking.hold_ms = (uint16_t)(tracking.hold_ms + CAR_TASK_MS);
+			if (tracking.hold_ms >= TRACKING_HOLD_TIME_MS)
+			{
+				Tracking_HoldStill(motion);
+				Tracking_Goto(TRACKING_LOCKED);
+				Car_Event_Send(CAR_EVT_TRACKING_DONE, 0u, 0x00u);   /* 到位且收敛 = 可发射 */
+			}
+			return 1u;
+		}
+		Tracking_HoldStill(motion);    /* vx=0: 已到位, 原地精瞄(ROTATE 旋转瞄, 原逻辑) */
 		Tracking_WriteYaw(motion);     /* wz 归跟瞄 */
 		if (absolute_error >= TRACKING_ERROR_THRESHOLD)
 		{
