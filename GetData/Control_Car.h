@@ -53,9 +53,14 @@
 #define CAR_SUB_REQ_TURNTABLE     0x03u   /* arg0=转台码 0~7: 1~3对坑(123/90/57°) 4~6对桶(270/270/90°CW反向) 7回正90°, 0=不动作; arg1=保留恒0 */
 #define CAR_SUB_GYRO_ZERO         0x04u   /* 陀螺仪置零(须车静止) */
 /* 打靶段内跟瞄: 段表不断, 边走边修航向, 收敛刹停, 发射后续跑 */
-#define CAR_SUB_TRACKING_START    0x05u   /* arg0=tracking_speed_level(0=段表速度/1=低速跟瞄), arg1=0保留 */
+#define CAR_SUB_TRACKING_START    0x05u   /* arg0=tracking_speed_level(0=段表速度/1=低速跟瞄),
+                                             arg1=aim_axis(0=ROTATE旋转瞄/1=TRANSLATE平移瞄, v2.5) */
 #define CAR_SUB_TRACKING_ERROR    0x06u   /* [error_low_byte,error_high_byte,target_found_flag], 定点=误差归一化*10000 小端 */
 #define CAR_SUB_TRACKING_STOP     0x07u   /* arg0=tracking_stop_mode(0=就地刹停/1=继续走完当前段), arg1=0保留 */
+
+/* 跟瞄收敛轴(v2.5): 转盘 90° 侧装相机时画面左右 = 车体前后, 旋转瞄在该几何下发散 */
+#define TRK_AXIS_ROTATE           0x00u   /* AIM: 误差→wz 原地转向(转盘 0° 正装) */
+#define TRK_AXIS_TRANSLATE        0x01u   /* AIM: 误差→vx 前后平移(转盘 90° 侧装), e>0=画面右=前行 */
 
 #define CAR_EVT_NAV_DONE          0x02u   /* 段序列全部完成 */
 #define CAR_EVT_NAV_FAULT         0x03u   /* 段执行异常 */
@@ -64,7 +69,7 @@
 #define CAR_EVT_TRACKING_FAULT    0x06u   /* 预留未实现: 当前丢帧/未收敛为悬停等待, 不上报 */
 
 /* 跟瞄看门狗/收敛参数(可在台架复标) */
-#define TRACKING_ERROR_THRESHOLD        0.05f   /* |归一化误差|小于此值视为瞄准 */
+#define TRACKING_ERROR_THRESHOLD        0.01f   /* |归一化误差|小于此值视为瞄准(v2.5: ±100/10000, 赛队要求) */
 #define TRACKING_HOLD_TIME_MS           500u    /* 维持此时长判收敛 */
 #define TRACKING_FRAME_TIMEOUT_MS       500u    /* 误差流超此时长无更新: 悬停等待 */
 #define TRACKING_PROPORTIONAL_GAIN      60.0f   /* P 增益 dps/单位误差, 内部取负(e>0→顺时针); 镜像摄像头翻符号 */
@@ -72,7 +77,7 @@
 /* 跟瞄参数(状态机见 Control_Car.c)。不变量: APPROACH 不碰 vx 只写 wz; 只有 AIM 判收敛;
  * APPROACH 丢目标不停车、AIM 才压零。调参只改这一段 */
 
-#define TRACKING_ERROR_THRESHOLD        0.05f   /* 收敛阈值: 归一化横向误差 = 横向像素/半幅宽。
+#define TRACKING_ERROR_THRESHOLD        0.01f   /* 收敛阈值(v2.5: ±100 定点 = ±0.01 ≈ ±3px@半幅320)。
                                                  * 物理上 ≈ tan(半视场角)·e, 应按"激光光斑允许
                                                  * 半径对应的角度"反推。现场若因抖动收不敛,
                                                  * 先查视觉去抖与帧率, 不要一味放大它 */

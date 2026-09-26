@@ -252,6 +252,7 @@ static struct
 	uint16_t hover_ms;                     /* 测量失效累计(APPROACH 记观察, AIM 计时上限) */
 	uint16_t aim_bad_ms;                   /* AIM 下 |e| 超阈累计(FAULT 判据) */
 	uint8_t  tracking_speed_level;         /* 0=段表速度/1=低速跟瞄 */
+	uint8_t  aim_axis;                     /* TRK_AXIS_*: AIM 收敛轴(0=旋转 wz/1=平移 vx, v2.5) */
 	uint8_t  fault_reason;                 /* TRACKING_FAULT 的 reason, 见 Control_Car.h TRK_FAULT_* */
 } tracking;
 
@@ -598,12 +599,15 @@ static void Tracking_HoldStill(mf_ctx_t *motion)
 	motion->path.prev_wz = 0.0f;
 }
 
-/* 收到 TRACKING_START: 段表已到位进 AIM, 否则进 APPROACH; 无段表直接 FAULT */
-static void Tracking_Start(uint8_t tracking_speed_level)
+/* 收到 TRACKING_START: 段表在跑进 APPROACH(边走边修航向); 段表已跑完进 AIM
+ * (打靶到位后的原地精瞄); 只有无活动段表(从未起段/已 STOP)才判无段表。
+ * a1 = aim_axis(v2.5): 0=旋转瞄(wz) / 1=平移瞄(vx, 转盘 90° 侧装相机) */
+static void Tracking_Start(uint8_t tracking_speed_level, uint8_t aim_axis)
 {
 	mf_ctx_t *motion = mf_app();
+	mf_path_state_t path_state = mf_path_get_state(&motion->path);
 
-	if (mf_path_get_state(&motion->path) != MF_PATH_RUN)
+	if (path_state == MF_PATH_IDLE)
 	{
 		tracking.fault_reason = TRK_FAULT_NO_PATH;
 		Tracking_Goto(TRACKING_FAULT);
@@ -612,13 +616,14 @@ static void Tracking_Start(uint8_t tracking_speed_level)
 		return;
 	}
 	tracking.tracking_speed_level = tracking_speed_level;
+	tracking.aim_axis = (aim_axis <= TRK_AXIS_TRANSLATE) ? aim_axis : TRK_AXIS_ROTATE;
 	tracking.frame_age_ms = 0u;
 	tracking.target_found_flag = 0u;
 	tracking.horizontal_error_normalized = 0.0f;
 	tracking_error_pending = 0u;   /* 丢弃上轮残帧, 首拍不等旧误差 */
 	/* LOCKED/FAULT 下重收 START = 主控要求重新开始跟瞄 ⇒ 回到 APPROACH/AIM 重瞄(解除黏性),
 	 * 若确实仍收敛, 500ms 后会再发一次 DONE, 对主控的幂等重发友好 */
-	Tracking_Goto((mf_is_done(motion) != 0u) ? TRACKING_AIM : TRACKING_APPROACH);
+	Tracking_Goto((path_state == MF_PATH_DONE) ? TRACKING_AIM : TRACKING_APPROACH);
 }
 
 /* 原子消费误差帧: 有新帧更新误差并喂狗, 无新帧不碰 frame_age_ms */
@@ -707,6 +712,18 @@ static uint8_t Tracking_ApplyOverlay(void)
 	}
 	fresh = (uint8_t)((tracking.target_found_flag != 0u) &&
 	                  (tracking.frame_age_ms <= TRACKING_FRAME_TIMEOUT_MS));
+
+	/* TRANSLATE 轴的 APPROACH: 侧向相机无法提供航向修正, 段表全权不干预
+	 * (含丢帧 —— 进近途中看不到靶是常态, 别为此切 HOLD 打断段表)。
+	 * 段表到位的迁移在这里做, 不依赖主控重发 START 才进 AIM */
+	if ((tracking.aim_axis == TRK_AXIS_TRANSLATE) && (tracking.state == TRACKING_APPROACH))
+	{
+		if (mf_is_done(motion) != 0u)
+		{
+			Tracking_Goto(TRACKING_AIM);
+		}
+		return 0u;
+	}
 
 	if (fresh == 0u)
 	{
@@ -813,7 +830,7 @@ void Car_Nav_Task(void)
 		case CAR_SUB_REQ_NAVIGATION:    Nav_DoRequest(a0, a1); break;
 		case CAR_SUB_REQ_STOP:          Nav_DoStop(); break;
 		case CAR_SUB_REQ_TURNTABLE:     Nav_Turntable(a0); break;
-		case CAR_SUB_TRACKING_START:    Tracking_Start(a0); break;
+		case CAR_SUB_TRACKING_START:    Tracking_Start(a0, a1); break;
 		case CAR_SUB_TRACKING_STOP:     Tracking_Stop(a0); break;
 		case CAR_SUB_GYRO_ZERO:
 			/* 车静止时置零，此刻必在原点(上电流程：扫码->置零->起步) */

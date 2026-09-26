@@ -286,10 +286,11 @@ static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *p
 		break;
 
 	case CAR_SUB_TRACKING_START:
-		if (payload_length >= 3u && payload[2] <= 1u)
+		/* v2.5: payload 4B [data_id, sub, speed_level, aim_axis]; arg1 缺失或越界 → PARAM */
+		if (payload_length >= 4u && payload[2] <= 1u && payload[3] <= 1u)
 		{
 			Car_Ack_Send(CAR_SUB_TRACKING_START, 0x01u);
-			Car_Nav_MailPush(CAR_SUB_TRACKING_START, payload[2], 0u);
+			Car_Nav_MailPush(CAR_SUB_TRACKING_START, payload[2], payload[3]);
 		}
 		else
 		{
