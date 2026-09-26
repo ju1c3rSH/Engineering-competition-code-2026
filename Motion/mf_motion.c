@@ -278,9 +278,12 @@ void mf_tick(mf_ctx_t *m, const mf_state_in_t *in)
         m->wheel[i].out = mf_pid_calc(&m->pid_wheel[i],
                                       wheel_cmd[i] - m->wheel[i].speed_mps,
                                       dt);
-        if (m->cmd.vx_mps == 0.0f && m->cmd.wz_dps == 0.0f)
+        if ((m->cmd.vx_mps == 0.0f) && (m->cmd.wz_dps == 0.0f) &&
+            (m->cmd_ext_hold == 0u))
         {
-            /* 停止指令：直接清输出，避免速度环静差爬行 */
+            /* 停止指令：直接清输出，避免速度环静差爬行。
+             * cmd_ext_hold=1 例外: 段表跑完(cmd 恒 0)但应用层(跟瞄)正要接管本拍输出,
+             * 清积分会让低速指令只剩 P 项而卡在履带起步门槛下 */
             m->wheel[i].out = 0.0f;
             mf_pid_reset(&m->pid_wheel[i]);
         }

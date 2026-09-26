@@ -65,19 +65,15 @@
 #define CAR_EVT_NAV_DONE          0x02u   /* 段序列全部完成 */
 #define CAR_EVT_NAV_FAULT         0x03u   /* 段执行异常 */
 #define CAR_EVT_TURN_DONE         0x04u   /* 转台到位 */
-#define CAR_EVT_TRACKING_DONE     0x05u   /* 段内跟瞄收敛已刹停, 可发射 */
+#define CAR_EVT_TRACKING_DONE     0x05u   /* 已刹停且收敛, 可发射: 段表到位(AIM) 或
+                                            * 进近途中按误差主动刹停(STAND, v2.6) 都发 */
 #define CAR_EVT_TRACKING_FAULT    0x06u   /* 预留未实现: 当前丢帧/未收敛为悬停等待, 不上报 */
 
-/* 跟瞄看门狗/收敛参数(可在台架复标) */
-#define TRACKING_ERROR_THRESHOLD        0.01f   /* |归一化误差|小于此值视为瞄准(v2.5: ±100/10000, 赛队要求) */
-#define TRACKING_HOLD_TIME_MS           500u    /* 维持此时长判收敛 */
-#define TRACKING_FRAME_TIMEOUT_MS       500u    /* 误差流超此时长无更新: 悬停等待 */
-#define TRACKING_PROPORTIONAL_GAIN      60.0f   /* P 增益 dps/单位误差, 内部取负(e>0→顺时针); 镜像摄像头翻符号 */
-#define TRACKING_MAX_YAW_RATE_DPS       60.0f   /* 跟瞄角速度限幅 */
-/* 跟瞄参数(状态机见 Control_Car.c)。不变量: APPROACH 不碰 vx 只写 wz; 只有 AIM 判收敛;
+/* 跟瞄看门狗/收敛参数(可在台架复标)。不变量: APPROACH 不碰 vx 只写 wz(TRANSLATE 轴
+ * 例外: 可在进近途中按误差刹停, 见 TRACKING_STAND_*); 到位与收敛解耦;
  * APPROACH 丢目标不停车、AIM 才压零。调参只改这一段 */
-
-#define TRACKING_ERROR_THRESHOLD        0.01f   /* 收敛阈值(v2.5: ±100 定点 = ±0.01 ≈ ±3px@半幅320)。
+#define TRACKING_ERROR_THRESHOLD        0.03f   /* 收敛阈值(±300 定点 = ±0.03 ≈ ±9px@半幅320;
+                                                 * 2026-09-26 由 ±100 现场放宽到 ±300)。
                                                  * 物理上 ≈ tan(半视场角)·e, 应按"激光光斑允许
                                                  * 半径对应的角度"反推。现场若因抖动收不敛,
                                                  * 先查视觉去抖与帧率, 不要一味放大它 */
@@ -91,10 +87,61 @@
                                                  * (段表航向环让出, 避免两个控制器对抗); 若视觉
                                                  * 帧率低、修正带宽不够, 可给 20~40 做前馈 */
 
-/* ---- TRANSLATE 平移瞄(v2.5.2): 误差仅作刹停判据, 不驱动位移 ----
- * AIM 下底盘恒静止(HoldStill), |e|≤TRACKING_ERROR_THRESHOLD 保持 500ms 判收敛,
- * 超阈 TRACKING_AIM_FAULT_MS 判 FAULT 走容错。无位移 ⇒ 段表名义终点=实际终点,
- * 后续路书不被平移(2026-09 实测: vx 闭环会整体前移后续路线, 弃用) */
+/* ---- 进近途中按误差刹停(v2.6, 仅 TRANSLATE 平移瞄) ----
+ * 侧装相机画面左右 = 车体前后 ⇒ |e|≤阈 的含义是"**车体纵向已咬住靶心**", 不是 ROTATE
+ * 那种"车头正对着靶"(后者 e≈0 时车还没到靶, 所以 ROTATE 轴绝不启用, 见 2026-09-23
+ * 不变量 A)。于是在段表跑完前就刹停、报 TRACKING_DONE 让主控开激光。
+ * 刹停**不产生位移**: 只把 cmd 压零、本段里程冻结, 收到 TRACKING_STOP(1) 即回 OFF,
+ * 段表从 cur_speed=0 重新起坡跑完本段剩余里程 —— 开激光后恢复行进, 且下一段起点仍落
+ * 在名义终点上(区别于 v2.5 的 vx 闭环: 那次是永久前移, 整条后续路书跟着偏)。
+ * 段表先跑完(误差始终没进阈)时仍走原 AIM 分支, 行为不变 */
+#define TRACKING_STAND_EN               1u      /* 0 = 关(回"只有 AIM 判收敛"的 v2.5.2 行为) */
+#define TRACKING_STAND_MIN_DONE_M       3.0f    /* "咬靶区"入口: 本段先走够这么多米, 才允许咬靶
+                                                 * 限速与按误差刹停 —— 两者共用这个门槛。
+                                                 * 依据是相机自己的视场: 侧装相机只在车体纵向
+                                                 * 接近靶心(±S)时才能看见靶, 段起点处若报出
+                                                 * "found=1 且 e≈0"(误检/上一段陈旧帧), 不设
+                                                 * 门槛就会把车从起步压在咬靶速度上 —— 表现为
+                                                 * "车像没动"(3cm/s 爬)。2026-09-26 现场实测:
+                                                 * 门槛 0.5m 时该故障成立, 故抬到 3.0m(段长 5.5m
+                                                 * 的末 45%, 仍给咬停留 2.5m 余量)。0 = 不设门槛 */
+
+/* ---- 进近咬靶减速: 刹停判据的**前置条件**, 不是可选优化 ----
+ * ±阈 窗口在物理上只有几厘米宽(±0.03 ≈ ±9.6px, 3m 靶距时 ≈ ±5cm), 以段表巡航 0.94m/s
+ * 冲过去约 100ms 就穿窗 ⇒ 500ms 驻留永远凑不满, 且刹停瞬间还会滑出十几厘米, 停点与
+ * "误差过零处"错开。所以进近途中按 |e| 线性限速: e=1 → 段表速度, e=0.03 → 咬靶速度;
+ * 进阈时车速自己已经降到几厘米每秒, 驻留与停点才都成立。
+ * 只限幅**不改方向**, 是开环限速(不是误差闭环), 不存在 e 符号接反发散的风险。
+ * 丢帧/视觉没就绪时不限速 —— 否则视觉一挂, 段表被压在咬靶速度爬完全程 */
+#define TRACKING_APPROACH_SLOW_KPS      (1.5f * MF_M_SPEED(Middle_speed))
+                                        /* m/s per 单位 |e|: |e|<0.67 才起限速(≈靶前 1.2m),
+                                         * 段内耗时 +0.8s, 停车余差 ≈195 定点(阈 300)。
+                                         * 标定依据 build_verify/tracking_stand_sim.py:
+                                         * K 越大越快但驻留越难凑满(K ≥ 4·S 就永不触发,
+                                         * S=e=1 对应的纵向偏差 m)。回落到段表速度只要把这
+                                         * 个系数调大(例如 100.0f) */
+#define TRACKING_APPROACH_MIN_MPS       0.03f   /* 咬靶速度下限: 最后几厘米仍能爬, 不被限死 */
+
+/* ---- AIM 平移微调(v2.6.1, 仅 TRANSLATE): 段表跑完后用误差驱动前后微调把靶心咬进 ±阈 ----
+ * 这是"误差→位移"的**唯一**执行口(进近阶段只限速、不产生位移)。
+ * 现场依据(2026-09-26 双端日志): 打靶段 5497mm 正常走完, 停车时 E=6540(65% 半幅),
+ * 而 v2.5.2 的"只判定不移动"让它一直停着 → 只能以偏 65% 的姿势开激光。要打中就必须能挪。
+ * 三重护栏(防符号接反/相机非侧装时跑飞):
+ *   ① 幅值限 V_MAX; ② 累计净位移 |Δ| 超 MAX_TRAVEL ⇒ FAULT(01); ③ |e| 无进展 5s ⇒ FAULT
+ * 走过的净位移记进 nav_aim_resid_m, 由**下一段表首段里程扣掉** —— 后续路书物理落点与
+ * "车停在名义终点"时完全一致, 即消除 v2.5"平移闭环把后续路线整体前移"的病 */
+#define TRACKING_AIM_VX_EN              1u      /* 0 = 回"只判定不移动"(v2.5.2) */
+#define TRACKING_AIM_VX_KPS             0.8f    /* m/s per 单位 e(归一化误差 ±1);
+                                                 * e=0.65 → 0.52 但被 V_MAX 截到 0.35 */
+#define TRACKING_AIM_VX_MAX_MPS         0.35f   /* 微调速度上限: 留出视觉 20Hz 的闭环余量 */
+#define TRACKING_AIM_MAX_TRAVEL_M       1.5f    /* 净位移上限: 超限 = 迹象不对(符号/安装),
+                                                 * 直接 FAULT 让主控走容错, 不允许无限跑 */
+
+/* ---- TRANSLATE 平移瞄: 误差仅作刹停判据, 不驱动位移 ----
+ * 进近途中 |e|≤阈 -> STAND 刹停等发射(TRACKING_STAND_*, v2.6);
+ * 段表先跑完 -> AIM 恒静止(HoldStill), |e|≤阈 保持 500ms 判收敛, 超阈
+ * TRACKING_AIM_FAULT_MS 判 FAULT 走容错。两个分支都无位移 ⇒ 段表名义终点=实际终点,
+ * 后续路书不被平移(2026-09 实测: v2.5 的 vx 闭环会整体前移后续路线, 弃用) */
 
 /* ---- 有界收尾: 三种"瞄不上"都必须有终点, 否则主控只能等自己的超时 ---- */
 #define TRACKING_AIM_LOST_MAX_MS        3000u   /* AIM(已到位)丢目标上限 -> FAULT(丢目标); 0=关 */
@@ -159,7 +206,8 @@ void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);  /* interurp.c
 void Car_Debug_Stat_Print(void);   /*'. '?'/p 周期: 四行状态块(CHASSIS/WHEEL/POSE/WTBL) */
 void Car_SegChange_Log(void);      /* 主循环: seg_index/state 变化时打一行 SEG(原库层 ISR printf) */
 void Car_ArcExit_Log(void);        /* 主循环: 每条 ARC 段跑完打一行 ARC(出口横向/航向偏差) */
-void Car_TrkChange_Log(void);      /* 主循环: 跟瞄状态迁移(六态机)打一行 TRK:旧>新 */
+void Car_TrkChange_Log(void);      /* 主循环: 跟瞄状态迁移(七态机)打一行 TRK:旧>新 */
+void Car_AimTrace_Log(void);       /* 主循环: AIM/STAND 驻停期 10Hz 打点(判误差卡在哪) */
 
 /* 台架直转(USART2 'w'/'e'/'1'~'7'/'x', Car_DebugTask 主循环执行): 微调不报
  * TURN_DONE, 打码走协议码表 */
