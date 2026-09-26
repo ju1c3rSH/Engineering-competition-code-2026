@@ -70,7 +70,7 @@ static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 
 };
 static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~16 人质区 */
 {
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(50.5f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(48.5f)),
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag14) */
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(80.0f)),
 	SEG_END
