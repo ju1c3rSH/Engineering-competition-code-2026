@@ -197,7 +197,9 @@ static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed
 #define NAV_STALL_DELTA_M      0.001f
 /* 转台 DONE 计时: 开环静置, 按本次行程 |本次目标−上次目标| × TURNTABLE_MS_PER_DEG 算, 只增不减。
  * TURNTABLE_MS_PER_DEG 标定: 上机敲桶位码 4/5(270°), 录像量"发令→实际停稳" t, 置 t/270 */
-#define TURNTABLE_MS_PER_DEG   1.9f    /* 额定 180RPM ⇒ 0.93ms/°; ×2 计梯形重启欠速 */
+#define TURNTABLE_MS_PER_DEG   1.9f    /* 额定 180RPM ⇒ 0.93ms/°; 旧值 ×2 计"100ms 重发重启
+                                        * 梯形规划"欠速——2026-09 目标去重后单发不再重启, 1.9 纯作
+                                        * 偏长裕量(报早=伸臂干涉), 可按下行标定法回收时间 */
 #define TURNTABLE_RAMP_MARGIN  300u    /* 加减速 + 机械/传动裕量 */
 #define TURNTABLE_SETTLE_MIN   1000u   /* 只增不减: 旧固定值, 相对旧行为零回退 */
 #define TURNTABLE_SETTLE_MAX   3000u   /* 上限: 旧基线值, 防异常行程把流程拖死 */
@@ -317,17 +319,34 @@ void Car_Tracking_ErrorPush(int16_t error_fixed, uint8_t target_found_flag)
 	__enable_irq();
 }
 
-/* 转台重发门控: 上电后首条 TURNTABLE 命令才允许 Emm 下发, 急停后重新冻结。
+/* 转台下发门控: 上电后首条 TURNTABLE 命令才允许 Emm 下发, 急停后重新冻结。
  * 防两类失控: 1) 仅 MCU 复位(驱动器带电)时自动甩回旧目标; 2) 急停后 TIM5
- * 100ms 重发继续驱动转台 */
+ * 继续周期下发驱动转台 */
 static uint8_t tt_arm = 0u;
 
+/* 目标去重(2026-09 改, 替代旧基线"100ms 周期重发同一绝对位置"):
+ * Emm_V5 驱动器每收到一条 0xFD 位置帧都会**重启电机梯形规划**——周期重发把
+ * 行程切成 10Hz 的"起步-重启-起步"锯齿, 永远到不了巡航速度, 带载表现为转台
+ * 剧烈抖动(台架 'w'/'e' 微调与实车摆坑/桶位走的是同一条 TIM5 下发链路, 症状
+ * 相同)。改为: 目标(方向+脉冲数打包 key)变化才下发一次, 到位后停发。
+ * 丢帧鲁棒性: 发送失败(HAL_BUSY 等)不记账, 下个 100ms 拍自动重试; 驱动器
+ * 是否真收到靠 '?' 状态块 EMM 行的应答计数(Emm_reply_ok_cnt/Emm_rx_cnt)观测 */
+#define TT_KEY_UNSENT  0xFFFFFFFFu   /* 哨兵: 合法 key ≤ 0x8004FAC0(dir位|tick), 不会撞上 */
+static uint32_t tt_sent_key = TT_KEY_UNSENT;
+
+/* 重新武装(tt_arm 0->1)必须同时失效去重: 急停('x'/REQ_STOP)后驱动器停在半路,
+ * 同码再摆(如再敲 '7' 或段入口回正)时 key 虽未变, 也需要一条全新的位置帧把
+ * 电机带回目标——不能因"目标没变"而跳过 */
+static void Tt_Arm(void)
+{
+	tt_arm = 1u;
+	tt_sent_key = TT_KEY_UNSENT;
+}
+
 /* 转台码->定点角: 对坑 1->123 2->90 3->57, 对桶 4/5->270 6->90, 7 回正->90, 0 不动作 */
-/* 注意(旧基线遗留行为, 暂不改动): 转台为开环时序——TIM5 100ms 周期重发
- * 同一绝对位置(Emm_V5 绝对模式, 重复下发还会重启电机梯形规划), TURN_DONE
- * 在置 busy 后固定 3s 计时上报, 不校验 Emm 应答与到位状态。沿用实车验证
- * 行为; 若现场出现"未到位即动作", 改法: 目标变化才下发一次 + 轮询 Emm
- * 状态字确认到位后再报 TURN_DONE */
+/* TURN_DONE 在置 busy 后按行程动态计时上报(Nav_TurnSettle), 不校验 Emm 应答
+ * 与到位状态; 若现场出现"未到位即动作", 进一步改法: 轮询 Emm 状态字
+ * (S_FLAG 到位位)确认到位后再报 TURN_DONE */
 static struct
 {
 	uint8_t  busy;
@@ -408,7 +427,7 @@ static void Nav_Turntable(uint8_t turn_code)
 	}
 	CW_OR_CCW = dir;
 	Car_data.Motor_Angle = angle;
-	tt_arm = 1u;
+	Tt_Arm();                        /* 置 tt_arm + 失效目标去重(见 Tt_Arm 注释) */
 	tt.busy = 1u;
 	tt.code = turn_code;
 	tt.ms = 0u;
@@ -507,7 +526,7 @@ void Car_Turntable_BenchNudge(float delta_deg)
 	__disable_irq();
 	tt_arm = 0u;
 	Car_data.Motor_Angle += delta_deg;
-	tt_arm = 1u;
+	Tt_Arm();                        /* 置 tt_arm + 失效目标去重 */
 	__enable_irq();
 	Car_Dbg2_TtRecord(2u, 0u, Car_data.Motor_Angle);
 }
@@ -1087,16 +1106,18 @@ void Car_ArcExit_Log(void)
 		       (int)(ey * 1000.0f), (int)(yerr * 10.0f));
 	}
 }
-/* TIM5 100ms 转台重发(经 interurp.c 调用)。
+/* TIM5 100ms 转台下发(经 interurp.c 调用)。
  * tt_arm 门控: 上电后首条 TURNTABLE 命令前/急停后不下发——旧版上电即向
  * 绝对 0°(=驱动器上电零点)发位置, 仅 MCU 复位时转台会自行大行程甩动。
  * 方向+角度关中断成对快照, 防 TIM4 更新中途读到混合对挥向另一侧。
+ * 目标去重(见 tt_sent_key 注释): (方向,目标)没变就不发——重发会重启 Emm
+ * 梯形规划, 10Hz 锯齿起步 = 转台剧烈抖动; 发送失败不记账, 下拍重试。
  * acc=20: 旧值 0 为直接启动, 带载 180RPM 零斜坡起转冲击/失步 */
 void Emm_Pos_Control(void)
 {
 	uint8_t  dir;
 	float    deg;
-	uint32_t tick;
+	uint32_t tick, key;
 
 	if (tt_arm == 0u)
 	{
@@ -1113,10 +1134,19 @@ void Emm_Pos_Control(void)
 		deg = 0.0f;
 	}
 	tick = (uint32_t)(WTBL_TICK_PER_DEG * deg);
-	tt_last_tick = tick;   /* 台架标定读数('?' 的 WTBL 行 TICK=) */
+	key = (dir != 0u) ? tick : (tick | 0x80000000u);   /* 方向并入 key: 码6(CW 90)->码7(CCW 90) tick 相同 */
+	if (key == tt_sent_key)
+	{
+		return;   /* 目标未变且已成功下发: 不再重发, 让驱动器独立跑完梯形规划 */
+	}
 	/* vel=180 / acc=20 都是**电机轴 RPM 口径**, 与 MStep 无关:
 	 * 改驱动器细分时只改 WTBL_TICK_PER_DEG, 这两个不用动(行程耗时只取决于 RPM 与角度) */
-	Emm_V5_Pos_Control(EMM_MOTOR_ADDR, dir, 180, 20, tick, true, false);
+	if (Emm_V5_Pos_Control(EMM_MOTOR_ADDR, dir, 180, 20, tick, true, false) != HAL_OK)
+	{
+		return;   /* 帧没进 DMA(如 TX 在途 HAL_BUSY): 不记账, 下个 100ms 拍重试 */
+	}
+	tt_sent_key = key;
+	tt_last_tick = tick;   /* 台架标定读数('?' 的 WTBL 行 TICK=): 最近一次实际下发量 */
 }
 
 /* 上电转台零点对齐: 发 0x0A 清零驱动器计数器(电机不动), MCU 记账角置 TURNTABLE_BOOT_DEG。
@@ -1124,6 +1154,7 @@ void Emm_Pos_Control(void)
 void Car_Turntable_BootZero(void)
 {
 	tt_arm = 0u;
+	tt_sent_key = TT_KEY_UNSENT;   /* 驱动器计数器已清零, 旧"已下发"记录全部作废 */
 	tt.busy = 0u;
 	tt.code = 0u;
 	tt.ms = 0u;

@@ -180,7 +180,7 @@ void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bo
   * @param    snF ：多机同步标志 ，false为不启用，true为启用
   * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
-void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint32_t clk, bool raF, bool snF)
+HAL_StatusTypeDef Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint32_t clk, bool raF, bool snF)
 {
 	memset(&rxb , 0 , sizeof(rxb));
 
@@ -203,7 +203,9 @@ void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, ui
   if (HAL_UART_Transmit_DMA(&Uart_Emm, (uint8_t *)rxb, 13) != HAL_OK)
   {
     Emm_tx_fail_cnt++;
+    return HAL_BUSY;   /* 帧没进 DMA: 调用方不记账, 下拍重试 */
   }
+  return HAL_OK;
 //  HAL_UART_Transmit(&huart1, (uint8_t *)rxb, 13 , 1000);
 }
 

@@ -44,7 +44,9 @@ void Emm_V5_Read_Sys_Params(uint8_t addr, SysParams_t s); // 读取参数
 void Emm_V5_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode); // 发送命令修改开环/闭环控制模式
 void Emm_V5_En_Control(uint8_t addr, bool state, bool snF); // 电机使能控制
 void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bool snF); // 速度模式控制
-void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint32_t clk, bool raF, bool snF); // 位置模式控制
+/* 返回 HAL_OK/HAL_BUSY 等: 调用方(Tim5 转台重发)凭此决定是否记账"已下发",
+ * BUSY/失败帧不记账, 下个 100ms 拍自动重试 */
+HAL_StatusTypeDef Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint32_t clk, bool raF, bool snF); // 位置模式控制
 void Emm_V5_Stop_Now(uint8_t addr, bool snF); // 让电机立即停止运动
 void Emm_V5_Synchronous_motion(uint8_t addr); // 触发多机同步开始运动
 void Emm_V5_Origin_Set_O(uint8_t addr, bool svF); // 设置挡圈回零的零点位置
