@@ -468,8 +468,10 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 
 	if (nav.state == NAV_RUN && nav.nav_id == navigation_target_id)
 	{
-		/* 同段进行中: 幂等忽略; 但若跟瞄卡在 LOCKED/FAULT, 一并解除(否则重发无效) */
-		if (tracking.state != TRACKING_OFF)
+		/* 同段进行中: 幂等忽略。只解除"卡住"的 LOCKED/FAULT(否则重发对跟瞄无效);
+		 * APPROACH/AIM/HOLD 保持原状 —— 无条件回 OFF 会被中控的幂等重发
+		 * (超时重试/EXE_LASER 恢复段)打断正在收敛的跟瞄 */
+		if ((tracking.state == TRACKING_LOCKED) || (tracking.state == TRACKING_FAULT))
 		{
 			Tracking_Goto(TRACKING_OFF);
 		}
