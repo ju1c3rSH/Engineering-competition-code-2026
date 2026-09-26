@@ -211,10 +211,16 @@ typedef enum
 	NAV_DONE,       /* 已完成，同 id 重发只补发 NAV_DONE */
 } NavState_t;
 
+/* nav_id 的"无"哨兵。必须 != 任何合法 nav_id(0~7): nav 是 static 零初始化,
+ * 用 0 当哨兵会让上电后第一条 REQ_NAV(0) 被误判成"已跑完" */
+#define NAV_ID_NONE  0xFFu
+
 static struct
 {
 	NavState_t state;
 	uint8_t    nav_id;
+	uint8_t    chain_to;    /* 本表跑完将自动续跑的 nav_id; NAV_ID_NONE=不续 */
+	uint8_t    last_done;   /* 已跑完但因链续未进 NAV_DONE 态的 nav_id; NAV_ID_NONE=无 */
 	uint16_t   stall_ms;
 } nav;
 
@@ -441,9 +447,25 @@ static const uint8_t nav_entry_turn[CAR_NAV_ID_COUNT] =
 	0u, 0u, 0u, 0u, 0u, 0u, 7u, 0u,   /* 仅 NAV_REBASE_BOMB(6) -> 回正 90° */
 };
 
+/* 段表自动链续: 该 nav 跑完由底盘自行续跑下一条(0=不续, 等主控下发)。
+ * 现仅 NAV_TO_BOMB(1) -> NAV_REBASE_BOMB(6): 两表在几何上首尾相接, 中间本无停顿理由
+ * —— 末段转弯只是为了让转台 90° 与行驶并行才被拆进 nav 6。拆表带来的代价是表尾被
+ * 当成"路线终点"(END ⇒ v_next=0) 而硬性减速, 加上跨芯片握手的零输出空窗。
+ * 链续后: ① 末段按续表首段速度收尾(见 mf_path seg_next_entry_speed);
+ *        ② 跨表同拍切换、输出不归零, 无空窗、cur_speed 连续、轮速环不复位。
+ * 自测形态必须置 0: SELFTEST_NEXT_NAV 与它同在"跑完一条"处接管, 同开会双触发。
+ * 续表一律用 flash 原表 nav_routes[], 不走 Nav_GearTable 的 RAM 缓冲 —— 那份 static
+ * 缓冲此刻仍装着当前表的拷贝, 往里拷新表会让正在跑的 path 指针悬空 */
+static const uint8_t nav_chain_next[CAR_NAV_ID_COUNT] =
+{
+	0u, NAV_CHAIN_1_TO, 0u, 0u, 0u, 0u, 0u, 0u,
+};
+
 /* REQ_NAV 幂等: 同 id 进行中忽略 / 已完成补发 DONE / 其余停旧起新 */
 static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 {
+	uint8_t chain_to;
+
 	if (nav.state == NAV_RUN && nav.nav_id == navigation_target_id)
 	{
 		/* 同段进行中: 幂等忽略; 但若跟瞄卡在 LOCKED/FAULT, 一并解除(否则重发无效) */
@@ -458,9 +480,23 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 		Car_Event_Send(CAR_EVT_NAV_DONE, navigation_target_id, 0x00u);
 		return;
 	}
-	mf_start_path(mf_app(), Nav_GearTable(navigation_target_id, speed_gear));
+	/* 链续后旧 id 的重发: 该表确实已跑完, 只是 DONE 帧可能丢了 —— 补发而不重跑,
+	 * 否则"主控超时重发 REQ_NAV(1)"会走到下面的停旧起新、把 tbl_bomb 从头再跑一遍 */
+	if (nav.last_done == navigation_target_id)
+	{
+		Car_Event_Send(CAR_EVT_NAV_DONE, navigation_target_id, 0x00u);
+		return;
+	}
+
+	chain_to = ((navigation_target_id < CAR_NAV_ID_COUNT)
+	            && (nav_chain_next[navigation_target_id] != 0u))
+	         ? nav_chain_next[navigation_target_id] : NAV_ID_NONE;
+	mf_start_path_chain(mf_app(), Nav_GearTable(navigation_target_id, speed_gear),
+	                    (chain_to != NAV_ID_NONE) ? nav_routes[chain_to] : 0);
 	nav.state = NAV_RUN;
 	nav.nav_id = navigation_target_id;
+	nav.chain_to = chain_to;
+	nav.last_done = NAV_ID_NONE;
 	nav.stall_ms = 0u;
 	/* 起新段清跟瞄: 防 EXE_LASER 重试/FAULT 泄漏的 LOCKED/FAULT 带到新路段 */
 	Tracking_Goto(TRACKING_OFF);
@@ -505,6 +541,8 @@ static void Nav_DoStop(void)
 {
 	mf_stop(mf_app());
 	nav.state = NAV_IDLE;
+	nav.last_done = NAV_ID_NONE;
+	nav.chain_to = NAV_ID_NONE;
 	Tracking_Goto(TRACKING_OFF);
 	/* 急停覆盖转台: 停电机 + 冻结 TIM5 重发 + 作废未决 TURN_DONE
 	 * (协议头 REQ_STOP 语义: 急停安全停车, 清执行状态) */
@@ -743,6 +781,8 @@ static void Nav_Fault(void)
 {
 	mf_stop(mf_app());
 	nav.state = NAV_IDLE;
+	nav.last_done = NAV_ID_NONE;
+	nav.chain_to = NAV_ID_NONE;
 	Car_Event_Send(CAR_EVT_NAV_FAULT, nav.nav_id, CAR_FAULT_WATCHDOG);
 }
 
@@ -754,6 +794,8 @@ void Car_Nav_Task(void)
 	if (inited == 0)
 	{
 		mf_app_init();
+		nav.chain_to = NAV_ID_NONE;     /* static 零初始化的 0 是合法 nav_id, 必须显式置无 */
+		nav.last_done = NAV_ID_NONE;
 		inited = 1;
 	}
 
@@ -802,6 +844,24 @@ void Car_Nav_Task(void)
 	}
 
 	m = mf_app();
+
+	/* 段表链续: 底盘已自行跑进续表, 但对外仍要按旧 id 上报 NAV_DONE, 并把 nav_id 切到
+	 * 续表 —— 于是主控随后发来的 REQ_NAV(续表) 只会被幂等忽略, 不会打断行驶。
+	 * 转台码 7 在此触发, 时点与"主控下发 nav 6 才触发"一致(都在末段转弯的入口) */
+	if ((nav.chain_to != NAV_ID_NONE) && (mf_pop_chain(m) != 0u))
+	{
+		uint8_t prev_id = nav.nav_id;
+
+		nav.last_done = prev_id;
+		nav.nav_id = nav.chain_to;
+		nav.chain_to = NAV_ID_NONE;
+		Car_Event_Send(CAR_EVT_NAV_DONE, prev_id, 0x00u);
+		if (nav_entry_turn[nav.nav_id] != 0u)
+		{
+			Nav_Turntable(nav_entry_turn[nav.nav_id]);
+		}
+	}
+
 	/* 必须在 mf_is_done 分支**之前**: 最后一段的 WAIT 出沿与 path 置 DONE 同拍发生,
 	 * 放后面会因提前 return 而漏采 */
 	SELFTEST_DRIFT_SAMPLE(m);

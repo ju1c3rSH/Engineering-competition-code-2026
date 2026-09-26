@@ -6,6 +6,8 @@ static float seg_next_entry_speed(const mf_path_ctx_t *p);
 void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
 {
     p->path = 0;
+    p->next_path = 0;
+    p->chain_new = 0u;
     p->idx = 0;
     p->state = MF_PATH_IDLE;
     p->pid_yaw = pid_yaw;
@@ -28,7 +30,7 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->nom_yaw_init = 0u;
 }
 
-void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path)
+void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path, const mf_seg_t *next)
 {
     uint16_t i;
     const float r_min = 1.0e-3f;
@@ -51,6 +53,8 @@ void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path)
     }
 
     p->path = path;
+    p->next_path = next;
+    p->chain_new = 0u;
     p->idx = 0;
     p->state = MF_PATH_RUN;
     p->started = 0;     /* 第一拍做进段快照 */
@@ -77,9 +81,42 @@ void mf_path_stop(mf_path_ctx_t *p)
 {
     p->state = MF_PATH_IDLE;
     p->path = 0;
+    p->next_path = 0;
+    p->chain_new = 0u;
     p->cur_speed = 0.0f;    /* 停路径即视为停稳, 新路径从 0 起坡 */
     p->cur_wz = 0.0f;
     p->prev_wz = 0.0f;
+}
+
+uint8_t mf_path_pop_chain(mf_path_ctx_t *p)
+{
+    if ((p == 0) || (p->chain_new == 0u))
+    {
+        return 0u;
+    }
+    p->chain_new = 0u;
+    return 1u;
+}
+
+/* 跨表链续: 当前表已到 END 且有非空续表时切过去, 由下一拍照常进段执行。
+ * 单独成函数是为了让"该不该切"只有一处判断, tick 里两处 END 分支共用 */
+static uint8_t mf_path_chain(mf_path_ctx_t *p)
+{
+    const mf_seg_t *n = p->next_path;
+
+    if ((n == 0) || (n[0].type == MF_SEG_END))
+    {
+        return 0u;
+    }
+    p->path = n;
+    p->next_path = 0;
+    p->idx = 0u;
+    p->started = 0;     /* 下一拍重新进段(若本拍在 tick 顶部, 则本拍即进段) */
+    p->chain_new = 1u;
+    p->dist_accum = 0.0f;
+    p->dist_base_m = 0.0f;
+    p->carry_link = 0u;
+    return 1u;
 }
 
 static float seg_tol_dist(const mf_seg_t *s)
@@ -490,8 +527,12 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
     s = &p->path[p->idx];
     if (s->type == MF_SEG_END)
     {
-        p->state = MF_PATH_DONE;
-        return 0;
+        if (mf_path_chain(p) == 0u)
+        {
+            p->state = MF_PATH_DONE;
+            return 0;
+        }
+        s = &p->path[p->idx];   /* 切表成功: 本拍即进段执行新表首段 */
     }
 
     if (!p->started)        /* 进段：快照 + 可选复位 PID */
@@ -577,10 +618,17 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
         p->started = 0;     /* 下一段下拍重新进段 */
         if (p->path[p->idx].type == MF_SEG_END)
         {
-            p->state = MF_PATH_DONE;
-            out->vx_mps = 0.0f;
-            out->vy_mps = 0.0f;
-            out->wz_dps = 0.0f;
+            /* 有待续表: 不清 out、不置 DONE —— 本拍沿用刚完成那段的输出过渡一拍,
+             * 下拍在 tick 顶部切表并**本拍**执行新表首段。于是跨表没有零输出空窗:
+             * cur_speed 连续、轮速环不被复位(mf_motion 只在 vx==wz==0 时清积分),
+             * 也就没有"刹到 0 再阶跃拉回"的起步浪涌(实测 BOR 工况, 见 mf_config.h) */
+            if (p->next_path == 0)
+            {
+                p->state = MF_PATH_DONE;
+                out->vx_mps = 0.0f;
+                out->vy_mps = 0.0f;
+                out->wz_dps = 0.0f;
+            }
         }
     }
     p->prev_wz = out->wz_dps;   /* 记录本拍最终角速度, 供下段进段做斜坡种子 */
@@ -629,6 +677,12 @@ static float seg_next_entry_speed(const mf_path_ctx_t *p)
 
     }
     next = &p->path[p->idx + 1u];
+    if ((next->type == MF_SEG_END) && (p->next_path != NULL))
+    {
+        /* 本表跑完会续跑: 末段按续表首段的速度收尾, 不按"路线终点"硬减到 0。
+         * 只认续表首段自身声明的速度(不与段表脱钩), TURN_TO/WAIT/END 仍返回 0 = 真要求停 */
+        next = &p->next_path[0];
+    }
     switch(next->type)
     {
         case MF_SEG_MOVE_DIST: return fabsf(next->p.move_dist.speed_mps);

@@ -13,8 +13,12 @@
 typedef struct
 {
     const mf_seg_t *path;   /* 当前路径数组 */
+    const mf_seg_t *next_path;  /* 本表跑完将自动续跑的下一条(0=不续)。两处用途:
+                                 * ① 末段减速取它的首段速度, 免表尾硬性减到 0;
+                                 * ② 跨表时同拍切过去, 消除段表之间的零输出空窗 */
     uint16_t idx;           /* 当前段下标 */
     mf_path_state_t state;
+    uint8_t chain_new;      /* 1=刚跨过表边界(上层 pop 后清零), 见 mf_path_pop_chain */
 
     /* 段进入时刻快照（增量段的基准） */
     mf_pose_t entry;
@@ -65,11 +69,22 @@ typedef struct
 
 void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v);
 
-/** @brief 开始执行一条路径（须以 MF_SEG_END 结尾） */
-void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path);
+/** @brief 开始执行一条路径（须以 MF_SEG_END 结尾）
+ *  @param next  本表跑完自动续跑的下一条(须以 MF_SEG_END 结尾); 0=跑完即 DONE。
+ *               非空时末段按 next 首段速度收尾, 且跨表同拍切换、输出不归零 */
+void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path, const mf_seg_t *next);
 
-/** @brief 停止并回到 IDLE */
+/** @brief 停止并回到 IDLE（同时解除待续表） */
 void mf_path_stop(mf_path_ctx_t *p);
+
+/**
+ * @brief 取走"刚跨过表边界"标志（读后清）
+ *
+ * 段表链续时底盘已自行跑进下一条表，但上层仍要按旧 nav_id 上报 NAV_DONE、
+ * 并把 nav_id 切到续表。用它把这两件事与几何边界对齐。
+ * @return 1=本次取到新边界；0=无
+ */
+uint8_t mf_path_pop_chain(mf_path_ctx_t *p);
 
 /**
  * @brief 段执行器 tick，每个控制周期调用一次

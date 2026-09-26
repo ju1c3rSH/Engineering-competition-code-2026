@@ -69,7 +69,18 @@ void mf_set_velocity(mf_ctx_t *m, float vx, float vy, float wz)
 void mf_start_path(mf_ctx_t *m, const mf_seg_t *path)
 {
     m->mode = MF_MODE_PATH;
-    mf_path_start(&m->path, path);
+    mf_path_start(&m->path, path, 0);
+}
+
+void mf_start_path_chain(mf_ctx_t *m, const mf_seg_t *path, const mf_seg_t *next)
+{
+    m->mode = MF_MODE_PATH;
+    mf_path_start(&m->path, path, next);
+}
+
+uint8_t mf_pop_chain(mf_ctx_t *m)
+{
+    return mf_path_pop_chain(&m->path);
 }
 
 void mf_stop(mf_ctx_t *m)

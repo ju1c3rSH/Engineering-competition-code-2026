@@ -89,6 +89,11 @@ void mf_tick(mf_ctx_t *m, const mf_state_in_t *in);
 
 /* ---------- 路径（声明式）模式 ---------- */
 void mf_start_path(mf_ctx_t *m, const mf_seg_t *path);
+/* 同 mf_start_path, 但本表跑完自动续跑 next(0=不续, 等价 mf_start_path)。
+ * 跨表不停车: 末段按 next 首段速度收尾, 边界无零输出空窗 */
+void mf_start_path_chain(mf_ctx_t *m, const mf_seg_t *path, const mf_seg_t *next);
+/* 取走"刚跨过表边界"标志(读后清), 见 mf_path_pop_chain */
+uint8_t mf_pop_chain(mf_ctx_t *m);
 void mf_stop(mf_ctx_t *m);
 uint8_t mf_is_done(const mf_ctx_t *m);
 uint8_t mf_is_waiting(const mf_ctx_t *m);   /* 当前段是否为 WAIT(主动停等), 见 mf_path_is_waiting */
