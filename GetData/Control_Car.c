@@ -253,6 +253,7 @@ static struct
 	uint16_t aim_bad_ms;                   /* AIM 下 |e| 超阈累计(FAULT 判据) */
 	uint8_t  tracking_speed_level;         /* 0=段表速度/1=低速跟瞄 */
 	uint8_t  aim_axis;                     /* TRK_AXIS_*: AIM 收敛轴(0=旋转 wz/1=平移 vx, v2.5) */
+	float    aim_best_err;                 /* AIM 期间 |e| 历史最优(未收敛 FAULT 的进展判据, v2.5.1) */
 	uint8_t  fault_reason;                 /* TRACKING_FAULT 的 reason, 见 Control_Car.h TRK_FAULT_* */
 } tracking;
 
@@ -272,6 +273,7 @@ static void Tracking_Goto(TrackingState_t next)
 	tracking.hold_ms = 0u;
 	tracking.hover_ms = 0u;
 	tracking.aim_bad_ms = 0u;
+	tracking.aim_best_err = 2.0f;   /* |e|≤1, 给上界=新一段 AIM 的进展基准 */
 	__disable_irq();
 	trk_chg_from = (uint8_t)from;
 	trk_chg_to = (uint8_t)next;
@@ -669,6 +671,24 @@ static void Tracking_RaiseFault(uint8_t reason)
 	Car_Event_Send(CAR_EVT_TRACKING_FAULT, reason, 0x00u);
 }
 
+/* AIM"未收敛"FAULT 的进展判据(v2.5.1): |e| 比历史最优再降 EPS 以上 = 在收敛,
+ * 清零计时(收敛慢不算病); 停滞/发散才累计, 满 AIM_FAULT_MS 才置 FAULT。
+ * 旧判据"|e|超阈即累计"会把长距离正常收敛误判成 FAULT(实测: E 收到 1800 停死) */
+static void Tracking_AimFaultWatch(float absolute_error)
+{
+	if (absolute_error < tracking.aim_best_err - TRACKING_AIM_PROGRESS_EPS)
+	{
+		tracking.aim_best_err = absolute_error;
+		tracking.aim_bad_ms = 0u;
+		return;
+	}
+	tracking.aim_bad_ms = (uint16_t)(tracking.aim_bad_ms + CAR_TASK_MS);
+	if ((TRACKING_AIM_FAULT_MS > 0u) && (tracking.aim_bad_ms >= TRACKING_AIM_FAULT_MS))
+	{
+		Tracking_RaiseFault(TRK_FAULT_NOT_CONVERGED);
+	}
+}
+
 /* 视觉 P 控制: **覆盖** wz(跟瞄态下段表航向环让出); vx 只封顶不清零 */
 static void Tracking_WriteYaw(mf_ctx_t *motion)
 {
@@ -772,11 +792,7 @@ static uint8_t Tracking_ApplyOverlay(void)
 		if (absolute_error >= TRACKING_ERROR_THRESHOLD)
 		{
 			tracking.hold_ms = 0u;
-			tracking.aim_bad_ms = (uint16_t)(tracking.aim_bad_ms + CAR_TASK_MS);
-			if ((TRACKING_AIM_FAULT_MS > 0u) && (tracking.aim_bad_ms >= TRACKING_AIM_FAULT_MS))
-			{
-				Tracking_RaiseFault(TRK_FAULT_NOT_CONVERGED);
-			}
+			Tracking_AimFaultWatch(absolute_error);   /* 停滞才置 FAULT, 在收敛不清零 */
 			return 1u;
 		}
 		tracking.aim_bad_ms = 0u;

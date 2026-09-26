@@ -93,7 +93,11 @@
 
 /* ---- 有界收尾: 三种"瞄不上"都必须有终点, 否则主控只能等自己的超时 ---- */
 #define TRACKING_AIM_LOST_MAX_MS        3000u   /* AIM(已到位)丢目标上限 -> FAULT(丢目标); 0=关 */
-#define TRACKING_AIM_FAULT_MS           5000u   /* AIM 下 |e| 超阈上限 -> FAULT(未收敛); 0=关 */
+#define TRACKING_AIM_FAULT_MS           5000u   /* AIM 下 |e| **无进展**时长上限 -> FAULT(未收敛); 0=关。
+                                                 * v2.5.1: 旧判据"|e|超阈即累计"会把正常的长距离
+                                                 * 收敛误判成 FAULT(收敛途中 E=1800 停死), 改为
+                                                 * 只有停滞/发散才计时 */
+#define TRACKING_AIM_PROGRESS_EPS       0.005f  /* |e| 比历史最优再降这么多才算"有进展"(滤噪声) */
 
 /* TRACKING_FAULT(事件 0x06)的 reason 码: 上报给主控做决策(重试/容错发射) */
 #define TRK_FAULT_NOT_CONVERGED         0x01u   /* 到位后长时间未收敛 */
