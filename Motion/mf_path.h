@@ -123,21 +123,6 @@ uint8_t mf_path_is_waiting(const mf_path_ctx_t *p);
 uint8_t mf_path_pop_arc_report(mf_path_ctx_t *p, uint16_t *seg_index,
                                float *ey_m, float *yaw_err_deg);
 
-/**
- * @brief 估算当前路径"还剩多少里程"（m，非负）
- *
- * 用途：上层判断"是否已接近段尾"。典型场景是打靶段内跟瞄的收敛门控 —— 车正朝靶标前进时
- * 靶心在画面里天然接近中心（|e| 很小），若据此判"已收敛并刹停"，车会在进近途中就停住。
- * 有了剩余里程，上层即可规定"只有接近段尾才允许收敛锁停"。
- *
- * 只统计位移段，其余段按 0 计：
- *   · MOVE：名义行程 − 本段已走量（`dist_accum − dist_base_m`，取绝对值）；
- *   · ARC ：整段名义里程 |d_yaw|·R **全额**计入（不细算已转角）—— 偏大即偏保守，
- *           宁可让上层以为"还很远"，不要误判成"快到段尾"；
- *   · TURN / WAIT / GOTO：不计里程。
- *
- * @return 剩余里程 m；非运行态 / 空指针返回 0
- */
-float mf_path_remain_m(const mf_path_ctx_t *p);
+float mf_path_remain_m(const mf_path_ctx_t *p);   /* 剩余里程估算(m): 只算位移段, ARC 全额计入 */
 
 #endif /* MF_PATH_H */
