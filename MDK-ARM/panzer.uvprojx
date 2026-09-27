@@ -783,6 +783,16 @@
               <FileType>5</FileType>
               <FilePath>..\App\motion_app.h</FilePath>
             </File>
+            <File>
+              <FileName>nav_routes.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\nav_routes.c</FilePath>
+            </File>
+            <File>
+              <FileName>nav_routes.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\nav_routes.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

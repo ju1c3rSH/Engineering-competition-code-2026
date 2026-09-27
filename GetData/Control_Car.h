@@ -15,6 +15,7 @@
 #include "mf_motion.h"
 #include "car_units.h"
 #include "motion_app.h"
+#include "nav_routes.h"
 
 /* ================== UART4 导航协议常量 (panzer_links_protocol.md 4.x) ================== */
 #define FRAME_TYPE_REQUEST        0x20u   /* CMD_REQUEST */
@@ -85,8 +86,8 @@
 #define CAR_FAULT_WATCHDOG      0x04u   /* 进度看门狗: 里程 3s 无变化 */
 
 /* 固件形态(自测总闸 / 转台使能 / 调试口默认值 / 段表缓冲尺寸)见 GetData/car_config.h,
- * 自测覆盖见 Selftest/selftest.h —— 本文件不再持有任何测试宏 */
-#define CAR_NAV_ID_COUNT        9u      /* NavTarget_t 契约(与 Brain mission_sm.h 一致): 0~5 任务路线, 6~8 重锚伪路线 */
+ * 自测覆盖见 Selftest/selftest.h —— 本文件不再持有任何测试宏;
+ * CAR_NAV_ID_COUNT 契约已迁到 App/nav_routes.h(经上面 include 仍对本文件可见) */
 
 typedef struct
 {
