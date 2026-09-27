@@ -13,24 +13,7 @@
 #include "Emm_V5.h"
 #include "interurp.h"
 #include "mf_motion.h"
-
-#define M_PI_F 3.141592653589793f
-
-//定义小车速度（旧编码器速度单位：驱动轮转每秒）
-#define	Low_speed     1.5f
-#define	Middle_speed  2.0f
-#define High_speed    3.0f
-
-/* 驱动轮直径(m)
- * TODO: 台架 5m 直线复标定 */
-#define WHEEL_DIA_M   0.150f
-/* 原路线里程约定：旧 Car_Pos 1 单位 = 1/15 驱动轮转；速度/加速度单位为轮转每秒 */
-#define MF_M_DIST(u)    (((float)(u) / 15.0f) * (M_PI_F * WHEEL_DIA_M))
-#define MF_M_SPEED(rps) ((float)(rps) * (M_PI_F * WHEEL_DIA_M))
-#define MF_M_ACC(rps2)  ((float)(rps2) * (M_PI_F * WHEEL_DIA_M))
-/* 原转弯机制: 90° 弧中心线走 π 轮转, 反解 R=2π×轮径(基线 Diameter=15 单位=1 轮转) */
-#define TURN_RADIUS_M (2.0f * M_PI_F * WHEEL_DIA_M)
-#define TURN_ACC_MPS2 MF_M_ACC(45.0f)      /* 旧 speed_control Acc=45 轮转/s2 */
+#include "car_units.h"
 
 /* ================== UART4 导航协议常量 (panzer_links_protocol.md 4.x) ================== */
 #define FRAME_TYPE_REQUEST        0x20u   /* CMD_REQUEST */

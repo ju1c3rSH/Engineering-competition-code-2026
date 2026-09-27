@@ -341,7 +341,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F405xx</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../GetData;../Emm_V5;../Motion;../Selftest</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../GetData;../Emm_V5;../Motion;../Selftest;../App</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -762,6 +762,16 @@
               <FileName>selftest.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\Selftest\selftest.h</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>App</GroupName>
+          <Files>
+            <File>
+              <FileName>car_units.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\car_units.h</FilePath>
             </File>
           </Files>
         </Group>

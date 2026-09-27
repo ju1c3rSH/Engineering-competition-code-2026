@@ -206,7 +206,7 @@ static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed
 }
 
 /* ================== 调度层状态（panzer_links_protocol.md 4.5） ================== */
-#define CAR_TASK_MS            10u
+#define CAR_TASK_MS            CAR_TICK_MS   /* 控制拍周期, 值定义在 car_units.h */
 #define NAV_STALL_MS           3000u
 #define NAV_STALL_DELTA_M      0.001f
 /* 转台 DONE 计时: 开环静置, 按本次行程 |本次目标−上次目标| × TURNTABLE_MS_PER_DEG 算, 只增不减。
