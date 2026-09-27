@@ -50,7 +50,8 @@ void Car_Debug_Stat_Print(void)
 	/* 转台/跟瞄快照: 自带临界区, 不能放进下面那个关中断块(否则会提前开中断) */
 	Turntable_GetInfo(&tti);
 	Tracking_GetInfo(&tri);
-	nav_state = Nav_GetState();   /* 单字节原子读, 不必进临界区 */
+	/* 与下面的 wheel 快照不保证同一拍(观测层容忍, 不进控制路径) */
+	nav_state = Nav_GetState();
 	nav_id    = Nav_GetId();
 
 	__disable_irq();

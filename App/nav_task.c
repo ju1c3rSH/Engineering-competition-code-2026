@@ -6,10 +6,8 @@
 #include "nav_routes.h"
 #include "nav_turntable.h"
 #include "nav_tracking.h"
+#include "car_link.h"
 #include "mf_path.h"
-
-extern void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);   /* 实现: GetData/interurp.c */
-extern void ResetHWT101(void);                                             /* 实现: GetData/Control_Car.c */
 
 #define NAV_STALL_MS           3000u
 #define NAV_STALL_DELTA_M      0.001f

@@ -5,8 +5,7 @@
 #include "mf_path.h"
 #include "mf_math.h"
 #include "mf_kinematics.h"
-
-extern void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);   /* 实现: GetData/interurp.c */
+#include "car_link.h"
 
 static struct
 {

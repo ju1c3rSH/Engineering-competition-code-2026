@@ -838,6 +838,11 @@
               <FileType>5</FileType>
               <FilePath>..\App\car_obs.h</FilePath>
             </File>
+            <File>
+              <FileName>car_link.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\car_link.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

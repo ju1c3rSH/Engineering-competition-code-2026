@@ -13,7 +13,6 @@
 
 /* 控制拍周期: TIM4 10ms。段表斜坡、跟瞄制动、堵转看门狗共用同一值 */
 #define CAR_TICK_MS   10u
-#define CAR_TICK_S    0.01f
 
 /* 旧速度挡位(驱动轮转/秒) */
 #define Low_speed     1.5f

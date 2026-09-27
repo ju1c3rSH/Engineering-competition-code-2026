@@ -11,8 +11,7 @@
 
 #include <stdint.h>
 #include "car_protocol.h"
-
-void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg);  /* 实现: GetData/interurp.c */
+#include "car_link.h"
 
 /* 转台观测快照(仅调试显示用) */
 typedef struct { uint8_t busy, code, armed, cw;

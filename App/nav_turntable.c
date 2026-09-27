@@ -1,9 +1,8 @@
 ﻿#include "nav_turntable.h"
 #include "car_units.h"
 #include "car_config.h"
+#include "car_link.h"
 #include "Emm_V5.h"
-
-extern void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);   /* 实现: GetData/interurp.c */
 
 /* 转台记账角: 原 Control_Car.c 的全局, 外部已无引用, 收为本模块私有 */
 typedef struct
