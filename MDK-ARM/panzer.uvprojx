@@ -813,6 +813,21 @@
               <FileType>5</FileType>
               <FilePath>..\App\nav_tracking.h</FilePath>
             </File>
+            <File>
+              <FileName>car_protocol.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\car_protocol.h</FilePath>
+            </File>
+            <File>
+              <FileName>nav_task.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\nav_task.c</FilePath>
+            </File>
+            <File>
+              <FileName>nav_task.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\nav_task.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

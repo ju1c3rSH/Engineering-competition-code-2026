@@ -35,6 +35,7 @@
 "panzer\nav_routes.o"
 "panzer\nav_turntable.o"
 "panzer\nav_tracking.o"
+"panzer\nav_task.o"
 "panzer\mf_motion.o"
 "panzer\mf_path.o"
 "panzer\mf_odom.o"

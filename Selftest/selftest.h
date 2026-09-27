@@ -7,7 +7,7 @@
  *   4 SELFTEST_TABLE_POST(src,i,buf,o,c) Nav_GearTable   段表拷贝后插停等
  *   5 SELFTEST_DEBUG_POLL()              Car_DebugTask   RT:/PD: 打印
  *
- * 接缝 2 展开后调用 Nav_DoRequest(与 Brain 下发同一入口、同上下文), 只能在 Control_Car.c 用。 */
+ * 接缝 2 展开后调用 Nav_DoRequest(与 Brain 下发同一入口、同上下文), 只能在 App/nav_task.c 用。 */
 #ifndef _SELFTEST_H_
 #define _SELFTEST_H_
 

@@ -2,17 +2,15 @@
  * @file    nav_turntable.h
  * @brief   转台: 码表定点 / 目标去重 / TIM5 重发 / 急停 / 上电零点 / 台架直转
  *
- * 本模块不 include Control_Car.h(会形成头循环), 跨层接缝在此声明并注明实现位置。
+ * 本模块不 include Control_Car.h(会形成头循环), 协议码统一取 App/car_protocol.h,
+ * 跨层接缝在此声明并注明实现位置。
  * Car_data / tt / tt_arm / tt_sent_key / CW_OR_CCW 均为 nav_turntable.c 内部私有。
  */
 #ifndef _NAV_TURNTABLE_H_
 #define _NAV_TURNTABLE_H_
 
 #include <stdint.h>
-
-/* 转台到位事件码(CAR_EVT_* 协议码表主体在 Control_Car.h; 本模块不反向 include,
- * 故该码随模块头下沉, 取值不变)。Control_Car.h 经 include 本头仍可见 */
-#define CAR_EVT_TURN_DONE         0x04u   /* 转台到位 */
+#include "car_protocol.h"
 
 void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg);  /* 实现: GetData/interurp.c */
 

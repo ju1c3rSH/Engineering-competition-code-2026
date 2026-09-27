@@ -7,21 +7,14 @@
  * 压到 0 -> STOPPED 并报 DONE; 发射后 STOP(1) 回 OFF, 段表从 cur_speed=0 起坡补完剩余里程,
  * 终点仍 = 进段位置 + 段表里程, 故零标定、零污染。规格: docs/打靶段架构-刹停与续跑.md
  *
- * 本模块不 include Control_Car.h(会形成头循环); 跨层接缝在下方声明并注明实现位置。
+ * 本模块不 include Control_Car.h(会形成头循环); 协议码统一取 App/car_protocol.h,
+ * 跨层接缝在下方声明并注明实现位置。
  */
 #ifndef _NAV_TRACKING_H_
 #define _NAV_TRACKING_H_
 
 #include <stdint.h>
-
-/* 跟瞄事件码(CAR_EVT_* 协议码表主体在 Control_Car.h; 本模块不反向 include,
- * 故随模块头下沉, 取值不变)。Control_Car.h 经 include 本头仍可见 */
-#define CAR_EVT_TRACKING_DONE     0x05u   /* 已刹停(暂停本段), 可发射; 等 0x07 STOP(1) 放行续跑 */
-#define CAR_EVT_TRACKING_FAULT    0x06u   /* 本地判定瞄不上(reason 见 TRK_FAULT_*), Brain 容错定夺 */
-
-/* 收敛轴码表: v3.0 不再分轴(一律不写 vx/wz), 两个宏仅用于入参范围校验 */
-#define TRK_AXIS_ROTATE           0x00u
-#define TRK_AXIS_TRANSLATE        0x01u
+#include "car_protocol.h"
 
 /* 跟瞄四态机(替代 v2.x 七态) */
 typedef enum
@@ -49,11 +42,6 @@ typedef enum
 #define TRACKING_BRAKE_MPS2             2.0f    /* 触发后的制动减速度(压 cur_speed 用) */
 #define TRACKING_NOCONV_MS              500u    /* 段表已完 + |e|>阈 持续这么久 → FAULT(01) */
 #define TRACKING_LOST_DONE_MS           1500u   /* 段表已完 + 无测量 持续这么久 → FAULT(02) */
-
-/* TRACKING_FAULT(事件 0x06)的 reason 码: 上报给主控做决策(重试/容错发射) */
-#define TRK_FAULT_NOT_CONVERGED         0x01u   /* 到位后长时间未收敛 */
-#define TRK_FAULT_NO_TARGET             0x02u   /* 到位后丢失目标(遮挡/阈值/相机) */
-#define TRK_FAULT_NO_PATH               0x03u   /* 收到 START 时无活动段表(未发 REQ_NAV/段启动失败) */
 
 /* 跟瞄观测快照(仅调试显示用) */
 typedef struct { uint8_t state, found, braking, reason;
