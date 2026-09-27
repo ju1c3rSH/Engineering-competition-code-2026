@@ -14,6 +14,7 @@
 #include "interurp.h"
 #include "mf_motion.h"
 #include "car_units.h"
+#include "motion_app.h"
 
 /* ================== UART4 导航协议常量 (panzer_links_protocol.md 4.x) ================== */
 #define FRAME_TYPE_REQUEST        0x20u   /* CMD_REQUEST */
@@ -115,10 +116,6 @@ void Car_Turntable_BootZero(void);   /* 上电零点对齐: 清零驱动器计�
 void Car_Nav_Task(void);
 void Car_Nav_MailPush(uint8_t cmd, uint8_t a0, uint8_t a1);
 void Car_Tracking_ErrorPush(int16_t error_fixed, uint8_t target_found_flag);
-
-mf_ctx_t *mf_app(void);
-void mf_app_init(void);
-
 
 extern Yaw_TypeDef Yaw_struct;
 extern Parameter_TypeDef_Car Car_data;

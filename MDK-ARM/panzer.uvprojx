@@ -773,6 +773,16 @@
               <FileType>5</FileType>
               <FilePath>..\App\car_units.h</FilePath>
             </File>
+            <File>
+              <FileName>motion_app.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\motion_app.c</FilePath>
+            </File>
+            <File>
+              <FileName>motion_app.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\motion_app.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
