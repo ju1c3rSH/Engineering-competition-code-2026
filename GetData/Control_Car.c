@@ -1,8 +1,22 @@
-﻿#include "Control_Car.h"
+﻿/**
+ * @file    Control_Car.c
+ * @brief   底盘运行入口与总装层
+ *
+ * 它唯一拥有 TIM4 10ms 拍的调用顺序; 它是底盘对外(协议层 / 自测层 / main)唯一可见的
+ * 接口面; 它把 Motion 库、IMU、转台、NAV 各子模块装配成一个可运行系统。
+ * **除装配与拍序之外, 本文件不包含任何业务逻辑。**
+ *
+ * 新函数该放哪 —— 三条判据, 全不满足就属于某个子模块:
+ *   1. 它是拍序本身吗?          -> 留(只有 Car_Control 是)
+ *   2. 它是底盘外部要调的吗?     -> 原型进 Control_Car.h 契约面, 实现放对应子模块
+ *   3. 它在跨 >=3 个子模块装配?  -> 留
+ *
+ * 已知杂质: HWT101 三函数(Yaw_pid_Init/ResetHWT101/ConfigHWT101)既非拍序也非装配,
+ * 属采样层, 应归 Car_Sense.c; 因 interurp.c 直接写 Yaw_struct.Yaw, 搬动会牵动协议层,
+ * 留给下一轮单独做。
+ */
+#include "Control_Car.h"
 #include "Car_Sense.h"
-#include "selftest.h"
-#include "mf_math.h"
-#include "mf_kinematics.h"
 
 Yaw_TypeDef Yaw_struct;
 
@@ -16,7 +30,9 @@ void Yaw_pid_Init()
 	Yaw_struct.Yaw_pid.Out                 = 0.0f;
 }
 
-//坦克主控函数：TIM4 10ms 中断调用
+/* 10ms 控制拍(TIM4 ISR)的唯一编排点: 下面这个调用顺序**本身就是语义** ——
+ * 哪一步必须在 mf_tick 之前/之后、哪一步必须无条件跑, 全系统只在此处定义。
+ * 改顺序前先看 App/nav_tracking.h 上 LimitApproachSpeed/ApplyOverlay 的两条契约 */
 void Car_Control()
 {
 	extern void Uart_RxRearm_Task(void);   /* stm32f4xx_it.c: RX DMA 重装失败的重试点 */
