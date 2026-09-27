@@ -1,5 +1,5 @@
 /* 底盘路线自测: 不接 Brain, 底盘自己按原版状态机的 nav 顺序逐条下发 REQ_NAV
- * (1→6→2→3→4→7→5, 不走 QR), 跑完一条自动发下一条, 到返回区停车。
+ * (1→6→2→3→4→8→7→5, 不走 QR), 跑完一条自动发下一条, 到返回区停车。
  * 走 Nav_DoRequest 同一入口(接缝 2 在 Control_Car.c 展开), 核对的就是原版每张表。 */
 #include "selftest.h"
 
@@ -30,7 +30,8 @@ static const uint8_t selftest_seq[] =
 	6u,   /* NAV_REBASE_BOMB     末段转弯+低速进作业点+航向重锚 */
 	2u,   /* NAV_TO_BUCKET       空表(同点位, 无底盘位移) */
 	3u,   /* NAV_TO_TARGET       打靶区 */
-	4u,   /* NAV_TO_HOSTAGE      人质区 */
+	4u,   /* NAV_TO_HOSTAGE      人质区(直线48.5+右弧) */
+	8u,   /* NAV_REBASE_HOSTAGE  弧线出口重锚-180+末段直线80 */
 	7u,   /* NAV_REBASE_RETURN   返程前航向重锚 */
 	5u,   /* NAV_TO_RETURN       返回区=完赛区 */
 };

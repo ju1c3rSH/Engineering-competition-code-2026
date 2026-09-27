@@ -15,11 +15,13 @@
 #define DBG_PERIODIC_DEFAULT_EN  1u   /* 录下每段停等时的 X/Y/YAW */
 #define NAV_GEAR_BUF_LEN         24u  /* 9 运动段 + 逐段停等 9 + END */
 #define NAV_CHAIN_1_TO           0u   /* 自测不链续: 序列由 SELFTEST_NEXT_NAV 接管 */
+#define NAV_CHAIN_4_TO           0u
 #else
 #define TURNTABLE_ENABLE         1u   /* 转台正常驱动电机 */
 #define DBG_PERIODIC_DEFAULT_EN  0u   /* 调试口不主动刷屏('p' 仍可随时开) */
 #define NAV_GEAR_BUF_LEN         12u  /* 最长表 tbl_bomb: 9 段 + END */
 #define NAV_CHAIN_1_TO           6u   /* NAV_TO_BOMB(1) 跑完自动续跑 NAV_REBASE_BOMB(6) */
+#define NAV_CHAIN_4_TO           8u   /* NAV_TO_HOSTAGE(4) 跑完自动续跑 NAV_REBASE_HOSTAGE(8) */
 #endif
 
 #endif

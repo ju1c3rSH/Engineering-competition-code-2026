@@ -68,11 +68,18 @@ static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(175.0f)),
 	SEG_END
 };
-static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~16 人质区 */
+static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区(末段直线+重锚移入 rebase 表) */
 {
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(48.5f)),
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag14) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(80.0f)),
+	SEG_END
+};
+/* 人质对坑前重锚 = 弧线出口先转绝对角、再按绝对航向走末段直线(标定项, 同 NAV_REBASE_BOMB_YAW_DEG) */
+#define NAV_REBASE_HOSTAGE_YAW_DEG  (-180.0f)
+static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口重锚+末段直线进停点 */
+{
+	SEG_TURN_TO(NAV_REBASE_HOSTAGE_YAW_DEG),
+	SEG_MOVE_HD(MF_M_SPEED(Middle_speed), MF_M_DIST(80.0f), NAV_REBASE_HOSTAGE_YAW_DEG),
 	SEG_END
 };
 /* ---- 返程段 / 终点的绝对航向: 任务终点 YAW 严格 -180° ----
@@ -130,6 +137,7 @@ static const mf_seg_t *const nav_routes[CAR_NAV_ID_COUNT] =
 	tbl_return,         /* 5 NAV_TO_RETURN     */
 	tbl_rebase_bomb,    /* 6 NAV_REBASE_BOMB   */
 	tbl_rebase_return,  /* 7 NAV_REBASE_RETURN */
+	tbl_rebase_hostage, /* 8 NAV_REBASE_HOSTAGE */
 };
 typedef char nav_route_count_check[(sizeof(nav_routes) / sizeof(nav_routes[0])) == CAR_NAV_ID_COUNT ? 1 : -1];
 
@@ -211,7 +219,7 @@ typedef enum
 	NAV_DONE,       /* 已完成，同 id 重发只补发 NAV_DONE */
 } NavState_t;
 
-/* nav_id 的"无"哨兵。必须 != 任何合法 nav_id(0~7): nav 是 static 零初始化,
+/* nav_id 的"无"哨兵。必须 != 任何合法 nav_id(0~8): nav 是 static 零初始化,
  * 用 0 当哨兵会让上电后第一条 REQ_NAV(0) 被误判成"已跑完" */
 #define NAV_ID_NONE  0xFFu
 
@@ -341,13 +349,9 @@ void Car_Tracking_ErrorPush(int16_t error_fixed, uint8_t target_found_flag)
  * 继续周期下发驱动转台 */
 static uint8_t tt_arm = 0u;
 
-/* 目标去重(2026-09 改, 替代旧基线"100ms 周期重发同一绝对位置"):
- * Emm_V5 驱动器每收到一条 0xFD 位置帧都会**重启电机梯形规划**——周期重发把
- * 行程切成 10Hz 的"起步-重启-起步"锯齿, 永远到不了巡航速度, 带载表现为转台
- * 剧烈抖动(台架 'w'/'e' 微调与实车摆坑/桶位走的是同一条 TIM5 下发链路, 症状
- * 相同)。改为: 目标(方向+脉冲数打包 key)变化才下发一次, 到位后停发。
- * 丢帧鲁棒性: 发送失败(HAL_BUSY 等)不记账, 下个 100ms 拍自动重试; 驱动器
- * 是否真收到靠 '?' 状态块 EMM 行的应答计数(Emm_reply_ok_cnt/Emm_rx_cnt)观测 */
+/* 目标去重: Emm_V5 每收一条 0xFD 位置帧就重启梯形规划, 周期重发→"起步-重启"锯齿、
+ * 转台抖动到不了巡航速度; 改为目标 key(方向+脉冲数)变化才单发, 到位后停发。
+ * 根因细节/丢帧鲁棒性/重新武装需失效去重: 见 docs/坑-机械臂与转台.md §1 */
 #define TT_KEY_UNSENT  0xFFFFFFFFu   /* 哨兵: 合法 key ≤ 0x8004FAC0(dir位|tick), 不会撞上 */
 static uint32_t tt_sent_key = TT_KEY_UNSENT;
 
@@ -455,21 +459,16 @@ static void Nav_Turntable(uint8_t turn_code)
 /* 段入口自动转台: 启动该 nav_id 段时底盘自行摆到指定码位(0=不动); 现仅 NAV_REBASE_BOMB(6) -> 码 7 */
 static const uint8_t nav_entry_turn[CAR_NAV_ID_COUNT] =
 {
-	0u, 0u, 0u, 0u, 0u, 0u, 7u, 0u,   /* 仅 NAV_REBASE_BOMB(6) -> 回正 90° */
+	0u, 0u, 0u, 0u, 0u, 0u, 7u, 0u, 0u,   /* 仅 NAV_REBASE_BOMB(6) -> 回正 90° */
 };
 
 /* 段表自动链续: 该 nav 跑完由底盘自行续跑下一条(0=不续, 等主控下发)。
- * 现仅 NAV_TO_BOMB(1) -> NAV_REBASE_BOMB(6): 两表在几何上首尾相接, 中间本无停顿理由
- * —— 末段转弯只是为了让转台 90° 与行驶并行才被拆进 nav 6。拆表带来的代价是表尾被
- * 当成"路线终点"(END ⇒ v_next=0) 而硬性减速, 加上跨芯片握手的零输出空窗。
- * 链续后: ① 末段按续表首段速度收尾(见 mf_path seg_next_entry_speed);
- *        ② 跨表同拍切换、输出不归零, 无空窗、cur_speed 连续、轮速环不复位。
  * 自测形态必须置 0: SELFTEST_NEXT_NAV 与它同在"跑完一条"处接管, 同开会双触发。
- * 续表一律用 flash 原表 nav_routes[], 不走 Nav_GearTable 的 RAM 缓冲 —— 那份 static
- * 缓冲此刻仍装着当前表的拷贝, 往里拷新表会让正在跑的 path 指针悬空 */
+ * 续表一律用 flash 原表 nav_routes[], 不走 RAM 缓冲(会把在跑 path 指针弄悬空)。
+ * 拆表代价(表尾硬减速/跨表空窗)与链续收益: 见 docs/坑-运动与导航.md §5 */
 static const uint8_t nav_chain_next[CAR_NAV_ID_COUNT] =
 {
-	0u, NAV_CHAIN_1_TO, 0u, 0u, 0u, 0u, 0u, 0u,
+	0u, NAV_CHAIN_1_TO, 0u, 0u, NAV_CHAIN_4_TO, 0u, 0u, 0u, 0u,
 };
 
 /* REQ_NAV 幂等: 同 id 进行中忽略 / 已完成补发 DONE / 其余停旧起新 */
@@ -1038,13 +1037,8 @@ void Car_Nav_Task(void)
 }
 
 /* ================== 运动框架实例 ==================
- * 增益为旧环等效换算值, 台架已按蛇形修复重调(2026-09, 见各成员注释):
- * 轮速环 P: 0.6(旧1.0近bang-bang→0.3欠响应→0.6 折中)
- * 轮速环 I: 按旧环 Ki=50/拍(误差 rev/s, 满幅 1500, I_Max 1000) 等效折算:
- *   贡献速率 = 误差×50÷0.01s÷1500 = 3.33 duty/s per rev/s
- *            = 7.07 duty/s per m/s(1rev/s=π×0.15m)          -> ki = 7.0
- *   I 上限   = 巡航占空比≈0.67 需余量 -> i_max = 0.14(≈0.98 duty, 原钳位 0.095 恰卡巡航点)
- * 航向环: kp=16(旧环等效折算原 32.4, 内外环带宽失配欠阻尼蛇形, 降半); kd=0.8 加阻尼 */
+ * 增益为旧环等效换算值, 台架已按蛇形修复重调(2026-09);
+ * 折算过程与调参史(别再升过 0.7 等): 见 docs/坑-编码器与里程.md §5 */
 static mf_ctx_t g_mf;
 
 mf_ctx_t *mf_app(void)
