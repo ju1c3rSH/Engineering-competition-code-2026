@@ -17,6 +17,7 @@
 #include "motion_app.h"
 #include "nav_routes.h"
 #include "nav_turntable.h"
+#include "nav_tracking.h"
 
 /* ================== UART4 导航协议常量 (panzer_links_protocol.md 4.x) ================== */
 #define FRAME_TYPE_REQUEST        0x20u   /* CMD_REQUEST */
@@ -45,41 +46,12 @@
 #define CAR_SUB_TRACKING_ERROR    0x06u   /* [error_low_byte,error_high_byte,target_found_flag], 定点=误差归一化*10000 小端 */
 #define CAR_SUB_TRACKING_STOP     0x07u   /* arg0=tracking_stop_mode(0=就地刹停/1=放行段表走完当前段), arg1=0保留 */
 
-/* 收敛轴码表: v3.0 不再分轴(一律不写 vx/wz), 两个宏仅用于入参范围校验 */
-#define TRK_AXIS_ROTATE           0x00u
-#define TRK_AXIS_TRANSLATE        0x01u
+/* 跟瞄相关宏(TRK_AXIS_* / CAR_EVT_TRACKING_* / TRACKING_* / TRK_FAULT_*)已随跟瞄模块
+ * 下沉到 App/nav_tracking.h(经上面 include 仍对本文件可见) */
 
 #define CAR_EVT_NAV_DONE          0x02u   /* 段序列全部完成 */
 #define CAR_EVT_NAV_FAULT         0x03u   /* 段执行异常 */
 /* CAR_EVT_TURN_DONE(0x04, 转台到位)已随转台模块下沉到 App/nav_turntable.h */
-#define CAR_EVT_TRACKING_DONE     0x05u   /* 已刹停(暂停本段), 可发射; 等 0x07 STOP(1) 放行续跑 */
-#define CAR_EVT_TRACKING_FAULT    0x06u   /* 本地判定瞄不上(reason 见 TRK_FAULT_*), Brain 容错定夺 */
-
-/* ---- v3.0 打靶段: 刹停/续跑 (零标定; 下列系数均为经验值, 不需测任何物理量) ----
- * 判据主用 J2 过零(车从靶心旁经过那一拍), J1 阈值+驻留兜底(整段符号不换号时);
- * 进近在咬靶区用固定低速, 保证制动距离可控。完整规格见
- * docs/打靶段架构-刹停与续跑.md §10 */
-#define TRACKING_ERROR_THRESHOLD        0.03f   /* ±300 定点: J1 兜底阈 + "未收敛"判定阈 */
-#define TRACKING_HOLD_TIME_MS           500u    /* J1: |e|≤阈 连续这么久即触发刹停 */
-#define TRACKING_FRAME_TIMEOUT_MS       500u    /* 误差帧超时: 超时视为无测量 */
-#define TRACKING_ZERO_DEADBAND          0.002f  /* 过零死区: |e| 小于它不计符号(挡噪声) */
-#define TRACKING_ZERO_CONFIRM_N         2u      /* 符号去抖: 连续 N 帧同号才更新"已确认符号" */
-#define TRACKING_SLOW_ZONE_M            2.5f    /* 咬靶区 = 本段**最后**这么多米(按剩余里程判):
-                                                 * 固定低速与刹停判据都只在这段内生效。
-                                                 * 2026-09-27 由 1.5 → 2.5: 延长 tbl_target 后,
-                                                 * 靶心落在"段尾往前 0~1.2m"都有可能, 窗口留 2.5m
-                                                 * 才能让"过零点落进咬靶区"这条前提对 d 的跨趟波动
-                                                 * (0.5~1.2m)免疫。代价: 低速段 2.5m/0.2m/s=12.5s,
-                                                 * 段时 ≈17s, nav_ms=30s 仍有余量 */
-#define TRACKING_SLOW_MPS               0.20f   /* 咬靶区固定低速(替代按 |e| 成比例的限速) */
-#define TRACKING_BRAKE_MPS2             2.0f    /* 触发后的制动减速度(压 cur_speed 用) */
-#define TRACKING_NOCONV_MS              500u    /* 段表已完 + |e|>阈 持续这么久 → FAULT(01) */
-#define TRACKING_LOST_DONE_MS           1500u   /* 段表已完 + 无测量 持续这么久 → FAULT(02) */
-
-/* TRACKING_FAULT(事件 0x06)的 reason 码: 上报给主控做决策(重试/容错发射) */
-#define TRK_FAULT_NOT_CONVERGED         0x01u   /* 到位后长时间未收敛 */
-#define TRK_FAULT_NO_TARGET             0x02u   /* 到位后丢失目标(遮挡/阈值/相机) */
-#define TRK_FAULT_NO_PATH               0x03u   /* 收到 START 时无活动段表(未发 REQ_NAV/段启动失败) */
 
 /* 旧短名兼容别名: interurp.c 收发沿用, 值与全称一致, 新代码用全称 */
 #define CAR_SUB_REQ_NAV         CAR_SUB_REQ_NAVIGATION
@@ -109,7 +81,6 @@ void ResetHWT101(void);
  *      请求分发/重发幂等/事件上报, 跟瞄叠加见 Tracking_ApplyOverlay ---- */
 void Car_Nav_Task(void);
 void Car_Nav_MailPush(uint8_t cmd, uint8_t a0, uint8_t a1);
-void Car_Tracking_ErrorPush(int16_t error_fixed, uint8_t target_found_flag);
 
 extern Yaw_TypeDef Yaw_struct;
 

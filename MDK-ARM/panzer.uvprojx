@@ -803,6 +803,16 @@
               <FileType>5</FileType>
               <FilePath>..\App\nav_turntable.h</FilePath>
             </File>
+            <File>
+              <FileName>nav_tracking.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\nav_tracking.c</FilePath>
+            </File>
+            <File>
+              <FileName>nav_tracking.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\nav_tracking.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
