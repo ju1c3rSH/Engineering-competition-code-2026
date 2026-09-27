@@ -33,6 +33,7 @@
 "panzer\selftest.o"
 "panzer\motion_app.o"
 "panzer\nav_routes.o"
+"panzer\nav_turntable.o"
 "panzer\mf_motion.o"
 "panzer\mf_path.o"
 "panzer\mf_odom.o"

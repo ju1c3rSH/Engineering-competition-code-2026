@@ -793,6 +793,16 @@
               <FileType>5</FileType>
               <FilePath>..\App\nav_routes.h</FilePath>
             </File>
+            <File>
+              <FileName>nav_turntable.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\nav_turntable.c</FilePath>
+            </File>
+            <File>
+              <FileName>nav_turntable.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\nav_turntable.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

@@ -16,6 +16,7 @@
 #include "car_units.h"
 #include "motion_app.h"
 #include "nav_routes.h"
+#include "nav_turntable.h"
 
 /* ================== UART4 导航协议常量 (panzer_links_protocol.md 4.x) ================== */
 #define FRAME_TYPE_REQUEST        0x20u   /* CMD_REQUEST */
@@ -50,7 +51,7 @@
 
 #define CAR_EVT_NAV_DONE          0x02u   /* 段序列全部完成 */
 #define CAR_EVT_NAV_FAULT         0x03u   /* 段执行异常 */
-#define CAR_EVT_TURN_DONE         0x04u   /* 转台到位 */
+/* CAR_EVT_TURN_DONE(0x04, 转台到位)已随转台模块下沉到 App/nav_turntable.h */
 #define CAR_EVT_TRACKING_DONE     0x05u   /* 已刹停(暂停本段), 可发射; 等 0x07 STOP(1) 放行续跑 */
 #define CAR_EVT_TRACKING_FAULT    0x06u   /* 本地判定瞄不上(reason 见 TRK_FAULT_*), Brain 容错定夺 */
 
@@ -98,19 +99,11 @@ typedef struct
 
 }Yaw_TypeDef;
 
-typedef struct
-{
-	float Motor_Angle;   /* 转台目标角(°)，TIM5 周期下发 Emm_V5 */
-
-}Parameter_TypeDef_Car;
-
-
 void Yaw_pid_Init(void);
 void Car_Control(void);
 void ResetHWT101(void);
-void Emm_Pos_Control(void);   /* TIM5 转台重发: 内部带 tt_arm 门控+方向/角度成对快照 */
-void Car_Turntable_BootZero(void);   /* 上电零点对齐: 清零驱动器计数 + Motor_Angle=TURNTABLE_BOOT_DEG。
-                                      * 必须在 TIM5 启动前调用一次(见 Control_Car.c 内注释) */
+/* 转台(Emm_Pos_Control / Car_Turntable_BootZero / 台架三函数 / 急停 / 码表)已迁到
+ * App/nav_turntable.h(经上面 include 仍对本文件可见) */
 
 /* ---- 调度层: 段执行由 Motion 库 mf_tick 承担, 本层只做
  *      请求分发/重发幂等/事件上报, 跟瞄叠加见 Tracking_ApplyOverlay ---- */
@@ -119,7 +112,6 @@ void Car_Nav_MailPush(uint8_t cmd, uint8_t a0, uint8_t a1);
 void Car_Tracking_ErrorPush(int16_t error_fixed, uint8_t target_found_flag);
 
 extern Yaw_TypeDef Yaw_struct;
-extern Parameter_TypeDef_Car Car_data;
 
 void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);  /* interurp.c */
 
@@ -128,13 +120,6 @@ void Car_SegChange_Log(void);      /* 主循环: seg_index/state 变化时打一
 void Car_ArcExit_Log(void);        /* 主循环: 每条 ARC 段跑完打一行 ARC(出口横向/航向偏差) */
 void Car_TrkChange_Log(void);      /* 主循环: 跟瞄状态迁移(四态机)打一行 TRK:旧>新 */
 void Car_TrkDetail_Log(void);      /* 主循环: ARMED/STOPPED 期 10Hz 打点 TRKD(判误差卡哪) */
-
-/* 台架直转(USART2 'w'/'e'/'1'~'7'/'x', Car_DebugTask 主循环执行): 微调不报
- * TURN_DONE, 打码走协议码表 */
-void Car_Turntable_BenchNudge(float delta_deg);
-void Car_Turntable_BenchCode(uint8_t turn_code);
-void Car_Turntable_BenchStop(void);
-void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg);  /* interurp.c */
 
 void ConfigHWT101(void);
 
