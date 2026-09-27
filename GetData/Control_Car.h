@@ -78,7 +78,13 @@
 #define TRACKING_FRAME_TIMEOUT_MS       500u    /* 误差帧超时: 超时视为无测量 */
 #define TRACKING_ZERO_DEADBAND          0.002f  /* 过零死区: |e| 小于它不计符号(挡噪声) */
 #define TRACKING_ZERO_CONFIRM_N         2u      /* 符号去抖: 连续 N 帧同号才更新"已确认符号" */
-#define TRACKING_SLOW_ZONE_M            1.5f    /* 咬靶区: 本段已走够这么多米进入固定低速 */
+#define TRACKING_SLOW_ZONE_M            2.5f    /* 咬靶区 = 本段**最后**这么多米(按剩余里程判):
+                                                 * 固定低速与刹停判据都只在这段内生效。
+                                                 * 2026-09-27 由 1.5 → 2.5: 延长 tbl_target 后,
+                                                 * 靶心落在"段尾往前 0~1.2m"都有可能, 窗口留 2.5m
+                                                 * 才能让"过零点落进咬靶区"这条前提对 d 的跨趟波动
+                                                 * (0.5~1.2m)免疫。代价: 低速段 2.5m/0.2m/s=12.5s,
+                                                 * 段时 ≈17s, nav_ms=30s 仍有余量 */
 #define TRACKING_SLOW_MPS               0.20f   /* 咬靶区固定低速(替代按 |e| 成比例的限速) */
 #define TRACKING_BRAKE_MPS2             2.0f    /* 触发后的制动减速度(压 cur_speed 用) */
 #define TRACKING_NOCONV_MS              500u    /* 段表已完 + |e|>阈 持续这么久 → FAULT(01) */

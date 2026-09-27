@@ -63,14 +63,20 @@ static const mf_seg_t tbl_bucket[] =      /* NAV_TO_BUCKET: 桶与排爆作业�
 {
 	SEG_END
 };
+/* 打靶段停点标定(2026-09-27): 175 → 213 单位。多出的 38 单位(1.19m)是给"车能走到靶心"留的
+ * 行程 —— 名义终点离靶心还差约 0.5m(现场停在终点时 E≈2300, 按 2.23m/单位反解), 不延长则
+ * 刹停判据永远不成立, 只能走完段表后靠 FAULT 容错发射(激光以残余误差打出去)。
+ * ⚠ 与 tbl_hostage 首段**成对改**: 加多少就减多少, 净和不变(213+10.5 = 175+48.5 = 223.5),
+ * 所以 90° 弧的起点一个字节都不动。改一个不改另一个 = 弧线起点整体前移、落点横向偏同样距离。
+ * 窗口公式(d ≤ L ≤ d + 咬靶区)与验证方法见 docs/打靶段架构-刹停与续跑.md */
 static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 */
 {
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(175.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(213.0f)),
 	SEG_END
 };
 static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区(末段直线+重锚移入 rebase 表) */
 {
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(48.5f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(10.5f)),   /* 48.5 − 38: 与 tbl_target 成对, 见上 */
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag14) */
 	SEG_END
 };
