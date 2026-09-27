@@ -286,7 +286,8 @@ static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *p
 		break;
 
 	case CAR_SUB_TRACKING_START:
-		/* v2.5: payload 4B [data_id, sub, speed_level, aim_axis]; arg1 缺失或越界 → PARAM */
+		/* v3.0: payload 4B [data_id, sub, speed_level, aim_axis]; 两参仅做范围校验
+		 * (底盘不再分轴/不设低速档), 越界 → PARAM */
 		if (payload_length >= 4u && payload[2] <= 1u && payload[3] <= 1u)
 		{
 			Car_Ack_Send(CAR_SUB_TRACKING_START, 0x01u);
@@ -549,8 +550,8 @@ void Car_DebugTask(void)
 	}
 	Car_SegChange_Log();   /* 段切换: 变化才打, 主循环上下文(唯一 printf 点) */
 	Car_ArcExit_Log();     /* 弧线出口质量: 每条 ARC 跑完打一行(出口横向偏差/航向偏差) */
-	Car_TrkChange_Log();   /* 跟瞄状态迁移: 七态机换态才打一行 TRK:旧>新 */
-	Car_AimTrace_Log();    /* AIM/STAND 驻停期 10Hz 打点: 判"误差卡住"卡在哪一环 */
+	Car_TrkChange_Log();   /* 跟瞄状态迁移: 四态机换态才打一行 TRK:旧>新 */
+	Car_TrkDetail_Log();   /* ARMED/STOPPED 期 10Hz 打点 TRKD: 判"误差卡在哪一环" */
 
 	/* RT:FINISH / PD: 漂移行; 推进本身在 10ms 定时里, 打印只能在主循环 */
 	SELFTEST_DEBUG_POLL();

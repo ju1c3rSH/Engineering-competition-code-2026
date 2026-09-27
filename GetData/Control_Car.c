@@ -146,17 +146,10 @@ static float Nav_GearSpeed(uint8_t speed_gear)
 	}
 }
 
-/* 打靶瞄平移残差(m): AIM 微调期间为咬靶心而走出的净纵向位移, 由 Nav_DoRequest 在本段
- * 结束时快照进来(见 Tracking_ApplyOverlay 的 AIM 分支)。下一段表启动时从**首段 MOVE 的
- * 里程里扣掉** —— 车已经替这一段先走掉了, 扣掉才能让后续路书的物理落点与"标定时车停在
- * 名义终点"一致, 即消除 v2.5"平移闭环把后续路线整体前移"的病。一次性: 用过即清零 */
-static float nav_aim_resid_m = 0.0f;
-
 /* speed_gear 覆盖需改写段速度, 拷入 RAM 缓冲后启动; gear=0 直接用 flash 原表。
  * gear=0 一律不拷贝, 让自测与比赛走同一条路径 —— 否则自测结论不可外推到比赛。
  * 代价: 自测插停等段(SEG_PAUSE)必须走拷贝路径, 故自测 gear 不能为 0
- * (见 selftest.c 的 SELFTEST_GEAR, 配错会 #error)。
- * 例外: 有打靶瞄残差待补偿时必须拷贝(gear=0 也要), 否则改不了首段里程 */
+ * (见 selftest.c 的 SELFTEST_GEAR, 配错会 #error) */
 static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed_gear)
 {
 	static mf_seg_t buf[NAV_GEAR_BUF_LEN];
@@ -164,12 +157,12 @@ static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed
 	uint8_t i, o;
 	float v;
 
-	if ((speed_gear == 0u) && (nav_aim_resid_m == 0.0f))
+	if (speed_gear == 0u)
 	{
 		return src;
 	}
 
-	v = (speed_gear == 0u) ? -1.0f : Nav_GearSpeed(speed_gear);   /* 负 = 不改写速度 */
+	v = Nav_GearSpeed(speed_gear);
 	o = 0u;
 	for (i = 0u; (i < NAV_GEAR_BUF_LEN) && (o < NAV_GEAR_BUF_LEN); i++)
 	{
@@ -178,11 +171,11 @@ static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed
 		{
 			break;
 		}
-		if ((buf[o].type == MF_SEG_MOVE_DIST) && (v >= 0.0f))
+		if (buf[o].type == MF_SEG_MOVE_DIST)
 		{
 			buf[o].p.move_dist.speed_mps = v;
 		}
-		else if ((buf[o].type == MF_SEG_ARC) && (v >= 0.0f))
+		else if (buf[o].type == MF_SEG_ARC)
 		{
 			buf[o].p.arc.speed_mps = v;
 		}
@@ -195,27 +188,6 @@ static const mf_seg_t *Nav_GearTable(uint8_t navigation_target_id, uint8_t speed
 		o = (uint8_t)(NAV_GEAR_BUF_LEN - 1u);
 	}
 	buf[o].type = MF_SEG_END;
-
-	/* 残差补偿: 首段必须是 MOVE 且不会被吃光(否则路书几何已不成立, 宁可不动 -- 清零放弃)。
-	 * 先判类型再读 dist_m —— mf_seg_t 的 p 是 union, 对非 MOVE 段读 dist_m 是读错成员 */
-	if (nav_aim_resid_m != 0.0f)
-	{
-		float resid = nav_aim_resid_m;
-
-		if (buf[0].type == MF_SEG_MOVE_DIST)
-		{
-			float d0 = buf[0].p.move_dist.dist_m;
-
-			if (((resid > 0.0f) == (d0 > 0.0f)) &&
-			    ((resid < 0.0f ? -resid : resid) < (0.9f * (d0 < 0.0f ? -d0 : d0))))
-			{
-				/* 微调是沿车体纵向的纯位移, 段表首段也沿同一轴(进段时车头没转),
-				 * 故直接代数和 */
-				buf[0].p.move_dist.dist_m = d0 - resid;
-			}
-		}
-		nav_aim_resid_m = 0.0f;   /* 一次性 */
-	}
 	return buf;
 }
 
@@ -253,24 +225,20 @@ static struct
 } nav;
 
 static void Nav_Fault(void);   /* 前置声明: Nav_DoRequest 段表校验失败即调(定义在后) */
+static void Tracking_RaiseFault(uint8_t reason);   /* 前置声明: Tracking_Start 无段表时调 */
 
-/* ---- 打靶段内跟瞄 v2: 段表不断, 段内叠加视觉航向修正 ----
- * 靶标前一段由中控发 TRACKING_START 开启, 底盘按指定速度边走边修航向;
- * horizontal_error_normalized 归零即段内刹停等发射, 发射后 TRACKING_STOP
- * (mode=1) 继续走完当前段。履带动, 转盘不动 */
-/* 段内跟瞄七态机: APPROACH 不碰 vx 只写 wz(覆盖, 非叠加), TRANSLATE 轴例外 ——
- * |e|≤阈 即切 STAND 刹停(v2.6); 段表 done 才进 AIM; DONE = 已刹停且收敛;
- * APPROACH 丢目标不停车、AIM/STAND 才压零; LOCKED/FAULT 可被 START 解除 */
+/* ---- 打靶段内跟瞄 v3.0: 刹停 / 续跑 ----
+ * 段表全程是**唯一**位移来源(跟瞄态一个字节的 vx/wz 都不写); 视觉只回答"是否已到靶位"。
+ * 中控发 TRACKING_START 武装(ARMED), 底盘每拍只**评估**刹停判据; 判据成立则按固定减速
+ * 度把段表当拍目标速度压到 0(不是瞬间压零 -> 滑行更短), 进 STOPPED 暂停本段并报 DONE;
+ * 中控发射后发 TRACKING_STOP(1) 回 OFF, 段表从 cur_speed=0 起坡补完剩余里程, 终点仍
+ * 落在"进段位置 + 段表里程"上, 故零标定、零污染。规格见 docs/打靶段架构-刹停与续跑.md */
 typedef enum
 {
-	TRACKING_OFF = 0,     /* 不干预: 段表全权(原 TRACKING_IDLE) */
-	TRACKING_APPROACH,    /* 进近: 段表给 vx, 跟瞄独占 wz 修正 */
-	TRACKING_STAND,       /* 按误差刹停(v2.6, TRANSLATE): 已咬住靶心, 全零等发射;
-	                       * 只由 TRACKING_STOP(1) 放行(段表续跑完本段) */
-	TRACKING_AIM,         /* 静瞄: 段表已到位(vx=0), 跟瞄独占 wz, 等收敛 */
-	TRACKING_HOLD,        /* 测量失效: APPROACH 下放行段表 / AIM 下压零等恢复(有上限) */
-	TRACKING_LOCKED,      /* 已到位且收敛(或主控要求锁停): 全零; 收敛型会发 DONE */
-	TRACKING_FAULT        /* 本地判定瞄不上(见 fault_reason): 全零 + 上报 0x06, 等 START 复位 */
+	TRACKING_OFF = 0,   /* 不干预: 段表全权 */
+	TRACKING_ARMED,     /* 已武装: 段表全权驱动, 只评估刹停判据, 不改 cmd */
+	TRACKING_STOPPED,   /* 已刹停(暂停本段): cmd 全零, 剩余里程冻结, 等 0x07 STOP(1) */
+	TRACKING_FAULT      /* 本地判定瞄不上: 全零 + 上报 0x06, 等 START 复位 */
 } TrackingState_t;
 
 static struct
@@ -279,22 +247,20 @@ static struct
 	float    horizontal_error_normalized;  /* 最新归一化横向误差, 约 -1~+1 */
 	uint8_t  target_found_flag;            /* 最新有效标志 */
 	uint16_t frame_age_ms;                 /* 距上次有效误差帧时长 */
-	uint16_t hold_ms;                      /* AIM 下 |e| 达标累计(收敛判据) */
-	uint16_t stand_ms;                     /* APPROACH 下 |e| 达标累计(v2.6 按误差刹停判据) */
-	uint8_t  stand_done;                   /* STAND 已报过 TRACKING_DONE 的闩锁: 主控重发
-	                                        * START 会清它, 好让底盘补一次 DONE */
-	float    entry_remain_m;               /* 进 APPROACH 时的段表剩余里程(m): STAND 刹停
-	                                        * 门槛(TRACKING_STAND_MIN_DONE_M)的进度基准 */
-	uint16_t hover_ms;                     /* 测量失效累计(APPROACH 记观察, AIM 计时上限) */
-	uint16_t aim_bad_ms;                   /* AIM 下 |e| 超阈累计(FAULT 判据) */
-	uint8_t  tracking_speed_level;         /* 0=段表速度/1=低速跟瞄 */
-	uint8_t  aim_axis;                     /* TRK_AXIS_*: AIM 收敛轴(0=旋转 wz/1=平移 vx, v2.5) */
-	float    aim_travel_m;                 /* AIM 期间沿车体纵向的净位移(带符号, 正=前进) */
-	float    aim_best_err;                 /* AIM 期间 |e| 历史最优(未收敛 FAULT 的进展判据, v2.5.1) */
+	uint16_t hold_ms;                      /* J1 兜底: |e|≤阈 的连续累计 */
+	int8_t   zero_sign;                    /* 已确认误差符号(+1/-1/0=未确认), 过零判据的基准 */
+	int8_t   sign_cand;                    /* 去抖候选符号 */
+	uint8_t  confirm_cnt;                  /* 去抖: 候选符号连续同号帧数 */
+	uint8_t  braking;                      /* 已触发制动的锁存: 不再重判, 只走制动斜坡 */
+	float    brake_cap;                    /* 制动斜坡: 当拍允许的段表目标速度上限 */
+	uint16_t noconv_ms;                    /* 段表已完 + |e|>阈 的连续累计(FAULT 01) */
+	uint8_t  noconv_latch;                 /* FAULT(01) 闩锁: 防重复上报, START/STOP 清 */
+	uint16_t lost_ms;                      /* 段表已完 + 无测量的连续累计(FAULT 02) */
+	uint8_t  stop_done;                    /* STOPPED 已报 TRACKING_DONE 的闩锁(START 清, 补发用) */
 	uint8_t  fault_reason;                 /* TRACKING_FAULT 的 reason, 见 Control_Car.h TRK_FAULT_* */
 } tracking;
 
-/* 状态迁移唯一入口: 复位三个计时器 + 登记一次迁移打点(主循环 Car_TrkChange_Log 消费)。
+/* 状态迁移唯一入口: 复位判据计数器 + 登记一次迁移打点(主循环 Car_TrkChange_Log 消费)。
  * 只走这里是为了让"哪一拍切的态、为什么切"有据可查, 也防止某条路径漏清计数 */
 static volatile uint8_t trk_chg_from, trk_chg_to, trk_chg_fresh;
 
@@ -308,13 +274,16 @@ static void Tracking_Goto(TrackingState_t next)
 	}
 	tracking.state = next;
 	tracking.hold_ms = 0u;
-	tracking.stand_ms = 0u;
-	tracking.stand_done = 0u;
-	/* 注意**不清** aim_travel_m —— AIM 微调的累计位移要活到下一段表启动时被
-	 * Nav_DoRequest 快照走(残差补偿), 见 nav_aim_resid_m */
-	tracking.hover_ms = 0u;
-	tracking.aim_bad_ms = 0u;
-	tracking.aim_best_err = 2.0f;   /* |e|≤1, 给上界=新一段 AIM 的进展基准 */
+	tracking.zero_sign = 0;
+	tracking.sign_cand = 0;
+	tracking.confirm_cnt = 0u;
+	tracking.braking = 0u;
+	tracking.brake_cap = 0.0f;
+	tracking.stop_done = 0u;
+	tracking.noconv_ms = 0u;
+	tracking.lost_ms = 0u;
+	/* 注意**不清** noconv_latch —— 它由 START/STOP 专门清(见 Tracking_Start/Stop),
+	 * 好让 Brain 的容错计数能在每次重开后重新累计 */
 	__disable_irq();
 	trk_chg_from = (uint8_t)from;
 	trk_chg_to = (uint8_t)next;
@@ -326,12 +295,9 @@ static char Tracking_StateChar(TrackingState_t s)
 {
 	switch (s)
 	{
-	case TRACKING_APPROACH: return 'A';
-	case TRACKING_STAND:    return 'S';
-	case TRACKING_AIM:      return 'M';
-	case TRACKING_HOLD:     return 'H';
-	case TRACKING_LOCKED:   return 'L';
-	case TRACKING_FAULT:    return 'F';
+	case TRACKING_ARMED:   return 'A';
+	case TRACKING_STOPPED: return 'S';
+	case TRACKING_FAULT:   return 'F';
 	default:                return 'O';
 	}
 }
@@ -513,14 +479,8 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 
 	if (nav.state == NAV_RUN && nav.nav_id == navigation_target_id)
 	{
-		/* 同段进行中: 幂等忽略。只解除"卡住"的 LOCKED/FAULT(否则重发对跟瞄无效);
-		 * APPROACH/AIM/HOLD/STAND 保持原状 —— 无条件回 OFF 会被中控的幂等重发
-		 * (超时重试/EXE_LASER 恢复段)打断正在收敛或**正在按误差刹停等发射**的跟瞄
-		 * (STAND 一旦被放走, 段表立刻把车从靶心拖走, 激光就打偏了) */
-		if ((tracking.state == TRACKING_LOCKED) || (tracking.state == TRACKING_FAULT))
-		{
-			Tracking_Goto(TRACKING_OFF);
-		}
+		/* 同段进行中: 幂等忽略。跟瞄的 ARMED/STOPPED 都**不许**被主控的幂等重发打断
+		 * (重发 REQ_NAV 若把 STOPPED 放走, 段表立刻把车从靶心拖走, 激光就打偏了) */
 		return;
 	}
 	if (nav.state == NAV_DONE && nav.nav_id == navigation_target_id)
@@ -536,14 +496,6 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 		return;
 	}
 
-	/* 打靶瞄微调残差的交接: 起新段前把本段 AIM 挪过的净位移快照过来, 由 Nav_GearTable
-	 * 从新表首段里程里扣掉(详见 nav_aim_resid_m 注释)。死区 5mm: 小于它的微调当没发生。
-	 * 必须在 mf_start_path_chain 之前 —— 之后会 Tracking_Goto(OFF), 状态就换了 */
-	nav_aim_resid_m = ((tracking.aim_axis == TRK_AXIS_TRANSLATE) &&
-	                   ((tracking.aim_travel_m > 0.005f) || (tracking.aim_travel_m < -0.005f)))
-	                  ? tracking.aim_travel_m : 0.0f;
-	tracking.aim_travel_m = 0.0f;   /* 已交接, 防止下一段新 nav 重复补偿同一笔 */
-
 	chain_to = ((navigation_target_id < CAR_NAV_ID_COUNT)
 	            && (nav_chain_next[navigation_target_id] != 0u))
 	         ? nav_chain_next[navigation_target_id] : NAV_ID_NONE;
@@ -554,7 +506,7 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 	nav.chain_to = chain_to;
 	nav.last_done = NAV_ID_NONE;
 	nav.stall_ms = 0u;
-	/* 起新段清跟瞄: 防 EXE_LASER 重试/FAULT 泄漏的 LOCKED/FAULT 带到新路段 */
+	/* 起新段清跟瞄: 防上一段残留的 STOPPED/FAULT 压零带到新路段 */
 	Tracking_Goto(TRACKING_OFF);
 	if (mf_path_get_state(&mf_app()->path) != MF_PATH_RUN)
 	{
@@ -639,7 +591,7 @@ void Car_Turntable_BenchStop(void)
 	Car_Dbg2_TtRecord(0u, tt.code, Car_data.Motor_Angle);
 }
 
-/* ---- 段内跟瞄: 段表不断, 段内叠加视觉航向修正 ---- */
+/* ---- 段内跟瞄(v3.0): 段表不断; 视觉只当"该刹停"的判据, 不写 vx/wz ---- */
 static void Tracking_HoldStill(mf_ctx_t *motion)
 {
 	motion->cmd.vx_mps = 0.0f;
@@ -652,54 +604,87 @@ static void Tracking_HoldStill(mf_ctx_t *motion)
 	motion->path.prev_wz = 0.0f;
 }
 
-/* 收到 TRACKING_START: 段表在跑进 APPROACH(边走边修航向); 段表已跑完进 AIM
- * (打靶到位后的原地精瞄); 只有无活动段表(从未起段/已 STOP)才判无段表。
- * a1 = aim_axis(v2.5): 0=旋转瞄(wz) / 1=平移瞄(vx, 转盘 90° 侧装相机) */
+/* 收到 TRACKING_START: 武装跟瞄(段表全权, 底盘只评估刹停判据)。
+ * v3.0 下 START 是**无状态标志** —— 重发不改变段表状态、不清测量、不换态, 天然幂等;
+ * 从 FAULT 重收 START = 主控要求重开一轮(清未收敛闩锁, 好让容错计数能再累计)。
+ * a0 旧 speed_level / a1 aim_axis 都不再参与逻辑; aim_axis 仅做入参范围校验 */
 static void Tracking_Start(uint8_t tracking_speed_level, uint8_t aim_axis)
 {
 	mf_ctx_t *motion = mf_app();
 	mf_path_state_t path_state = mf_path_get_state(&motion->path);
 
+	(void)tracking_speed_level;   /* v3.0: 进近低速由咬靶区自动决定, 该档位不再生效 */
+
+	if ((aim_axis != TRK_AXIS_ROTATE) && (aim_axis != TRK_AXIS_TRANSLATE))
+	{
+		return;   /* 越界: 与协议层(interurp.c 的 NACK 0x03)同口径, 不武装 */
+	}
 	if (path_state == MF_PATH_IDLE)
 	{
-		tracking.fault_reason = TRK_FAULT_NO_PATH;
-		Tracking_Goto(TRACKING_FAULT);
-		Tracking_HoldStill(motion);
-		Car_Event_Send(CAR_EVT_TRACKING_FAULT, TRK_FAULT_NO_PATH, 0x00u);
+		Tracking_RaiseFault(TRK_FAULT_NO_PATH);   /* 无活动段表: 无从驱动, 报故障 */
 		return;
 	}
-	/* 已按误差刹停(段表还在跑)时收到 START: 主控在 ST_ALIGN_TARGET 入口与补发路径上都会
-	 * 重发, 这里**必须保持刹停** —— 判回 APPROACH 会让段表立刻把车拖走(车已咬住靶心,
-	 * 段表剩余里程是"发射后该补走的那段")。只清 DONE 闩锁: 主控的 done 标志被这次
-	 * START 清零了, 下拍 STAND 分支会补发一次 DONE(不看误差: 车停着也改不了误差),
-	 * 不让它干等 align_ms 超时 */
-	if (tracking.state == TRACKING_STAND)
+
+	/* STOPPED 内重发 START: **必须保持刹停** —— 回 OFF 会让段表立刻把车从靶心拖走。
+	 * 只清 DONE 闩锁: 主控的 done 标志被这次 START 清零了, 下拍 STOPPED 分支补发一次 */
+	if (tracking.state == TRACKING_STOPPED)
 	{
-		tracking.stand_done = 0u;
+		tracking.stop_done = 0u;
 		return;
 	}
-	/* 同一轮 AIM 里重发 START(主控 ALIGN 入口 / 收到 0x06 后补发 / align_ms 超时重试都会发):
-	 * **只重置收敛计时, 其余一概不动**。旧写法把 found/误差清零 —— 下一拍 fresh 立刻为 0,
-	 * 于是误切 HOLD: HoldStill 停车 + 轮速环积分被清 ⇒ 现场表现就是"微调一动一停不连续",
-	 * 收敛被反复打断, 最后攒出 5s 无进展 FAULT 让主控走兜底(2026-09-26 双端日志实测)。
-	 * 也不能走下面的 Goto(会清 aim_travel_m 的账), 否则下一段表的残差补偿丢数 */
-	if ((tracking.state == TRACKING_AIM) && (path_state == MF_PATH_DONE) &&
-	    (tracking.aim_axis == ((aim_axis <= TRK_AXIS_TRANSLATE) ? aim_axis : TRK_AXIS_ROTATE)))
+	/* 已 ARMED 重发(主控 ALIGN 入口/align_ms 超时补发都会发): 幂等忽略, 不打断判据 */
+	if (tracking.state == TRACKING_ARMED)
 	{
-		tracking.tracking_speed_level = tracking_speed_level;
-		tracking.hold_ms = 0u;   /* 收敛要重新确认 500ms(重发 START 仍算"重开一轮") */
 		return;
 	}
-	tracking.tracking_speed_level = tracking_speed_level;
-	tracking.aim_axis = (aim_axis <= TRK_AXIS_TRANSLATE) ? aim_axis : TRK_AXIS_ROTATE;
-	tracking.entry_remain_m = mf_path_remain_m(&motion->path);   /* 刹停门槛的进度基准 */
+
 	tracking.frame_age_ms = 0u;
 	tracking.target_found_flag = 0u;
 	tracking.horizontal_error_normalized = 0.0f;
-	tracking_error_pending = 0u;   /* 丢弃上轮残帧, 首拍不等旧误差 */
-	/* LOCKED/FAULT 下重收 START = 主控要求重新开始跟瞄 ⇒ 回到 APPROACH/AIM 重瞄(解除黏性),
-	 * 若确实仍收敛, 500ms 后会再发一次 DONE, 对主控的幂等重发友好 */
-	Tracking_Goto((path_state == MF_PATH_DONE) ? TRACKING_AIM : TRACKING_APPROACH);
+	tracking_error_pending = 0u;    /* 丢弃上轮残帧, 首拍不等旧误差 */
+	tracking.noconv_latch = 0u;     /* START/STOP 清未收敛闩锁, 允许 Brain 的容错计数继续累计 */
+	Tracking_Goto(TRACKING_ARMED);
+}
+
+/* 立即暂停本段并上报"已刹停可发射": cmd 全零 + 泄放段内斜坡 -> STOPPED, 发一次 DONE */
+static void Tracking_EnterStopped(mf_ctx_t *motion)
+{
+	Tracking_HoldStill(motion);
+	Tracking_Goto(TRACKING_STOPPED);   /* Goto 含清 stop_done, 故闩锁在 Goto 之后置 */
+	tracking.stop_done = 1u;
+	Car_Event_Send(CAR_EVT_TRACKING_DONE, 0u, 0x00u);
+}
+
+/* 触发制动(锁存): 记下当拍速度作为制动斜坡起点。制动不是瞬间压零 —— 段表按固定减速
+ * 度把目标速度压到 0, 滑行更短、停点可复现(规格 §5) */
+static void Tracking_BrakeStart(mf_ctx_t *motion)
+{
+	tracking.braking = 1u;
+	tracking.brake_cap = motion->path.cur_speed;
+}
+
+/* 制动斜坡一拍: 把 brake_cap 沿固定减速度往 0 收(带符号, 倒车段也适用), 并只**往下**压
+ * 段表当拍目标速度。返回 1 = 已到零, 该进 STOPPED。必须在 mf_tick **之后**调用:
+ * 本拍压的是"下一拍 mf_tick 起坡的起点", 故本拍不改 cmd(轮速环不重算) */
+static uint8_t Tracking_BrakeRamp(mf_ctx_t *motion)
+{
+	const float step = TRACKING_BRAKE_MPS2 * ((float)CAR_TASK_MS * 0.001f);
+
+	if (tracking.brake_cap > 0.0f)
+	{
+		tracking.brake_cap = (tracking.brake_cap > step) ? (tracking.brake_cap - step) : 0.0f;
+	}
+	else if (tracking.brake_cap < 0.0f)
+	{
+		tracking.brake_cap = (tracking.brake_cap < -step) ? (tracking.brake_cap + step) : 0.0f;
+	}
+	/* 只往下限: 段表当拍可能已把这值往目标抬了 acc·dt, 这里再压回去 */
+	if (((tracking.brake_cap >= 0.0f) && (motion->path.cur_speed > tracking.brake_cap)) ||
+	    ((tracking.brake_cap <= 0.0f) && (motion->path.cur_speed < tracking.brake_cap)))
+	{
+		motion->path.cur_speed = tracking.brake_cap;
+	}
+	return (uint8_t)((tracking.brake_cap <= 0.02f) && (tracking.brake_cap >= -0.02f));
 }
 
 /* 原子消费误差帧: 有新帧更新误差并喂狗, 无新帧不碰 frame_age_ms */
@@ -722,66 +707,48 @@ static void Tracking_ConsumeErrorFrame(void)
 	__enable_irq();
 }
 
-/* 是否已进入"咬靶区"(本段已走够 TRACKING_STAND_MIN_DONE_M 米)
- * 咬靶限速与按误差刹停**共用**这个门槛: 段起点处的 found/e 可能是误检或上一段残帧,
- * 若不拦, 会把段表速度从起步就压在咬靶速度上(3cm/s), 外部表现就是"车根本没动" */
-static uint8_t Tracking_InStandZone(const mf_ctx_t *motion)
+/* 是否已进入"咬靶区" = 本段最后 TRACKING_SLOW_ZONE_M 米(按剩余里程判, 与行进方向无关)。
+ * 降速与刹停判据**共用**这一条门槛: 段起点或离靶尚远处的 found/e 可能是误检/锁错目标,
+ * 不拦就会"起步即刹停"(2026-09-23 现场事故 1d99420 的同款症状), 且会把车从起步压在低速上 */
+static uint8_t Tracking_InSlowZone(const mf_ctx_t *motion)
 {
-	return (uint8_t)((tracking.entry_remain_m - mf_path_remain_m(&motion->path))
-	                 >= TRACKING_STAND_MIN_DONE_M);
+	return (uint8_t)(mf_path_remain_m(&motion->path) <= TRACKING_SLOW_ZONE_M);
 }
 
-/* 进近咬靶限速(v2.6): 在 mf_tick **之前**调用, 只压 path.cur_speed —— 这样 mf_tick
+/* 进近固定低速(零系数): 在 mf_tick **之前**调用, 只压 path.cur_speed —— 这样 mf_tick
  * 里的轮速环每拍只算一次(不像 Tracking_RecomputeWheels 会把轮速 PI 的 I 项一拍积两次)。
- * 段表自己的 acc 斜坡随后会把 cur_speed 往 target 抬 acc·dt(≈2.4cm/s), 量级可忽略,
- * 故实际速度 ≈ min(段表当拍目标, cap + 一步)。丢帧/未发现目标时不限速: 视觉一挂就让
- * 段表全速把车带到靶前, 免得被压在咬靶速度上爬完全程再超时 */
+ * 为什么必须降速: 停点精度 ≈ 帧间隔×车速 + 制动距离 —— 0.94m/s 时制动距离 0.22m(直接冲
+ * 过靶位), 0.20m/s 时仅 10mm。进咬靶区后**不看测量**(视觉挂了也保持低速走完), 分支更少 */
 static void Tracking_LimitApproachSpeed(void)
 {
-#if TRACKING_STAND_EN
 	mf_path_ctx_t *path = &mf_app()->path;
-	float e, cap;
 
-	if ((tracking.state != TRACKING_APPROACH) || (tracking.aim_axis != TRK_AXIS_TRANSLATE))
+	if (tracking.state != TRACKING_ARMED)
 	{
-		return;   /* ROTATE 进近保持段表速度 */
+		return;   /* 只武装期限速 */
 	}
-	if (Tracking_InStandZone(mf_app()) == 0u)
+	if (Tracking_InSlowZone(mf_app()) == 0u)
 	{
-		return;   /* 还没进咬靶区: 段表全速, 防段起点误检把车"钉"在 3cm/s */
+		return;   /* 还没进咬靶区: 段表全速 */
 	}
-	if ((tracking.target_found_flag == 0u) ||
-	    (tracking.frame_age_ms > TRACKING_FRAME_TIMEOUT_MS))
+	if (path->cur_speed > TRACKING_SLOW_MPS)
 	{
-		return;   /* 无有效测量: 不加限速 */
+		path->cur_speed = TRACKING_SLOW_MPS;   /* 只往下限: 倒车段不会被误抬速 */
 	}
-	e = tracking.horizontal_error_normalized;
-	if (e < 0.0f)
-	{
-		e = -e;
-	}
-	cap = TRACKING_APPROACH_SLOW_KPS * e;
-	if (cap < TRACKING_APPROACH_MIN_MPS)
-	{
-		cap = TRACKING_APPROACH_MIN_MPS;
-	}
-	/* 只往下限: 倒车段(cur_speed<0)不会被误抬速 */
-	if (path->cur_speed > cap)
-	{
-		path->cur_speed = cap;
-	}
-#endif
 }
 
-/* TRACKING_STOP: 0=就地刹停(mode=0 不发 DONE, 那是主控要求而非本地收敛) / 1=让段表续跑。
- * 1 是"开激光后恢复行进"的放行口: STAND 下段表只被压零、里程没走完, 回 OFF 后
- * 从 cur_speed=0 起坡把本段剩余里程补完, 终点仍落在名义终点 */
+/* TRACKING_STOP: 0=就地刹停(立即暂停本段) / 1=放行段表续跑完本段。
+ * 1 是"开激光后恢复行进"的放行口: STOPPED 下段表只被压零、里程没走完, 回 OFF 后从
+ * cur_speed=0 起坡把剩余里程补完, 终点仍落在名义终点(不变量 I3: 暂停可逆) */
 static void Tracking_Stop(uint8_t tracking_stop_mode)
 {
+	tracking.noconv_latch = 0u;   /* 清未收敛闩锁, 与 START 同口径 */
 	if (tracking_stop_mode == 0u)
 	{
-		Tracking_HoldStill(mf_app());
-		Tracking_Goto(TRACKING_LOCKED);
+		if (tracking.state != TRACKING_STOPPED)   /* 已在 STOPPED 就别重复广播 DONE */
+		{
+			Tracking_EnterStopped(mf_app());
+		}
 	}
 	else
 	{
@@ -798,69 +765,32 @@ static void Tracking_RaiseFault(uint8_t reason)
 	Car_Event_Send(CAR_EVT_TRACKING_FAULT, reason, 0x00u);
 }
 
-/* AIM"未收敛"FAULT 的进展判据(v2.5.1): |e| 比历史最优再降 EPS 以上 = 在收敛,
- * 清零计时(收敛慢不算病); 停滞/发散才累计, 满 AIM_FAULT_MS 才置 FAULT。
- * 旧判据"|e|超阈即累计"会把长距离正常收敛误判成 FAULT(实测: E 收到 1800 停死) */
-static void Tracking_AimFaultWatch(float absolute_error)
-{
-	if (absolute_error < tracking.aim_best_err - TRACKING_AIM_PROGRESS_EPS)
-	{
-		tracking.aim_best_err = absolute_error;
-		tracking.aim_bad_ms = 0u;
-		return;
-	}
-	tracking.aim_bad_ms = (uint16_t)(tracking.aim_bad_ms + CAR_TASK_MS);
-	if ((TRACKING_AIM_FAULT_MS > 0u) && (tracking.aim_bad_ms >= TRACKING_AIM_FAULT_MS))
-	{
-		Tracking_RaiseFault(TRK_FAULT_NOT_CONVERGED);
-	}
-}
-
-/* 视觉 P 控制: **覆盖** wz(跟瞄态下段表航向环让出); vx 只封顶不清零 */
-static void Tracking_WriteYaw(mf_ctx_t *motion)
-{
-	float wz = -TRACKING_PROPORTIONAL_GAIN * tracking.horizontal_error_normalized;
-
-	if (wz >  TRACKING_MAX_YAW_RATE_DPS) { wz =  TRACKING_MAX_YAW_RATE_DPS; }
-	if (wz < -TRACKING_MAX_YAW_RATE_DPS) { wz = -TRACKING_MAX_YAW_RATE_DPS; }
-#if (TRACKING_PATH_WZ_KEEP_PCT > 0u)
-	/* 可选前馈: 保留段表当拍 wz 的一部分, 分担跟瞄单独扛全部航向修正的压力 */
-	wz += motion->cmd.wz_dps * ((float)TRACKING_PATH_WZ_KEEP_PCT / 100.0f);
-#endif
-	motion->cmd.wz_dps = mf_clampf(wz, motion->cfg.max_wz_dps);
-	if ((tracking.tracking_speed_level == 1u) && (motion->cmd.vx_mps > MF_M_SPEED(Low_speed)))
-	{
-		motion->cmd.vx_mps = MF_M_SPEED(Low_speed);
-	}
-}
-
-/* TRANSLATE 平移瞄: 转盘 90° 侧装相机时画面左右 = 车体前后。
- * 误差**永不驱动位移**: 进近途中只当刹停判据(STAND, v2.6), 段表跑完后只当收敛判据
- * (AIM 恒 HoldStill, v2.5.2) —— 位移由"发射后段表补完剩余里程"承担, 位置零污染 */
-
 /* 每拍在 mf_tick 之后调用。返回 1 = 本拍改写了 cmd(须重算轮速环); 0 = 不干预(段表全权)。
- * 这是跟瞄的唯一执行入口: 状态决定"谁写 vx/wz", 同一拍不存在两个写入者 */
+ * 跟瞄态**只评估判据**, 不改 vx/wz(不变量 I1: 位移唯一来源是段表) */
 static uint8_t Tracking_ApplyOverlay(void)
 {
 	mf_ctx_t *motion = mf_app();
-	float absolute_error;
-	uint8_t fresh;
-
-	/* 外部接管标志每拍先清, 只有"跟瞄要驱动车"的分支才置位(见 AIM 平移微调):
-	 * 它让下一拍的 mf_tick 不要按"停止指令"清轮速环积分 —— 否则低速爬行只剩 P 项,
-	 * 会卡在履带起步门槛上(现场 CL=184/SL=0) */
-	motion->cmd_ext_hold = 0u;
+	float e, abs_e;
+	uint8_t fresh, done;
 
 	if (tracking.state == TRACKING_OFF)
 	{
-		return 0u;                     /* 段表全权 */
+		return 0u;                     /* 段表全权(不变量 I1) */
 	}
-	if ((tracking.state == TRACKING_LOCKED) || (tracking.state == TRACKING_FAULT))
+	/* 已刹停/故障: 全零驻停, 等主控(0x07/0x05)。STOPPED 只报一次 DONE; START 重发会
+	 * 清 stop_done 闩锁 => 下拍补发一次(主控的 done 标志被那次 START 清掉了) */
+	if ((tracking.state == TRACKING_STOPPED) || (tracking.state == TRACKING_FAULT))
 	{
-		Tracking_HoldStill(motion);    /* 锁停/故障: 全零, 等主控解除 */
+		Tracking_HoldStill(motion);
+		if ((tracking.state == TRACKING_STOPPED) && (tracking.stop_done == 0u))
+		{
+			tracking.stop_done = 1u;
+			Car_Event_Send(CAR_EVT_TRACKING_DONE, 0u, 0x00u);   /* 已刹停可发射 */
+		}
 		return 1u;
 	}
 
+	/* ==== ARMED: 段表全权驱动, 这里只评估刹停判据/上报故障, 不改 cmd ==== */
 	Tracking_ConsumeErrorFrame();
 	if (tracking.frame_age_ms < (uint16_t)(0xFFFFu - CAR_TASK_MS))
 	{
@@ -868,174 +798,114 @@ static uint8_t Tracking_ApplyOverlay(void)
 	}
 	fresh = (uint8_t)((tracking.target_found_flag != 0u) &&
 	                  (tracking.frame_age_ms <= TRACKING_FRAME_TIMEOUT_MS));
-	absolute_error = (tracking.horizontal_error_normalized < 0.0f)
-	                 ? -tracking.horizontal_error_normalized
-	                 : tracking.horizontal_error_normalized;
+	done = mf_is_done(motion);
+	e = tracking.horizontal_error_normalized;
+	abs_e = (e < 0.0f) ? -e : e;
 
-	/* ---- 已按误差刹停: 全零驻停, 等主控发射完放行 ----
-	 * 刹停本身不产生位移(段表被压零、本段里程冻结), 所以段表名义终点=实际终点,
-	 * 后续路书零污染; STOP(1) 放行后 OFF 分支让段表从 cur_speed=0 补完剩余里程。
-	 * 报 DONE 只看**闩锁**不看当前误差: 车停着改不了误差, 卡住等只会让主控干等
-	 * 超时; 主控重发 START 时会清闩锁 => 下拍补发一次(=确认"车仍停在报靶位"),
-	 * 补发后闩锁复位, 不会变成周期广播 */
-	if (tracking.state == TRACKING_STAND)
+	/* ---- 制动中(已触发, 锁存): 只把段表当拍目标速度沿固定减速度压到 0 ----
+	 * 不再重判判据 —— 减速期间车还在动, 否则会反复触发/失效。到零即进 STOPPED */
+	if (tracking.braking != 0u)
 	{
-		Tracking_HoldStill(motion);
-		if (tracking.stand_done == 0u)
+		if (Tracking_BrakeRamp(motion) != 0u)
 		{
-			tracking.stand_done = 1u;
-			Car_Event_Send(CAR_EVT_TRACKING_DONE, 0u, 0x00u);   /* 已刹停且收敛 = 可发射 */
+			Tracking_EnterStopped(motion);
+			return 1u;
 		}
-		return 1u;
+		return 0u;   /* 本拍只压段表 target, 制动下一拍 mf_tick 起坡生效, cmd 未改 */
 	}
 
-	/* TRANSLATE 轴的 APPROACH: 侧向相机无法提供航向修正, 不写 wz; 但**可以按误差刹停**
-	 * (画面左右 = 车体前后, e≈0 就是纵向咬住靶心, 见 TRACKING_STAND_*)。
-	 * 丢帧(含进近途中看不到靶是常态)只清计时, 绝不切 HOLD 打断段表。
-	 * 段表先跑完(误差始终没进阈)则走原 AIM 迁移, 不依赖主控重发 START */
-	if ((tracking.aim_axis == TRK_AXIS_TRANSLATE) && (tracking.state == TRACKING_APPROACH))
+	/* ---- 无测量: 判据休眠(清计数, 不动作); 段表已完且持续无测量 -> FAULT(02) ---- */
+	if (fresh == 0u)
 	{
-#if TRACKING_STAND_EN
-		if ((fresh != 0u) && (absolute_error <= TRACKING_ERROR_THRESHOLD) &&
-		    (Tracking_InStandZone(motion) != 0u))
+		tracking.hold_ms = 0u;
+		if (tracking.frame_age_ms > TRACKING_FRAME_TIMEOUT_MS)
 		{
-			tracking.stand_ms = (uint16_t)(tracking.stand_ms + CAR_TASK_MS);
-			if (tracking.stand_ms >= TRACKING_HOLD_TIME_MS)
+			/* 只有真的测量中断才把过零基准清零; 单帧丢检(found=0 但帧不老)保留基准 ——
+			 * 否则过零恰好落在那一帧就会被永久漏掉(基准被清后新符号只能当基准, 不再触发) */
+			tracking.zero_sign = 0;
+			tracking.sign_cand = 0;
+			tracking.confirm_cnt = 0u;
+		}
+		if (done != 0u)
+		{
+			tracking.lost_ms = (uint16_t)(tracking.lost_ms + CAR_TASK_MS);
+			if (tracking.lost_ms >= TRACKING_LOST_DONE_MS)
 			{
-				Tracking_Goto(TRACKING_STAND);   /* 含清 stand_done, 故闩锁在 Goto 之后置 */
-				tracking.stand_done = 1u;
-				Car_Event_Send(CAR_EVT_TRACKING_DONE, 0u, 0x00u);
-				Tracking_HoldStill(motion);
+				Tracking_RaiseFault(TRK_FAULT_NO_TARGET);   /* 02: 段表已完仍丢目标 */
 				return 1u;
 			}
 		}
 		else
 		{
-			tracking.stand_ms = 0u;
+			tracking.lost_ms = 0u;
 		}
-#endif
-		if (mf_is_done(motion) != 0u)
-		{
-			Tracking_Goto(TRACKING_AIM);
-		}
-		return 0u;
+		return 0u;   /* 段表未完不停车: 停了就再也看不到靶(死锁) */
 	}
+	tracking.lost_ms = 0u;
 
-	if (fresh == 0u)
+	/* ---- J2 过零(主判据): 符号翻转那一拍 = 车刚从靶心旁经过 ----
+	 * 去抖: 连续 TRACKING_ZERO_CONFIRM_N 帧同号才认; 死区挡小噪声 */
 	{
-		/* 测量失效: 未到位不停车(否则"车不动⇒靶不进视野"死锁), 已到位才压零 */
-		tracking.aim_bad_ms = 0u;
-		if (tracking.state != TRACKING_HOLD)
+		int8_t s = (e > TRACKING_ZERO_DEADBAND) ? 1 : ((e < -TRACKING_ZERO_DEADBAND) ? -1 : 0);
+
+		if (s != 0)
 		{
-			Tracking_Goto(TRACKING_HOLD);   /* 进入即清零 hover, 从 0 起计 */
-		}
-		tracking.hover_ms = (uint16_t)(tracking.hover_ms + CAR_TASK_MS);
-		if (mf_is_done(motion) == 0u)
-		{
-			/* 进近中丢目标: **不停车**(停了就再也看不到靶 ⇒ 死锁), 只停 wz 修正、段表照常
-			 * 推进; 若到靶前仍无测量, 由下面的 AIM 分支按上限收尾 */
-			motion->cmd.wz_dps = 0.0f;
-			return 1u;
-		}
-		Tracking_HoldStill(motion);
-		if ((TRACKING_AIM_LOST_MAX_MS > 0u) && (tracking.hover_ms >= TRACKING_AIM_LOST_MAX_MS))
-		{
-			Tracking_RaiseFault(TRK_FAULT_NO_TARGET);
-		}
-		return 1u;
-	}
-
-	tracking.hover_ms = 0u;
-	if (tracking.state == TRACKING_HOLD)
-	{
-		Tracking_Goto((mf_is_done(motion) != 0u) ? TRACKING_AIM : TRACKING_APPROACH);
-	}
-
-	/* 到位才升 AIM: "段表跑完 = 几何到位(事实)"与"误差小 = 收敛(测量)"解耦 ——
-	 * 进近途中的小误差只说明车头正对着靶, 不构成"该停车"(只对 ROTATE 轴成立;
-	 * TRANSLATE 轴在上面就按误差刹停返回了) */
-	if ((tracking.state == TRACKING_APPROACH) && (mf_is_done(motion) != 0u))
-	{
-		Tracking_Goto(TRACKING_AIM);
-	}
-
-	if (tracking.state == TRACKING_AIM)
-	{
-		if (tracking.aim_axis == TRK_AXIS_TRANSLATE)
-		{
-			/* 平移瞄: 段表已跑完(车停在名义终点), 用误差驱动**前后微调**把靶心咬进 ±阈
-			 * (v2.6.1)。这是"误差→位移"的唯一执行口 —— 进近阶段只限速、不产生位移,
-			 * 所以停车时若误差还很远(现场实测 E=6540=65% 半幅), 只有这里能救。
-			 * 三重护栏见 TRACKING_AIM_VX_*; 净位移记进 aim_travel_m, 由下一段表首段
-			 * 里程扣掉 ⇒ 后续路书物理落点不变(不复发 v2.5"整体前移"的病) */
-#if TRACKING_AIM_VX_EN
-			float vx;
-
-			/* 净位移**逐拍按轮上增量累加**(与段表进度同口径), 不依赖进态位姿快照 ——
-			 * 这样主控重发 START / 反复进 AIM / 长时间被打断都不会丢账 */
-			tracking.aim_travel_m += (motion->wheel[0].delta_m + motion->wheel[1].delta_m) * 0.5f;
-
-			if ((tracking.aim_travel_m > TRACKING_AIM_MAX_TRAVEL_M) ||
-			    (tracking.aim_travel_m < -TRACKING_AIM_MAX_TRAVEL_M))
+			if (s == tracking.sign_cand)
 			{
-				/* 走出这么多还没收敛 = 误差与位移的对应关系不对(符号接反/相机不是侧装):
-				 * 继续走只会跑飞, 报 FAULT 交主控走容错 */
-				Tracking_RaiseFault(TRK_FAULT_NOT_CONVERGED);
-				Tracking_HoldStill(motion);
-				return 1u;
+				if (tracking.confirm_cnt < 0xFFu) { tracking.confirm_cnt++; }
 			}
+			else
+			{
+				tracking.sign_cand = s;
+				tracking.confirm_cnt = 1u;
+			}
+			if (tracking.confirm_cnt >= TRACKING_ZERO_CONFIRM_N)
+			{
+				if ((tracking.zero_sign != 0) && (s != tracking.zero_sign) &&
+				    (Tracking_InSlowZone(motion) != 0u))
+				{
+					Tracking_BrakeStart(motion);   /* 刚经过靶心: 立即刹停 */
+				}
+				/* 过零后**立刻**更新已确认符号: 让"过零"严格等于"符号翻转那一拍"。
+				 * 不更新则旧符号一直留着, "s != zero_sign" 会在随后每一拍都成立,
+				 * 过零从一次性事件退化成持续电平(详见交付报告 §3) */
+				tracking.zero_sign = s;
+			}
+		}
+	}
 
-			vx = TRACKING_AIM_VX_KPS * tracking.horizontal_error_normalized;
-			if (vx > TRACKING_AIM_VX_MAX_MPS)  { vx = TRACKING_AIM_VX_MAX_MPS; }
-			if (vx < -TRACKING_AIM_VX_MAX_MPS) { vx = -TRACKING_AIM_VX_MAX_MPS; }
-			Tracking_HoldStill(motion);   /* 先全零(顺带泄放段表斜坡), 再只给纵向微调 */
-			motion->cmd.vx_mps = vx;
-			/* 段表已跑完 ⇒ mf_tick 当拍 cmd 恒 0; 置位后下一拍 mf_tick 不清轮速环积分,
-			 * 环才有 I 项去穿透静摩擦/履带起步门槛(见 mf_motion.h 的 cmd_ext_hold) */
-			motion->cmd_ext_hold = 1u;
-#else
-			Tracking_HoldStill(motion);   /* 只判定不移动(v2.5.2 旧行为) */
-#endif
-			if (absolute_error >= TRACKING_ERROR_THRESHOLD)
-			{
-				tracking.hold_ms = 0u;
-				/* 微调在动 ⇒ 用"进展判据"(停滞/发散才计时), 收敛慢不误判 */
-				Tracking_AimFaultWatch(absolute_error);
-				return 1u;
-			}
-			tracking.aim_bad_ms = 0u;
-			tracking.hold_ms = (uint16_t)(tracking.hold_ms + CAR_TASK_MS);
-			if (tracking.hold_ms >= TRACKING_HOLD_TIME_MS)
-			{
-				Tracking_HoldStill(motion);
-				Tracking_Goto(TRACKING_LOCKED);
-				Car_Event_Send(CAR_EVT_TRACKING_DONE, 0u, 0x00u);   /* 咬中且稳定 = 可发射 */
-			}
-			return 1u;
-		}
-		Tracking_HoldStill(motion);    /* vx=0: 已到位, 原地精瞄(ROTATE 旋转瞄, 原逻辑) */
-		Tracking_WriteYaw(motion);     /* wz 归跟瞄 */
-		if (absolute_error >= TRACKING_ERROR_THRESHOLD)
-		{
-			tracking.hold_ms = 0u;
-			Tracking_AimFaultWatch(absolute_error);   /* 停滞才置 FAULT, 在收敛不清零 */
-			return 1u;
-		}
-		tracking.aim_bad_ms = 0u;
+	/* ---- J1 兜底: 阈值 + 驻留(整段 e 都不换号时兜住) ----
+	 * 与 J2 同门槛: 只在咬靶区内计数 —— 否则段起点的误检(锁错目标 ⇒ e≈0)会把车从起步刹死 */
+	if ((abs_e <= TRACKING_ERROR_THRESHOLD) && (Tracking_InSlowZone(motion) != 0u))
+	{
 		tracking.hold_ms = (uint16_t)(tracking.hold_ms + CAR_TASK_MS);
 		if (tracking.hold_ms >= TRACKING_HOLD_TIME_MS)
 		{
-			Tracking_HoldStill(motion);
-			Tracking_Goto(TRACKING_LOCKED);
-			Car_Event_Send(CAR_EVT_TRACKING_DONE, 0u, 0x00u);   /* 到位且收敛 = 可发射 */
+			Tracking_BrakeStart(motion);
 		}
-		return 1u;
+	}
+	else
+	{
+		tracking.hold_ms = 0u;
 	}
 
-	/* APPROACH: 速度权归段表(vx 一律不碰), 跟瞄只写 wz */
-	tracking.hold_ms = 0u;
-	Tracking_WriteYaw(motion);
-	return 1u;
+	/* ---- 未收敛 FAULT(01): 段表已完 + |e| 持续超阈; 闩锁防重复上报 ---- */
+	if ((done != 0u) && (abs_e > TRACKING_ERROR_THRESHOLD))
+	{
+		tracking.noconv_ms = (uint16_t)(tracking.noconv_ms + CAR_TASK_MS);
+		if ((tracking.noconv_latch == 0u) && (tracking.noconv_ms >= TRACKING_NOCONV_MS))
+		{
+			tracking.noconv_latch = 1u;
+			Tracking_RaiseFault(TRK_FAULT_NOT_CONVERGED);   /* 01: 到位后长时间未收敛 */
+			return 1u;
+		}
+	}
+	else
+	{
+		tracking.noconv_ms = 0u;
+	}
+
+	return 0u;   /* ARMED 不写 vx/wz: 段表全权 */
 }
 
 static void Nav_Fault(void)
@@ -1141,11 +1011,10 @@ void Car_Nav_Task(void)
 		float d1 = m->wheel[1].delta_m;
 		float d = (d0 < 0.0f ? -d0 : d0) + (d1 < 0.0f ? -d1 : d1);
 
-		if ((tracking.state == TRACKING_AIM) || (tracking.state == TRACKING_LOCKED) ||
-		    (tracking.state == TRACKING_FAULT) || (tracking.state == TRACKING_STAND))
+		if ((tracking.state == TRACKING_STOPPED) || (tracking.state == TRACKING_FAULT))
 		{
-			/* 有意停才豁免堵转(AIM/LOCKED/FAULT/STAND): STAND 是"按误差刹停等发射",
-			 * 段表还在跑而车被压零, 不豁免会在 3s 后误报 NAV_FAULT 把整段打断 */
+			/* 有意停才豁免堵转: STOPPED/FAULT 全零但段表仍在 RUN(本段没走完),
+			 * 不豁免会在 3s 后误报 NAV_FAULT 把整段打断 */
 			nav.stall_ms = 0u;
 		}
 		else if (mf_is_waiting(m) != 0u)
@@ -1229,8 +1098,7 @@ static void Tracking_RecomputeWheels(void)
 		motion->wheel[wheel_index].cmd_mps = wheel_command[wheel_index];
 		motion->wheel[wheel_index].out = mf_pid_calc(&motion->pid_wheel[wheel_index],
 		    wheel_command[wheel_index] - motion->wheel[wheel_index].speed_mps, MF_DT_S);
-		if ((motion->cmd.vx_mps == 0.0f) && (motion->cmd.wz_dps == 0.0f) &&
-		    (motion->cmd_ext_hold == 0u))
+		if ((motion->cmd.vx_mps == 0.0f) && (motion->cmd.wz_dps == 0.0f))
 		{
 			motion->wheel[wheel_index].out = 0.0f;
 			mf_pid_reset(&motion->pid_wheel[wheel_index]);
@@ -1293,9 +1161,9 @@ void Car_Debug_Stat_Print(void)
 	mf_ctx_t *m;
 
 	uint8_t  nav_state, nav_id, seg_done, trk_state, trk_found, tt_armed, tt_code;
-	uint8_t  trk_speed, trk_reason;
-	uint16_t seg_idx, trk_frame_age, trk_hold, trk_hover, trk_aim_bad, tt_ms, tt_settle;
-	int32_t  trk_aimd_mm;
+	uint8_t  trk_reason;
+	int8_t   trk_zx;
+	uint16_t seg_idx, trk_frame_age, trk_hold, tt_ms, tt_settle;
 	uint32_t trk_remain_mm;
 	uint32_t tt_tick;
 	int16_t  err_f10k;
@@ -1316,11 +1184,8 @@ void Car_Debug_Stat_Print(void)
 	err_f10k  = (int16_t)(tracking.horizontal_error_normalized * TRACKING_ERROR_FIXED_SCALE);
 	trk_frame_age = tracking.frame_age_ms;
 	trk_hold  = tracking.hold_ms;
-	trk_hover = tracking.hover_ms;
-	trk_aim_bad = tracking.aim_bad_ms;
-	trk_speed = tracking.tracking_speed_level;
+	trk_zx    = tracking.zero_sign;
 	trk_reason = tracking.fault_reason;
-	trk_aimd_mm = (int32_t)(tracking.aim_travel_m * 1000.0f);
 	trk_remain_mm = (uint32_t)(mf_path_remain_m(&m->path) * 1000.0f);
 	x_m    = pose->x_m;
 	y_m    = pose->y_m;
@@ -1344,12 +1209,11 @@ void Car_Debug_Stat_Print(void)
 	       "IRD"[nav_state & 0x03u], (unsigned)nav_id, (unsigned)seg_idx, (unsigned)seg_done,
 	       Tracking_StateChar((TrackingState_t)trk_state), err_f10k, (unsigned)trk_found,
 	       (unsigned)trk_frame_age, (unsigned)trk_hold);
-	/* ST 七态 O/A/S/M/H/L/F; RS=段表剩余里程(mm); FR=FAULT reason;
-	 * AIMD=AIM 平移微调的净位移(mm, 正=前进; 它会被下一段表首段扣掉) */
-	printf("TRK2:ST=%c SPD=%u HOVER=%u AIMBAD=%u RS=%u FR=%u AIMD=%d\r\n",
-	       Tracking_StateChar((TrackingState_t)trk_state), (unsigned)trk_speed,
-	       (unsigned)trk_hover, (unsigned)trk_aim_bad,
-	       (unsigned)trk_remain_mm, (unsigned)trk_reason, (int)trk_aimd_mm);
+	/* ST 四态 O/A/S/F; ZX=已确认误差符号(+1/-1/0); RS=段表剩余里程(mm); FR=FAULT reason */
+	printf("TRK2:ST=%c ZX=%d HOLD=%u RS=%u FR=%u E=%d F=%u AGE=%u\r\n",
+	       Tracking_StateChar((TrackingState_t)trk_state), (int)trk_zx,
+	       (unsigned)trk_hold, (unsigned)trk_remain_mm, (unsigned)trk_reason,
+	       (int)err_f10k, (unsigned)trk_found, (unsigned)trk_frame_age);
 	/* VXP=段表(含咬靶限速)当拍 vx mm/s; VXF=跟瞄叠加后 vx; OVL=跟瞄本拍是否改写了 cmd。
 	 * 判"车为什么不动": VXP>0 && VXF=0 = 跟瞄压零(看 TRK); VXP=0 = 段表没出速度(看 NAV/RS);
 	 * VXP/VXF>0 但 SL/SR≈0 = 指令到电机侧没跟(驱动/使能/编码器, 与跟瞄无关) */
@@ -1401,23 +1265,22 @@ void Car_TrkChange_Log(void)
 	       e10k, (unsigned)found, (unsigned)age, (unsigned)rs_mm);
 }
 
-/* AIM/STAND 驻停高频打点(v2.6.1, 主循环 10Hz): 专治"误差卡住不动"的定性
- * —— 光看 TRK: 迁移行只能知道换了态, 不知道是车没动、轮子没跟、还是视觉在丢帧。
- * 读法:
- *   AIMD 在涨 + SL/SR>0 → 车真在挪, 只是没咬到位(放慢/加增益/改标定)
- *   AIMD 在涨 + CL/CR>0 而 SL/SR≈0 → 轮子没跟指令(轮速环/驱动/编码器)
- *   AIMD 不涨(或 ST=H) → 状态被 HOLD 打断/视觉丢帧(AGE 与 F 会给出来) */
-void Car_AimTrace_Log(void)
+/* ARMED/STOPPED 期高频打点(主循环 10Hz, 规格 §10.6): 定性"误差卡在哪一环" ——
+ * 光看 TRK: 迁移行只能知道换了态, 不知道车在不在动、轮子跟没跟、判据卡在哪。
+ * 读法: E 在收敛 = 车真在逼近靶心; E 不动而 SL/SR>0 = 车在走但视觉没更新;
+ * CL/CR>0 而 SL/SR≈0 = 指令到电机侧没跟(轮速环/驱动/编码器); BRK=1 = 已触发制动 */
+void Car_TrkDetail_Log(void)
 {
 	static uint32_t trace_tick = 0u;
 	uint32_t now = HAL_GetTick();
-	uint8_t  st_trk, found, ovl;
-	uint16_t age;
-	int32_t  e10k, aimd_mm, cl, sl, cr, sr, ol, orr;
+	uint8_t  st_trk, brk;
+	int8_t   zx;
+	uint16_t hold;
+	int32_t  e10k, cl, sl, cr, sr;
 
-	if ((tracking.state != TRACKING_AIM) && (tracking.state != TRACKING_STAND))
+	if ((tracking.state != TRACKING_ARMED) && (tracking.state != TRACKING_STOPPED))
 	{
-		return;   /* 只在驻停/错停阶段打点 */
+		return;   /* 只在跟瞄介入期打点 */
 	}
 	if ((uint32_t)(now - trace_tick) < 100u)
 	{
@@ -1427,23 +1290,20 @@ void Car_AimTrace_Log(void)
 
 	__disable_irq();
 	st_trk = (uint8_t)tracking.state;
-	found  = tracking.target_found_flag;
-	age    = tracking.frame_age_ms;
 	e10k   = (int32_t)(tracking.horizontal_error_normalized * TRACKING_ERROR_FIXED_SCALE);
-	aimd_mm = (int32_t)(tracking.aim_travel_m * 1000.0f);
+	zx     = tracking.zero_sign;
+	hold   = tracking.hold_ms;
+	brk    = tracking.braking;
 	cl = (int32_t)(mf_app()->wheel[0].cmd_mps * 1000.0f);
 	sl = (int32_t)(mf_app()->wheel[0].speed_mps * 1000.0f);
 	cr = (int32_t)(mf_app()->wheel[1].cmd_mps * 1000.0f);
 	sr = (int32_t)(mf_app()->wheel[1].speed_mps * 1000.0f);
-	ovl = dbg_ovl;
-	ol = (int32_t)(mf_app()->wheel[0].out * 100.0f);   /* 轮速环输出(duty %) */
-	orr = (int32_t)(mf_app()->wheel[1].out * 100.0f);
 	__enable_irq();
 
-	printf("AIMT:ST=%c E=%d AIMD=%d OVL=%u F=%u AGE=%u CL=%d SL=%d CR=%d SR=%d OL=%d OR=%d\r\n",
-	       Tracking_StateChar((TrackingState_t)st_trk), (int)e10k, (int)aimd_mm,
-	       (unsigned)ovl, (unsigned)found, (unsigned)age,
-	       (int)cl, (int)sl, (int)cr, (int)sr, (int)ol, (int)orr);
+	printf("TRKD:ST=%c E=%d ZX=%d HOLD=%u BRK=%u CL=%d SL=%d CR=%d SR=%d\r\n",
+	       Tracking_StateChar((TrackingState_t)st_trk), (int)e10k, (int)zx,
+	       (unsigned)hold, (unsigned)brk,
+	       (int)cl, (int)sl, (int)cr, (int)sr);
 }
 
 /* 段切换观测(替代原 mf_path.c 库层内的 printf): 库层打印 + 经 mf_tick 在
