@@ -1,0 +1,4 @@
+# μVision 回写工程文件时一律用 LF, 而 core.autocrlf=true 会在检出时改成 CRLF ——
+# 结果每次 IDE 保存后整个 uvprojx/uvoptx 都显示 modified。标记 -text 关掉转换。
+*.uvprojx -text
+*.uvoptx -text

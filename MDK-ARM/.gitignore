@@ -2,3 +2,5 @@
 *_build_log.txt
 *.uvguix.*
 *.uvguix
+*.__i
+*._ac
