@@ -20,6 +20,7 @@
 #include "nav_turntable.h"
 #include "nav_tracking.h"
 #include "nav_task.h"
+#include "car_obs.h"
 
 /* 协议码表(FRAME_TYPE_* / CAR_SUB_* / CAR_EVT_* / CAR_FAULT_* / TRK_AXIS_* /
  * TRK_FAULT_*)已下沉到 App/car_protocol.h: 那是零依赖契约头, 否则 nav_* 子模块
@@ -50,11 +51,9 @@ extern Yaw_TypeDef Yaw_struct;
 
 void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);  /* interurp.c */
 
-void Car_Debug_Stat_Print(void);   /*'. '?'/p 周期: 四行状态块(CHASSIS/WHEEL/POSE/WTBL) */
-void Car_SegChange_Log(void);      /* 主循环: seg_index/state 变化时打一行 SEG(原库层 ISR printf) */
-void Car_ArcExit_Log(void);        /* 主循环: 每条 ARC 段跑完打一行 ARC(出口横向/航向偏差) */
-void Car_TrkChange_Log(void);      /* 主循环: 跟瞄状态迁移(四态机)打一行 TRK:旧>新 */
-void Car_TrkDetail_Log(void);      /* 主循环: ARMED/STOPPED 期 10Hz 打点 TRKD(判误差卡哪) */
+/* 观测层(Car_Debug_Stat_Print / Car_SegChange_Log / Car_ArcExit_Log /
+ * Car_TrkChange_Log / Car_TrkDetail_Log)已迁到 App/car_obs.h —— 那是全工程唯一的
+ * printf 出口, 经上面 include 仍对本文件及外部可见 */
 
 void ConfigHWT101(void);
 

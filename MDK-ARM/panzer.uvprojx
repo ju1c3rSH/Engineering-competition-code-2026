@@ -828,6 +828,16 @@
               <FileType>5</FileType>
               <FilePath>..\App\nav_task.h</FilePath>
             </File>
+            <File>
+              <FileName>car_obs.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\car_obs.c</FilePath>
+            </File>
+            <File>
+              <FileName>car_obs.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\car_obs.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

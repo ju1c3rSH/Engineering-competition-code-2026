@@ -36,6 +36,7 @@
 "panzer\nav_turntable.o"
 "panzer\nav_tracking.o"
 "panzer\nav_task.o"
+"panzer\car_obs.o"
 "panzer\mf_motion.o"
 "panzer\mf_path.o"
 "panzer\mf_odom.o"
