@@ -23,9 +23,11 @@ void Car_Obs_SetVx(int16_t path_mm, int16_t final_mm, uint8_t overlay)
 	dbg_ovl         = overlay;
 }
 
-/* USART2 调试口状态块/打印('?'/p 周期): main 上下文, 关中断抓 nav/wheel
- * 快照防 TIM4 写入中途读到混合值。仅调试显示, 单字级撕裂容忍, 不进控制路径。
- * 原 9 参 Car_Debug_Snapshot 一并内聚于此(printf 本身仍在 main 上下文) */
+/* USART2 调试口状态块/打印('?'/p 周期): main 上下文, 原 9 参 Car_Debug_Snapshot
+ * 一并内聚于此(printf 本身仍在 main 上下文)。仅调试显示, 不进控制路径。
+ * 【已知偏离 D-1, 已裁决记账不修】本函数分四次取样(2 个 GetInfo + nav 2 次裸读 +
+ * 下方 wheel 窗口), 不像基线那样共用一个关中断窗口 → 各字段可能跨 TIM4 拍,
+ * 偶发"新 NAV 配旧 SEG"式自相矛盾读数。量级与修复方案: 施工说明 §8 D-1 */
 void Car_Debug_Stat_Print(void)
 {
 	extern volatile uint32_t Dbg2_TxFail_Cnt;   /* stm32f4xx_it.c: 调试口链路健康计数 */
@@ -47,10 +49,11 @@ void Car_Debug_Stat_Print(void)
 	Tt_Info_t tti;
 	Trk_Info_t tri;
 
-	/* 转台/跟瞄快照: 自带临界区, 不能放进下面那个关中断块(否则会提前开中断) */
+	/* 快照四次取样的前三段(见函数头 D-1): ①② 的 GetInfo 自带临界区, 塞进下方关中断块
+	 * 会被它内部的 __enable_irq() 提前放行 TIM4; ③ 两次裸读单字节原子但无窗口保护。
+	 * 修复(D-1): 改调 Turntable_GetInfoRaw/Tracking_GetInfoRaw, 与下方窗口合为一个 */
 	Turntable_GetInfo(&tti);
 	Tracking_GetInfo(&tri);
-	/* 与下面的 wheel 快照不保证同一拍(观测层容忍, 不进控制路径) */
 	nav_state = Nav_GetState();
 	nav_id    = Nav_GetId();
 
@@ -118,7 +121,8 @@ void Car_Debug_Stat_Print(void)
 	       (unsigned)Dbg2_TxFail_Cnt, (unsigned)Dbg2_RxErr_Cnt);
 }
 
-/* 跟瞄状态迁移打点(主循环): Tracking_Goto 在 ISR 只登记, 这里打一行 */
+/* 跟瞄状态迁移打点(主循环): Tracking_Goto 在 ISR 只登记, 这里打一行。
+ * 同 D-1: 迁移记录/跟瞄快照/剩余里程分三次取样(基线共用一个窗口), 可能跨拍 */
 void Car_TrkChange_Log(void)
 {
 	uint8_t from, to;
@@ -143,7 +147,8 @@ void Car_TrkChange_Log(void)
 /* ARMED/STOPPED 期高频打点(主循环 10Hz, 规格 §10.6): 定性"误差卡在哪一环" ——
  * 光看 TRK: 迁移行只能知道换了态, 不知道车在不在动、轮子跟没跟、判据卡在哪。
  * 读法: E 在收敛 = 车真在逼近靶心; E 不动而 SL/SR>0 = 车在走但视觉没更新;
- * CL/CR>0 而 SL/SR≈0 = 指令到电机侧没跟(轮速环/驱动/编码器); BRK=1 = 已触发制动 */
+ * CL/CR>0 而 SL/SR≈0 = 指令到电机侧没跟(轮速环/驱动/编码器); BRK=1 = 已触发制动。
+ * 同 D-1: tri 与 wheel 分两次取样(基线共用一个窗口), 可能跨拍 → 上述读法会被误导 */
 void Car_TrkDetail_Log(void)
 {
 	static uint32_t trace_tick = 0u;
