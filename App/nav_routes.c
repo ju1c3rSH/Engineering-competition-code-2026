@@ -51,7 +51,7 @@ static const mf_seg_t tbl_bucket[] =      /* NAV_TO_BUCKET: 桶与排爆作业�
  * 推导(E≈2300 反解/窗口公式)与验证法: docs/坑-运动与导航.md §6 */
 static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 */
 {
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(220.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(218.0f)),
 	SEG_END
 };
 static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区(末段直线+重锚移入 rebase 表) */
@@ -70,11 +70,11 @@ static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口
 };
 /* ---- 返程段 / 终点的绝对航向: 任务终点 YAW 严格 -180° ----
  * -180° 是几何真值: 扫码 GYRO_ZERO 定义出发朝向 0°、首段沿它走 ⇒ -180° = 严格反向。
- * NAV_RETURN_TRIM_DEG 标定: trim = ΔY / 93.2 (ΔY=终点 POSE.Y − 标称终点 Y; 93.2=5341mm×π/180)
- * 填完跑一趟看实物: 残余偏差变小则对, 变大就翻符号重跑(一次即定)。
+ * ⚠ **段表里只允许出现几何量**。基准系与真实几何之间的固定偏差(以前塞在这里的
+ * NAV_RETURN_TRIM_DEG=1.8)已收口到 MF_HEADING_BIAS_DEG 一个旋钮上(mf_config.h):
+ * 三个散落的静态补偿混在几何常量里分不出"几何错"还是"补偿", 且实测证明不能互推。
  * 推导/±180° 卷绕/完赛区要求: docs/坑-运动与导航.md §6 + Motion/README.md「返程与终点航向」 */
-#define NAV_RETURN_TRIM_DEG        (1.8f)
-#define NAV_RETURN_LEG_YAW_DEG     (-180.0f + NAV_RETURN_TRIM_DEG)
+#define NAV_RETURN_LEG_YAW_DEG     (-180.0f)
 #define NAV_RETURN_FINAL_REBASE_EN 1u
 
 static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 */
@@ -85,11 +85,13 @@ static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 
 #endif
 	SEG_END
 };
-/* 重锚角 = 几何标称 + 台架标定补偿。标定: 车跑到该点、臂对准目标时读 '?' 的 POSE: YAW, 直接填进来;
- * 改了任何影响耗时的行为(ARC 几何 / 标称航向 / 减速 / 停等)后需重标 */
-#define NAV_REBASE_BOMB_YAW_DEG     (-89.5f)
-/* 返程重锚角 = 几何标称 -180.0 */
-#define NAV_REBASE_RETURN_YAW_DEG   (-179.5f) //如果最后有偏，可以改这个
+/* 重锚角 = 几何真值(-90.0)。**不要再往这里塞补偿** —— 补偿统一走 MF_HEADING_BIAS_DEG。
+ * 旧值 -90.3 / -89.5 是台架标定残差: 它随"跑了多久、改了什么行为"变, 且与 -180 那处
+ * 符号相反、不能互推(Motion/README.md §11.5 的 K5)。单基准航向下整条路线是刚性旋转,
+ * 一个 bias 就够; 段表里保持纯几何才能把误差归因到唯一一个数上 */
+#define NAV_REBASE_BOMB_YAW_DEG     (-90.0f)
+/* 返程重锚角 = 几何真值 -180.0(旧标定值 -179.8 / -179.5 已作废) */
+#define NAV_REBASE_RETURN_YAW_DEG   (-180.0f)
 
 static const mf_seg_t tbl_rebase_bomb[] =   /* NAV_REBASE_BOMB: 排爆区末段(原 tbl_bomb 表尾)+绝对航向重锚;
                                              * 末段转弯与低速直线挪进本表, 与转盘 90° 扫描位并行 —— 入口
@@ -98,10 +100,10 @@ static const mf_seg_t tbl_rebase_bomb[] =   /* NAV_REBASE_BOMB: 排爆区末段(
                                              * nav_entry_turn[6] 置 0 = 主控 NAV_DONE 后再发(=串行) */
 {
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),      /* 右 90: 原 tbl_bomb 表尾转弯 */
-	SEG_MOVE(MF_M_SPEED(Low_speed),    MF_M_DIST(47.0f)),/* 末段低速进作业点 */
+	SEG_MOVE(MF_M_SPEED(Low_speed),    MF_M_DIST(49.0f)),/* 末段低速进作业点 */
 	SEG_TURN_TO(NAV_REBASE_BOMB_YAW_DEG),                /* 对坑前重锚: 五个闭环 90° 弧的终点。
-	                                                      * 标定项, 含 IMU 累积漂移补偿 —— 见上面
-	                                                      * NAV_REBASE_BOMB_YAW_DEG 的说明与重新标定方法 */
+	                                                      * 几何真值, 不掺补偿 —— 基准偏差统一走
+	                                                      * MF_HEADING_BIAS_DEG(见其定义处注释) */
 	SEG_END
 };
 static const mf_seg_t tbl_rebase_return[] = /* NAV_REBASE_RETURN: flag17 携人质返程前重锚 */
