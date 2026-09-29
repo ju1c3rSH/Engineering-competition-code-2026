@@ -21,7 +21,7 @@
 #include "usart.h"
 
 /* USER CODE BEGIN 0 */
-
+#include "car_config.h"   /* DEBUG_IRQ_PRIO: 调试口优先级(必须低于 TIM4 控制拍) */
 /* USER CODE END 0 */
 
 UART_HandleTypeDef huart4;
@@ -258,8 +258,8 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
 
     __HAL_LINKDMA(uartHandle,hdmarx,hdma_usart2_rx);
 
-    /* USART2 interrupt Init */
-    HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
+    /* USART2 interrupt Init: 调试口, 优先级必须低于 TIM4(1)/TIM5(2) —— 见 DEBUG_IRQ_PRIO */
+    HAL_NVIC_SetPriority(USART2_IRQn, DEBUG_IRQ_PRIO, 0);
     HAL_NVIC_EnableIRQ(USART2_IRQn);
   /* USER CODE BEGIN USART2_MspInit 1 */
 

@@ -586,9 +586,15 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 }
 
 
+/* 调试口逐字符轮询发送(不关中断 ⇒ 只拖主循环, 不拖 TIM4 控制拍)。
+ * 返回值必须接上 Dbg2_TxFail_Cnt: LINK 行的 TF= 是"日志空档到底是发不出去、还是压根没
+ * 生成"的唯一依据 —— 丢了它这个诊断口等于不存在(2026-09-29 修复)。 */
 int fputc(int ch , FILE *f)
 {
-	HAL_UART_Transmit(&huart2 , (uint8_t *)&ch , 1 , 10);
+	if (HAL_UART_Transmit(&huart2 , (uint8_t *)&ch , 1 , 10) != HAL_OK)
+	{
+		Dbg2_TxFail_Cnt++;
+	}
 	return ch;
 }
 

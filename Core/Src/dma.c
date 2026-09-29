@@ -22,7 +22,7 @@
 #include "dma.h"
 
 /* USER CODE BEGIN 0 */
-
+#include "car_config.h"   /* DEBUG_IRQ_PRIO: 调试口优先级(必须低于 TIM4 控制拍) */
 /* USER CODE END 0 */
 
 /*----------------------------------------------------------------------------*/
@@ -56,8 +56,8 @@ void MX_DMA_Init(void)
   /* DMA1_Stream4_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream4_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
-  /* DMA1_Stream5_IRQn interrupt configuration (USART2_RX 调试口) */
-  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+  /* DMA1_Stream5_IRQn interrupt configuration (USART2_RX 调试口, 随 USART2 一起低于控制拍) */
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, DEBUG_IRQ_PRIO, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
   /* DMA2_Stream1_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 0, 0);

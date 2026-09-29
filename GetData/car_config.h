@@ -24,4 +24,9 @@
 #define NAV_CHAIN_4_TO           8u   /* NAV_TO_HOSTAGE(4) 跑完自动续跑 NAV_REBASE_HOSTAGE(8) */
 #endif
 
+/* 调试口(USART2 与它的 RX DMA)的抢占优先级。必须低于控制拍 TIM4(1) 与转台 TIM5(2):
+ * 调试口是纯观测通道, 不该抢占 10ms 控制环。UART4(底盘链路)/USART3(HWT101)/USART6(转台)
+ * 是控制链路, 保持 0。usart.c 与 dma.c 两处都取这一个宏 —— 单点改 */
+#define DEBUG_IRQ_PRIO           3u
+
 #endif
