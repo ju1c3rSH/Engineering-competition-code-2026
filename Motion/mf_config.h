@@ -105,16 +105,19 @@
 #endif
 
 /* ============ 差速前馈补偿 = 转弯半径旋钮（实车标定项） ============ */
-/* 标定: 跑一趟看串口 ARC:<段> EY=<mm> —— 左转弧 EY 仍 >0 就按 1+EY/942.5 调大 POS,
- * EY 变负(往内切)即过头, 调回; 右转同理用 NEG。目标 |EY| < 20mm。置 EN=0 = A/B */
+/* 标定: 跑一趟看串口 ARC:<段> EY=<mm> —— EY 仍 >0(弧外) 就按 boost×(1+EY/942.5) 调大,
+ * EY 变负(切内)即过头调回。目标 |EY| < 20mm。置 EN=0 = A/B。该式是**相对修正**、
+ * 无量纲，故不受 EY 的 pose 比例误差影响; 但"绝对半径"仍须卷尺/arc_radius_probe 复核
+ * 2026-09-29 复标(18 弧, 3 次运行): 左 +74.2 / 右 +68.8 mm, sd 2.8, 18/18 同号且已左右对称
+ * ⇒ POS 1.12→1.21 / NEG 1.16→1.25。推导与旧值来历: Motion/README.md §5 */
 #ifndef MF_DIFF_BOOST_EN
 #define MF_DIFF_BOOST_EN    1
 #endif
 #ifndef MF_DIFF_BOOST_POS
-#define MF_DIFF_BOOST_POS   1.12f    /* 左转（wz_dps >= 0）差速放大 */
+#define MF_DIFF_BOOST_POS   1.21f    /* 左转（wz_dps >= 0）差速放大 */
 #endif
 #ifndef MF_DIFF_BOOST_NEG
-#define MF_DIFF_BOOST_NEG   1.16f    /* 右转（wz_dps <  0）差速放大 */
+#define MF_DIFF_BOOST_NEG   1.25f    /* 右转（wz_dps <  0）差速放大 */
 #endif
 
 /* ============ 直线段航向基准（置 1 = 走路径标称航向，置 0 = 保持进段实测航向） ============ */
