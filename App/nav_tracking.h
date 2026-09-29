@@ -26,11 +26,15 @@ typedef enum
 } TrackingState_t;
 
 /* ---- v3.0 打靶段: 刹停/续跑 (零标定; 下列系数均为经验值, 不需测任何物理量) ----
- * 判据主用 J2 过零(车从靶心旁经过那一拍), J1 阈值+驻留兜底(整段符号不换号时);
- * 进近在咬靶区用固定低速, 保证制动距离可控。完整规格见
- * docs/打靶段架构-刹停与续跑.md §10 */
-#define TRACKING_ERROR_THRESHOLD        0.03f   /* ±300 定点: J1 兜底阈 + "未收敛"判定阈 */
-#define TRACKING_HOLD_TIME_MS           500u    /* J1: |e|≤阈 连续这么久即触发刹停 */
+ * 2026-09-29 起判据主用 **J1 提前点火**: |e| 一进 ±阈 就刹, 不等符号翻转 —— 过零是
+ * "已经冲过靶心才知道", 会把整个停止距离留在靶心之后; 提前一个停止距离点火才停在靶心。
+ * J2 过零退为兜底(万一整帧漏过阈值窗)。进近在咬靶区用固定低速, 制动距离可控。
+ * 完整规格与实测: docs/打靶段架构-刹停与续跑.md §10/§11 */
+#define TRACKING_ERROR_THRESHOLD        0.03f   /* ±300 定点: J1 提前点火阈 + "未收敛"判定阈 */
+/* 提前点火去抖: 连续这么久 |e|≤阈 才刹。按"帧数"读比按"时长"读好: 帧周期 30ms 时
+ * 40ms≈2 帧、17ms 时≈3 帧 —— 帧率越高反而越抗噪。旧的 500/300 是当"收敛驻留"用的,
+ * 结果是车一路冲过靶心才刹(现场 TRK:A>S 几乎不出现)。实测 300→40 使过冲 78→26mm */
+#define TRACKING_HOLD_TIME_MS           40u
 #define TRACKING_FRAME_TIMEOUT_MS       500u    /* 误差帧超时: 超时视为无测量 */
 #define TRACKING_ZERO_DEADBAND          0.002f  /* 过零死区: |e| 小于它不计符号(挡噪声) */
 #define TRACKING_ZERO_CONFIRM_N         2u      /* 符号去抖: 连续 N 帧同号才更新"已确认符号" */
@@ -38,8 +42,15 @@ typedef enum
                                       * 都只在这段内生效。2026-09-27 由 1.5→2.5(靶心落在"段尾往前
                                       * 0~1.2m", 窗口 2.5m 才对 d 的跨趟波动 0.5~1.2m 免疫)。
                                       * 推导与时间账: docs/打靶段架构-刹停与续跑.md §10.10 */
-#define TRACKING_SLOW_MPS               0.20f   /* 咬靶区固定低速(替代按 |e| 成比例的限速) */
-#define TRACKING_BRAKE_MPS2             2.0f    /* 触发后的制动减速度(压 cur_speed 用) */
+/* 咬靶区固定低速。**实跑速度 = 本值 + acc·dt**(段表每拍在限速之后再沿加速度抬头一次,
+ * mf_path.c 的 seg_speed_ramp) = 0.474m/s。停点超调 ≈ 滞后(链路+判据)×v + v²/(2·BRAKE):
+ * 只算判据滞后是 82~108mm, 按三级链路时序算进去约 **+134mm**(0.20 时 +51mm) —— 2026-09-28 提速时
+ * 主动接受的取舍; 0.45 与"低滞后"是同一个旋钮的两端, 打破耦合要改成提前判(预测式)。
+ * 账: build_verify/tracking_v3_approach_sim.py(无链路) + tracking_v3_lag_budget.py(含链路) */
+#define TRACKING_SLOW_MPS               0.45f
+/* 触发后的制动减速度(压 cur_speed 用)。2026-09-29 由 2.0 提到 4.0: 制动距离 v²/(2a)
+ * 从 56mm 降到 28mm。再往上(6.0)可再省约 13mm, 但要先确认履带不打滑、母线不塌 */
+#define TRACKING_BRAKE_MPS2             4.0f
 #define TRACKING_NOCONV_MS              500u    /* 段表已完 + |e|>阈 持续这么久 → FAULT(01) */
 #define TRACKING_LOST_DONE_MS           1500u   /* 段表已完 + 无测量 持续这么久 → FAULT(02) */
 

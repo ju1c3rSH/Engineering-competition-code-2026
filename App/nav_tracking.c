@@ -13,7 +13,7 @@ static struct
 	float    horizontal_error_normalized;  /* 最新归一化横向误差, 约 -1~+1 */
 	uint8_t  target_found_flag;            /* 最新有效标志 */
 	uint16_t frame_age_ms;                 /* 距上次有效误差帧时长 */
-	uint16_t hold_ms;                      /* J1 兜底: |e|≤阈 的连续累计 */
+	uint16_t hold_ms;                      /* J1 提前点火: |e|≤阈 的连续累计 */
 	int8_t   zero_sign;                    /* 已确认误差符号(+1/-1/0=未确认), 过零判据的基准 */
 	int8_t   sign_cand;                    /* 去抖候选符号 */
 	uint8_t  confirm_cnt;                  /* 去抖: 候选符号连续同号帧数 */
@@ -338,7 +338,9 @@ uint8_t Tracking_ApplyOverlay(void)
 	}
 	tracking.lost_ms = 0u;
 
-	/* ---- J2 过零(主判据): 符号翻转那一拍 = 车刚从靶心旁经过 ----
+	/* ---- J2 过零(兜底): 符号翻转那一拍 = 车刚从靶心旁经过 ----
+	 * 2026-09-29 起它退为兜底 —— 正常时下面 J1 已经提前点火, 走不到这里;
+	 * 留着是为了"整帧漏过阈值窗"(如某帧 |e| 恰好跳过去)时仍能刹住。
 	 * 去抖: 连续 TRACKING_ZERO_CONFIRM_N 帧同号才认; 死区挡小噪声 */
 	{
 		int8_t s = (e > TRACKING_ZERO_DEADBAND) ? 1 : ((e < -TRACKING_ZERO_DEADBAND) ? -1 : 0);
@@ -369,7 +371,9 @@ uint8_t Tracking_ApplyOverlay(void)
 		}
 	}
 
-	/* ---- J1 兜底: 阈值 + 驻留(整段 e 都不换号时兜住) ----
+	/* ---- J1 提前点火(主判据, 2026-09-29): |e| 一进 ±阈 就刹, 不等符号翻转 ----
+	 * 提前量 = 停止距离(v·链路滞后 + v²/(2·BRAKE))折算到 e 域; 用 |e| 直接比, 不引入
+	 * 第二个几何标定。去抖按帧读(见 TRACKING_HOLD_TIME_MS 注释)。
 	 * 与 J2 同门槛: 只在咬靶区内计数 —— 否则段起点的误检(锁错目标 ⇒ e≈0)会把车从起步刹死 */
 	if ((abs_e <= TRACKING_ERROR_THRESHOLD) && (Tracking_InSlowZone(motion) != 0u))
 	{
