@@ -93,6 +93,19 @@
 #define MF_ARC_XTRACK_K      250.0f
 #endif
 
+/* ============ 里程计弧长反解的生效门限（实车标定项） ============ */
+/* ds_for_xy = ds_enc × (dyaw_imu / dtheta_enc) 只在**真转弯**时可信：直线段航向纠偏的
+ * wz 仅几 dps, dyaw 小到与 IMU 读数分辨率同级而 dtheta_enc 是编码器小量 ⇒ 退化成
+ * "噪声除小量", 撞 2.0 限幅那一拍里程凭空翻倍。门限取弧线工作点(43dps)下方 2.5 倍:
+ * 弧线速度降到当前 40% 以下时本反解会停用, 如需更慢的弧就把门限等比调小。
+ * 机理与实测: docs/坑-编码器与里程.md §3.2 */
+#ifndef MF_ODOM_RATIO_MIN_DYAW_DEG
+#define MF_ODOM_RATIO_MIN_DYAW_DEG    0.17f    /* 每拍最小 IMU 转角 deg */
+#endif
+#ifndef MF_ODOM_RATIO_MIN_DTHETA_RAD
+#define MF_ODOM_RATIO_MIN_DTHETA_RAD  3.0e-3f  /* 每拍最小编码器几何转角 rad */
+#endif
+
 /* ================= 段间残差结转（置 0 = 原行为；本项目不推荐开） ================= */
 /* 开后 MOVE 完成判据改用"累计名义目标"(残差结转), 需"相邻 MOVE 段"拓扑才有效 */
 #ifndef MF_SEG_CARRY_EN
