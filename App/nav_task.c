@@ -10,7 +10,9 @@
 #include "mf_path.h"
 
 #define NAV_STALL_MS           3000u
-#define NAV_STALL_DELTA_M      0.001f
+/* 单拍两轮位移绝对值之和低于此值即视为没动。2026-09-29 随口径去 π ÷π(0.001→0.000318):
+ * 口径 m 缩 π 倍, 不换算等于把"算不算动了"的门槛抬高 π 倍 */
+#define NAV_STALL_DELTA_M      0.000318f
 
 /* nav_id 的"无"哨兵。必须 != 任何合法 nav_id(0~8): nav 是 static 零初始化,
  * 用 0 当哨兵会让上电后第一条 REQ_NAV(0) 被误判成"已跑完" */

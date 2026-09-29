@@ -16,9 +16,10 @@ void CarSense_Sample(void)
 	Gat_Motor_data(Motor_1);
 
 	/* 180° 旋转：框架左 = 物理右 = Motor_0；框架右 = 物理左 = Motor_1
-	 * 框架正向 = 物理后退，所以编码器取反 */
-	snap.wheel_dist_m[0] = -motors[Motor_0].Parameter.Pos * (M_PI_F * WHEEL_DIA_M);
-	snap.wheel_dist_m[1] = -motors[Motor_1].Parameter.Pos * (M_PI_F * WHEEL_DIA_M);
+	 * 框架正向 = 物理后退，所以编码器取反。
+	 * 尺度与命令侧的 MF_M_* 共用 WHEEL_TRAVEL_PER_REV_M(去掉 π 前两边同乘, 车走对但读数偏大 π 倍) */
+	snap.wheel_dist_m[0] = -motors[Motor_0].Parameter.Pos * WHEEL_TRAVEL_PER_REV_M;
+	snap.wheel_dist_m[1] = -motors[Motor_1].Parameter.Pos * WHEEL_TRAVEL_PER_REV_M;
 	snap.yaw_deg = Yaw_struct.Yaw;
 	snap.seq++;
 }

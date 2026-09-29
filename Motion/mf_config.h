@@ -53,17 +53,18 @@
 #define MF_DT_S             0.01f   /* 控制周期，panzer TIM4 为 10ms */
 #endif
 
-/* 速度斜坡默认加速度（m/s^2）与角加速度（deg/s^2） */
+/* 速度斜坡默认加速度（m/s^2）与角加速度（deg/s^2）。
+ * m/s^2 是口径尺度(与速度同源), 2026-09-29 去 π 后 ÷π 才保持"拉满所需时间"不变 */
 #ifndef MF_DEFAULT_ACC
-#define MF_DEFAULT_ACC      1.5f
+#define MF_DEFAULT_ACC      0.477f
 #endif
 #ifndef MF_DEFAULT_ANG_ACC
 #define MF_DEFAULT_ANG_ACC  180.0f
 #endif
 
-/* 到点判据默认阈值 */
+/* 到点判据默认阈值。单位已随口径去 π(2026-09-29), 值同 ÷π 才等价 */
 #ifndef MF_TOL_DIST_M
-#define MF_TOL_DIST_M       0.02f    /* 2cm */
+#define MF_TOL_DIST_M       0.0064f  /* = 去 π 前的 2cm */
 #endif
 #ifndef MF_TOL_YAW_DEG
 #define MF_TOL_YAW_DEG      1.0f
@@ -71,7 +72,7 @@
 
 /* 到位余量: 行程/航向类判据带小余量收口, 避免减速末端里程量化导致永远差一点 */
 #ifndef MF_TOL_ARRIVE_M
-#define MF_TOL_ARRIVE_M     0.008f   /* 8mm */
+#define MF_TOL_ARRIVE_M     0.0025f  /* = 去 π 前的 8mm; 别借它调终点偏差(见 Motion/README) */
 #endif
 #ifndef MF_TOL_ARRIVE_DEG
 #define MF_TOL_ARRIVE_DEG   1.0f
@@ -88,9 +89,10 @@
 #define MF_ARC_XTRACK_EN     1
 #endif
 
-/* 横向偏差增益 dps/m。调法: 0.1m 偏差 -> 25dps, 与弧线前馈 43dps 同量级, 宁小勿大 */
+/* 横向偏差增益 dps/m。调法: 0.032m 偏差 -> 25dps, 与弧线前馈 43dps 同量级, 宁小勿大。
+ * 输入 arc_ey_m 是口径尺度 ⇒ 2026-09-29 去 π 后本值 ×π(250→785) 才逐点等效 */
 #ifndef MF_ARC_XTRACK_K
-#define MF_ARC_XTRACK_K      250.0f
+#define MF_ARC_XTRACK_K      785.0f
 #endif
 
 /* ================= 段间残差结转（置 0 = 原行为；本项目不推荐开） ================= */
@@ -105,7 +107,7 @@
 #endif
 
 /* ============ 差速前馈补偿 = 转弯半径旋钮（实车标定项） ============ */
-/* 标定: 跑一趟看串口 ARC:<段> EY=<mm> —— 左转弧 EY 仍 >0 就按 1+EY/942.5 调大 POS,
+/* 标定: 跑一趟看串口 ARC:<段> EY=<mm> —— 左转弧 EY 仍 >0 就按 1+EY/300 调大 POS,
  * EY 变负(往内切)即过头, 调回; 右转同理用 NEG。目标 |EY| < 20mm。置 EN=0 = A/B */
 #ifndef MF_DIFF_BOOST_EN
 #define MF_DIFF_BOOST_EN    1

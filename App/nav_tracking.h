@@ -38,19 +38,18 @@ typedef enum
 #define TRACKING_FRAME_TIMEOUT_MS       500u    /* 误差帧超时: 超时视为无测量 */
 #define TRACKING_ZERO_DEADBAND          0.002f  /* 过零死区: |e| 小于它不计符号(挡噪声) */
 #define TRACKING_ZERO_CONFIRM_N         2u      /* 符号去抖: 连续 N 帧同号才更新"已确认符号" */
-#define TRACKING_SLOW_ZONE_M   2.5f  /* 咬靶区 = 本段**最后**这么多米(按剩余里程判): 固定低速与刹停判据
-                                      * 都只在这段内生效。2026-09-27 由 1.5→2.5(靶心落在"段尾往前
-                                      * 0~1.2m", 窗口 2.5m 才对 d 的跨趟波动 0.5~1.2m 免疫)。
+#define TRACKING_SLOW_ZONE_M   0.7958f  /* 咬靶区 = 本段**最后**这么多米(按剩余里程判): 固定低速与刹停
+                                      * 判据都只在这段内生效。2026-09-27 由 1.5→2.5; 2026-09-29 口径
+                                      * 去 π 后本群三个"口径 m/m/s"同步 ÷π, 物理含义不变。
                                       * 推导与时间账: docs/打靶段架构-刹停与续跑.md §10.10 */
 /* 咬靶区固定低速。**实跑速度 = 本值 + acc·dt**(段表每拍在限速之后再沿加速度抬头一次,
- * mf_path.c 的 seg_speed_ramp) = 0.474m/s。停点超调 ≈ 滞后(链路+判据)×v + v²/(2·BRAKE):
- * 只算判据滞后是 82~108mm, 按三级链路时序算进去约 **+134mm**(0.20 时 +51mm) —— 2026-09-28 提速时
- * 主动接受的取舍; 0.45 与"低滞后"是同一个旋钮的两端, 打破耦合要改成提前判(预测式)。
- * 账: build_verify/tracking_v3_approach_sim.py(无链路) + tracking_v3_lag_budget.py(含链路) */
-#define TRACKING_SLOW_MPS               0.45f
-/* 触发后的制动减速度(压 cur_speed 用)。2026-09-29 由 2.0 提到 4.0: 制动距离 v²/(2a)
- * 从 56mm 降到 28mm。再往上(6.0)可再省约 13mm, 但要先确认履带不打滑、母线不塌 */
-#define TRACKING_BRAKE_MPS2             4.0f
+ * mf_path.c 的 seg_speed_ramp)。停点超调 ≈ 滞后(链路+判据)×v + v²/(2·BRAKE);
+ * 0.45 与"低滞后"是同一个旋钮的两端, 打破耦合要改成提前判(预测式)。
+ * 账(数值均为去 π 前口径): build_verify/tracking_v3_approach_sim.py + tracking_v3_lag_budget.py */
+#define TRACKING_SLOW_MPS               0.1432f
+/* 触发后的制动减速度(压 cur_speed 用)。2026-09-29 由 2.0 提到 4.0: 制动距离 v²/(2a) 减半。
+ * 再往上(6.0)可再省约 1/3, 但要先确认履带不打滑、母线不塌 */
+#define TRACKING_BRAKE_MPS2             1.2732f
 #define TRACKING_NOCONV_MS              500u    /* 段表已完 + |e|>阈 持续这么久 → FAULT(01) */
 #define TRACKING_LOST_DONE_MS           1500u   /* 段表已完 + 无测量 持续这么久 → FAULT(02) */
 
