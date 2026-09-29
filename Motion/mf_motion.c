@@ -102,10 +102,11 @@ uint8_t mf_is_waiting(const mf_ctx_t *m)
     return mf_path_is_waiting(&m->path);
 }
 
-uint8_t mf_pop_arc_report(mf_ctx_t *m, uint16_t *seg_index,
-                          float *ey_m, float *yaw_err_deg)
+uint8_t mf_pop_seg_exit(mf_ctx_t *m, uint16_t *seg_index, uint8_t *kind,
+                        float *ey_m, float *in_yawerr_deg, float *out_yawerr_deg)
 {
-    return mf_path_pop_arc_report(&m->path, seg_index, ey_m, yaw_err_deg);
+    return mf_path_pop_seg_exit(&m->path, seg_index, kind,
+                               ey_m, in_yawerr_deg, out_yawerr_deg);
 }
 
 const mf_status_t *mf_get_status(mf_ctx_t *m)
@@ -119,6 +120,13 @@ void mf_set_pose(mf_ctx_t *m, float x, float y, float yaw)
 {
     mf_odom_set_pose(&m->odom, x, y, yaw);
     m->pose = m->odom.pose;
+}
+
+/* 全程唯一航向基准: 由上层在 GYRO_ZERO 那一刻调用一次(见 mf_config.h 的 MF_HEADING_FRAME_EN)。
+ * 注意它**不动 pose** —— pose.yaw 1:1 跟随 IMU(下一拍就会被覆盖), 能持久的是这个基准 */
+void mf_set_heading_ref(mf_ctx_t *m, float yaw_deg)
+{
+    mf_path_set_heading_ref(&m->path, yaw_deg);
 }
 
 const mf_pose_t *mf_get_pose(const mf_ctx_t *m)

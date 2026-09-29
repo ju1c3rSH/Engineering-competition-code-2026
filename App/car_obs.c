@@ -217,21 +217,34 @@ void Car_SegChange_Log(void)
 	       (int)x_mm, (int)y_mm, (int)yaw_d10);
 }
 
-/* 弧线出口质量(每跑完一条 ARC 打一行): EY = 出口横向偏差 mm(正=弧外侧, 负=往里切);
- * YE = 出口航向偏差 0.1°(正=车头偏向外侧切线)。判据: 单弧 |EY| 应压到 ±10mm 内 */
-void Car_ArcExit_Log(void)
+/* 段出口质量(每跑完一条 ARC / 直线 MOVE 打一行):
+ *   ARC:<段> EY=<mm> YE=<0.1°>   EY=出口横向偏差(正=弧外侧, 负=往里切); YE=出口航向偏差
+ *   LN :<段> IE=<0.1°> YE=<0.1°> IE=进段航向误差(带进来多少); YE=出口残差(纠完剩多少)
+ * 判据: 单弧 |EY| 压到 ±10mm 内; 直线 YE≈0 且 IE 不随路程增长 —— 后者是单基准航向
+ * 架构(MF_HEADING_FRAME_EN=1)的现场验收点: 旧行为下 IE 恒 0(上游误差被锁死看不见) */
+void Car_SegExit_Log(void)
 {
 	uint16_t seg;
-	float    ey, yerr;
+	uint8_t  kind;
+	float    ey, ie, oe;
 	uint8_t  got;
 
 	__disable_irq();
-	got = mf_pop_arc_report(mf_app(), &seg, &ey, &yerr);
+	got = mf_pop_seg_exit(mf_app(), &seg, &kind, &ey, &ie, &oe);
 	__enable_irq();
 
-	if (got != 0u)
+	if (got == 0u)
+	{
+		return;
+	}
+	if (kind == 0u)
 	{
 		printf("ARC:%u EY=%d YE=%d\r\n", (unsigned)seg,
-		       (int)(ey * 1000.0f), (int)(yerr * 10.0f));
+		       (int)(ey * 1000.0f), (int)(oe * 10.0f));
+	}
+	else
+	{
+		printf("LN:%u IE=%d YE=%d\r\n", (unsigned)seg,
+		       (int)(ie * 10.0f), (int)(oe * 10.0f));
 	}
 }

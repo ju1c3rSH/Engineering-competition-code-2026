@@ -49,18 +49,25 @@ typedef struct
     float arc_sgn;          /* +1=左转 / -1=右转（d_yaw 符号；与 radius 同号） */
     float arc_ey_m;         /* 本拍带符号横向偏差 m，正=弧外（诊断与横向环共用） */
 
-    /* ARC 段出口质量记录（段完成那一拍落一次，等上层取走） */
-    float arc_exit_ey_m;    /* 出口横向偏差 m，正=弧外 */
-    float arc_exit_yawerr_deg;  /* 出口航向偏差 deg，正=车头偏向弧外切线外侧 */
-    uint16_t arc_exit_seg;  /* 出口所在的段下标 */
-    uint8_t  arc_exit_new;  /* 1=有新记录待取 */
+    /* ARC 段出口质量记录（段完成那一拍落一次，等上层取走）。
+     * ARC 与直线 MOVE 共用这一套，kind 区分；直线段无名义线，ey 恒 0（见 mf_path.c） */
+    float seg_exit_ey_m;        /* ARC: 出口横向偏差 m，正=弧外 */
+    float seg_exit_yawerr_deg;  /* 出口航向偏差 deg（纠完剩多少） */
+    float seg_exit_in_yawerr_deg; /* 进段航向偏差 deg（带进来多少），仅直线段填 */
+    uint16_t seg_exit_seg;      /* 出口所在的段下标 */
+    uint8_t  seg_exit_kind;     /* 0=ARC / 1=直线 MOVE */
+    uint8_t  seg_exit_new;      /* 1=有新记录待取 */
 
     /* 路径标称航向（仅 MF_SEG_NOM_HEADING_EN=1 生效，见 mf_config.h）：
-     * 由路径几何累积 —— 起点用实测航向初始化，之后每过一条 ARC 加 d_yaw、
-     * 每过一个 TURN 赋其目标角。MOVE 段的目标航向取它，于是上游残留的航向误差
-     * 会被直线段主动纠回来，而不是被 MF_KEEP 锁定后按"航向误差×直线长度"放大 */
+     * 由路径几何累积 —— 起点用实测航向初始化(或由 mf_path_set_heading_ref 显式钉下),
+     * 之后每过一条 ARC 加 d_yaw、每过一个 TURN 赋其目标角。MOVE 段的目标航向取它，
+     * 于是上游残留的航向误差会被直线段主动纠回来，而不是被 MF_KEEP 锁定后按
+     * "航向误差×直线长度"放大 */
     float nom_yaw_deg;      /* 当前段起点处的标称航向 deg */
-    uint8_t nom_yaw_init;   /* 0=还没用实测航向定过基准（本段进段时补上） */
+    uint8_t nom_yaw_init;   /* 0=还没定过基准（本段进段时补上） */
+    uint8_t heading_ref_locked; /* 1=基准已由 mf_path_set_heading_ref() 显式钉下,
+                                 * 全程只读(跨表也不再重定锚); 见 MF_HEADING_FRAME_EN */
+    float line_in_yawerr_deg;   /* 直线段进段航向误差(带进来多少), 供出口记录对比 */
 
     /* 由运动层注入的控制器（所有权在 mf_motion） */
     mf_pid_t *pid_yaw;      /* 航向保持 / 原地转向 / 方位角 P */
@@ -68,6 +75,16 @@ typedef struct
 } mf_path_ctx_t;
 
 void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v);
+
+/** @brief 显式钉下全程唯一航向基准（单基准架构，MF_HEADING_FRAME_EN=1）
+ *
+ * 由上层在 GYRO_ZERO 那一刻调用一次（车静止、此刻车头朝向即路线几何的 0°）。
+ * 调用后 heading_ref_locked=1，此后任何 mf_path_start()/跨表都**不再重定锚**，
+ * nom_yaw 沿路线几何一路推进。未调用时行为与旧版逐字相同（自测形态的兜底）。
+ * @param yaw_deg 基准值：通常传 0.0f（= 此刻车头朝向定义为 0°）；
+ *                基准与真实几何的固定偏差不在这里加，走 MF_HEADING_BIAS_DEG
+ */
+void mf_path_set_heading_ref(mf_path_ctx_t *p, float yaw_deg);
 
 /** @brief 开始执行一条路径（须以 MF_SEG_END 结尾）
  *  @param next  本表跑完自动续跑的下一条(须以 MF_SEG_END 结尾); 0=跑完即 DONE。
@@ -110,18 +127,23 @@ uint16_t mf_path_get_seg_index(const mf_path_ctx_t *p);
 uint8_t mf_path_is_waiting(const mf_path_ctx_t *p);
 
 /**
- * @brief 取走最近一次 ARC 段出口的质量记录（读后清标志）
+ * @brief 取走最近一次"段出口质量记录"（读后清标志）
  *
- * 出口横向偏差反映本段跑没跑偏; 出口航向偏差决定其后直线段的方向(MF_KEEP 直线会把它当基准锁住)。
- * 上层在主循环调用并自行加中断保护即可打点, 用于现场逐段验收弧线精度。
+ * ARC：ey_m = 出口横向偏差（反映本段跑没跑偏）；直线：ey_m 恒 0（直线段无名义线，
+ * 横向偏差要名义轨迹才能算，本版不做 —— 见 Motion/README.md）。
+ * 两者都填 out_yawerr_deg = 出口航向残差；直线另填 in_yawerr_deg = 进段航向误差，
+ * 于是"带进来多少 / 纠完剩多少"可现场直接对比（单基准架构的验收判据）。
+ * 上层在主循环调用并自行加中断保护即可打点。
  *
- * @param seg_index   出口所在段下标（可传 0）
- * @param ey_m        出口横向偏差 m，正=落在名义弧外侧（可传 0）
- * @param yaw_err_deg 出口航向偏差 deg，正=车头偏向外侧切线（可传 0）
+ * @param seg_index       出口所在段下标（可传 0）
+ * @param kind            0=ARC / 1=直线 MOVE（可传 0）
+ * @param ey_m            ARC 出口横向偏差 m，正=落在名义弧外侧（可传 0）
+ * @param in_yawerr_deg   进段航向误差 deg，仅直线段有效（可传 0）
+ * @param out_yawerr_deg  出口航向残差 deg（可传 0）
  * @return 1=本次取到新记录；0=无新记录（出参不变）
  */
-uint8_t mf_path_pop_arc_report(mf_path_ctx_t *p, uint16_t *seg_index,
-                               float *ey_m, float *yaw_err_deg);
+uint8_t mf_path_pop_seg_exit(mf_path_ctx_t *p, uint16_t *seg_index, uint8_t *kind,
+                             float *ey_m, float *in_yawerr_deg, float *out_yawerr_deg);
 
 float mf_path_remain_m(const mf_path_ctx_t *p);   /* 剩余里程估算(m): 只算位移段, ARC 全额计入 */
 

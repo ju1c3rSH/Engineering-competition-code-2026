@@ -561,7 +561,7 @@ void Car_DebugTask(void)
 		}
 	}
 	Car_SegChange_Log();   /* 段切换: 变化才打, 主循环上下文(唯一 printf 点) */
-	Car_ArcExit_Log();     /* 弧线出口质量: 每条 ARC 跑完打一行(出口横向偏差/航向偏差) */
+	Car_SegExit_Log();     /* 段出口质量: ARC 出 EY/YE, 直线出 LN:IE/YE */
 	Car_TrkChange_Log();   /* 跟瞄状态迁移: 四态机换态才打一行 TRK:旧>新 */
 	Car_TrkDetail_Log();   /* ARMED/STOPPED 期 10Hz 打点 TRKD: 判"误差卡在哪一环" */
 

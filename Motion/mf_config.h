@@ -122,9 +122,43 @@
 #define MF_SEG_NOM_HEADING_EN   1
 #endif
 
-/* ============ 标称航向是否跨 nav 表延续（置 0 = 每条 nav 表重新定锚） ============ */
+/* ============ 全程单基准航向（MF_HEADING_FRAME_EN）============ */
+/* 1 = 全程只有一个航向基准: 由 mf_set_heading_ref() 在 GYRO_ZERO 那一刻显式钉下(值 0°),
+ *     此后 mf_path_start() 永不重定锚, nom_yaw 沿路线几何一路推进 —— 直线段于是会
+ *     **主动把上游残留的航向误差纠回来**。
+ *     旧行为是"每张 nav 表首段用当时的实测航向重新定基准" —— 那等于把上一腿的终点
+ *     残差写成下一腿的基准, 沿腿链累加(注释记 ~0.25°/腿 ⇒ 终点 ~1°)。
+ *     未调用 set_heading_ref 时 heading_ref_locked=0, 退回旧的按表重定锚:
+ *     自测形态没有 GYRO_ZERO 命令, 靠这条兜底(此时基准等价于 main 里那次 ResetHWT101)。
+ * 0 = 回旧行为(再受 MF_NOM_HEADING_PERSIST_EN 控制), 供 A/B */
+#ifndef MF_HEADING_FRAME_EN
+#define MF_HEADING_FRAME_EN   1
+#endif
+
+/* 旧的"跨表延续"开关: 仅在 MF_HEADING_FRAME_EN=0 时生效。它与单基准的差别只在**锚点**——
+ * 它拿首段的实测航向当全程基准(隐式), 单基准拿 GYRO_ZERO 那一刻的 0° 当基准(显式) */
 #ifndef MF_NOM_HEADING_PERSIST_EN
 #define MF_NOM_HEADING_PERSIST_EN   0
+#endif
+
+/* ============ 航向基准偏差（唯一的静态补偿旋钮, 实车标定项）============ */
+/* 基准系(见上)与真实几何之间的固定偏差。只在"期望角 → 误差"这一步加(seg_cmd_yaw),
+ * 于是框架内所有角度(段表绝对角 / ARC 名义切线 / pose.yaw 读数口径)一律不动,
+ * 只有下发出去的航向整体旋转这么多 —— 整条路线随之刚性旋转, 相对角(TURN_REL/GOTO_REL)
+ * 与 ARC 自解算不受影响(它们本来就从当前位姿续起, 天然继承这个旋转)。
+ *
+ * 为什么必须收成**一个数**: 旧实现把补偿散在 NAV_REBASE_BOMB_YAW_DEG(-89.5)、
+ * NAV_REBASE_RETURN_YAW_DEG(-179.5)、NAV_RETURN_TRIM_DEG(1.8) 三处, 与几何真值混在
+ * 同一个宏里 ⇒ 分不出"几何错"还是"漂移补偿"; 而且实测证明那两个重锚角符号相反,
+ * 不可能同是补偿(Motion/README.md §11.5 的 K5 结论)。
+ *
+ * 标定(一次即定): 卷尺/场地线量**终点实物**横向偏差 ΔY → 先填 ΔY / L(L=该腿长度,
+ * 纯定符号与量级) → 跑一趟看实物残余是否变小, 变大就翻符号重跑。
+ * ⚠ 别用 POSE 的 Y 反解: 机上测到的那部分横移几乎 100% 就是这个值自己造成的,
+ *   拿它反解必然收敛到 0(2026-09-23 查证)。
+ * 0.0f = 不补偿, 即 A/B 基准。 */
+#ifndef MF_HEADING_BIAS_DEG
+#define MF_HEADING_BIAS_DEG   0.0f
 #endif
 
 #if (MF_CHASSIS_TYPE == MF_CHASSIS_DIFF || MF_CHASSIS_TYPE == MF_CHASSIS_TRACK)

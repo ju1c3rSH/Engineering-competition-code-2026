@@ -22,12 +22,26 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->arc_r_abs = 0.0f;
     p->arc_sgn = 1.0f;
     p->arc_ey_m = 0.0f;
-    p->arc_exit_ey_m = 0.0f;
-    p->arc_exit_yawerr_deg = 0.0f;
-    p->arc_exit_seg = 0u;
-    p->arc_exit_new = 0u;
+    p->seg_exit_ey_m = 0.0f;
+    p->seg_exit_yawerr_deg = 0.0f;
+    p->seg_exit_in_yawerr_deg = 0.0f;
+    p->seg_exit_seg = 0u;
+    p->seg_exit_kind = 0u;
+    p->seg_exit_new = 0u;
     p->nom_yaw_deg = 0.0f;
     p->nom_yaw_init = 0u;
+    p->heading_ref_locked = 0u;
+    p->line_in_yawerr_deg = 0.0f;
+}
+
+/* 显式钉下全程唯一航向基准(单基准架构, MF_HEADING_FRAME_EN=1): 见 mf_path.h 的说明。
+ * 与"旧行为按表重定锚"的唯一差别就是这个 locked 标志 —— mf_path_start() 只在未锁定时
+ * 才清 nom_yaw_init */
+void mf_path_set_heading_ref(mf_path_ctx_t *p, float yaw_deg)
+{
+    p->nom_yaw_deg = mf_wrap_deg(yaw_deg);
+    p->nom_yaw_init = 1u;
+    p->heading_ref_locked = 1u;
 }
 
 void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path, const mf_seg_t *next)
@@ -64,12 +78,16 @@ void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path, const mf_seg_t *next)
     p->dist_base_m = 0.0f;
     p->carry_link = 0u;
 #if MF_SEG_NOM_HEADING_EN
-  #if MF_NOM_HEADING_PERSIST_EN
-    /* 标称航向跨 nav 表延续: **不清** 初始化标志, 让 nom_yaw 沿路线几何走,
-     * 只在 ARC(累加转角) / TURN_TO(绝对目标角) 推进。
-     * 旧行为是每张表首段用实测航向重新定锚 —— 那会把上一腿的终点残差写成下一腿
-     * 的基准(实测 ~0.25°/腿, 沿腿链累加成终点 ~1°)。详见 mf_config.h 的说明。
-     * 注意: 整条路线重跑(非本次)仍有 mf_path_init() 兜底清零 */
+  #if MF_HEADING_FRAME_EN
+    /* 单基准: 基准由 mf_path_set_heading_ref() 在 GYRO_ZERO 那一刻显式钉下, 此后跨表**不重定锚**。
+     * 未钉下时(heading_ref_locked=0)退回"首段用实测航向定基准", 与旧行为等价 ——
+     * 自测形态没有 GYRO_ZERO 命令, 走的就是这条兜底 */
+    if (p->heading_ref_locked == 0u)
+    {
+        p->nom_yaw_init = 0u;
+    }
+  #elif MF_NOM_HEADING_PERSIST_EN
+    /* 旧行为 + 跨表延续(不清初始化标志): 首段实测航向当全程基准, 隐式 */
   #else
     /* 旧行为: 标称航向重定基准 —— 首段进段时用当时的实测航向初始化, 之后纯几何累积 */
     p->nom_yaw_init = 0u;
@@ -185,6 +203,15 @@ static uint8_t seg_dwell_reached(mf_path_ctx_t *p, float err, float tol, float d
 
 /* ---------- 各段类型执行（返回 1=完成） ---------- */
 
+/* 期望角(基准系几何) -> 实际下发角: 只差一个固定的基准偏差 MF_HEADING_BIAS_DEG。
+ * 全工程只在这一处加, 保证"段表里全是几何量、补偿只有一个数"(见 mf_config.h)。
+ * 只作用于**绝对角目标**; 相对角(TURN_REL/GOTO_REL)与 ARC 自解算不加 —— 它们从当前
+ * 位姿续起, 天然继承整条路线的刚性旋转 */
+static float seg_cmd_yaw(float geom_deg)
+{
+    return geom_deg + MF_HEADING_BIAS_DEG;
+}
+
 /* MOVE 段的航向保持目标: 段表给了绝对航向就优先用; MF_KEEP 时按开关取标称航向或进段实测航向 */
 static float seg_move_hold_yaw(const mf_path_ctx_t *p, const mf_move_dist_t *m)
 {
@@ -239,7 +266,7 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
     out->vx_mps = dir * seg_speed_ramp(p, target, acc, dt);
     out->vy_mps = 0.0f;
 
-    err = mf_wrap_deg(seg_move_hold_yaw(p, m) - pose->yaw_deg);
+    err = mf_wrap_deg(seg_cmd_yaw(seg_move_hold_yaw(p, m)) - pose->yaw_deg);
     out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
 
     /* 失控自保 (test/motion-tuning): 编码器/驱动符号矛盾时反馈为负, remain 沿
@@ -248,7 +275,20 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
     {
         return 1u;
     }
-    return (uint8_t)(remain <= MF_TOL_ARRIVE_M);
+    if (remain <= MF_TOL_ARRIVE_M)
+    {
+        /* 直线段出口记录: IE=进段航向误差(带进来多少) / YE=出口残差(纠完剩多少)。
+         * 单基准架构下 IE 才有非零值 —— 旧行为(MF_KEEP 取进段实测)IE 恒 0, 上游误差
+         * 被锁死、现场看不见, 所以这一对数是"新旧架构有没有生效"的直接判据 */
+        p->seg_exit_ey_m = 0.0f;    /* 直线无名义线, 横向偏差不在此列(见 mf_path.h) */
+        p->seg_exit_in_yawerr_deg = p->line_in_yawerr_deg;
+        p->seg_exit_yawerr_deg = err;
+        p->seg_exit_seg = p->idx;
+        p->seg_exit_kind = 1u;
+        p->seg_exit_new = 1u;
+        return 1u;
+    }
+    return 0u;
 }
 
 /* 定半径弧线: 走够 d_yaw 即完成(判据只用 IMU 转角); 设定值取"名义切线航向"
@@ -294,7 +334,7 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
         float e_psi = mf_wrap_deg((phi + p->arc_sgn * 90.0f) - pose->yaw_deg);
 
         p->arc_ey_m = rho - p->arc_r_abs;       /* 正=弧外 */
-        p->arc_exit_yawerr_deg = e_psi;         /* 出口记录取最后这一拍的值 */
+        p->seg_exit_yawerr_deg = e_psi;         /* 出口记录取段完成那一拍的实测值 */
 
         /* 曲率前馈 wz_ff = v/R(带符号 radius, 左转+/右转-): 稳态角速度开环直给,
          * PID 不再靠误差积累(纯P需滞后~3.6°才出稳态差速=进弯晚的根因), 只修打滑
@@ -328,7 +368,8 @@ static uint8_t seg_turn(mf_path_ctx_t *p, const mf_seg_t *s,
                         mf_body_cmd_t *out)
 {
     const mf_turn_t *t = &s->p.turn;
-    float target = (s->type == MF_SEG_TURN_TO) ? t->yaw_deg
+    /* TURN_TO 是绝对角(基准系几何) -> 加基准偏差; TURN_REL 从当前位姿续起, 不加 */
+    float target = (s->type == MF_SEG_TURN_TO) ? seg_cmd_yaw(t->yaw_deg)
                    : p->entry.yaw_deg + t->yaw_deg;
     float err = mf_wrap_deg(target - pose->yaw_deg);
 
@@ -399,7 +440,7 @@ static uint8_t seg_goto(mf_path_ctx_t *p, const mf_seg_t *s,
     }
     else
     {
-        dyaw = mf_wrap_deg(g->yaw_deg - pose->yaw_deg);
+        dyaw = mf_wrap_deg(seg_cmd_yaw(g->yaw_deg) - pose->yaw_deg);   /* 收尾朝向: 绝对角 */
         out->vx_mps = seg_speed_ramp(p, 0.0f, g->acc_mps2, dt);
         out->vy_mps = 0.0f;
         out->wz_dps = mf_clampf(mf_pid_calc(p->pid_yaw, dyaw, dt),
@@ -456,6 +497,10 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
         }
         p->carry_link = 1u;
 #endif
+        /* 进段航向误差(带进来多少): 与出口残差同口径(都是在"下发角 - 实测角"上取的),
+         * 于是"纠完剩多少"可直接与它对比 —— 单基准架构的现场验收判据 */
+        p->line_in_yawerr_deg =
+            mf_wrap_deg(seg_cmd_yaw(seg_move_hold_yaw(p, &s->p.move_dist)) - pose->yaw_deg);
         break;
     case MF_SEG_ARC:
 #if MF_SEG_CARRY_EN
@@ -609,10 +654,14 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
         if (s->type == MF_SEG_ARC)
         {
             /* 弧线出口质量记录: 横向偏差 + 航向偏差(都是段完成这一拍的实测值)，
-             * 由上层主循环取走打 ARC: 行。旧律/新律都记, 指标同源可直接 A/B */
-            p->arc_exit_ey_m = p->arc_ey_m;
-            p->arc_exit_seg = p->idx;
-            p->arc_exit_new = 1u;
+             * 由上层主循环取走打 ARC: 行。旧律/新律都记, 指标同源可直接 A/B。
+             * 直线段(MOVE)的记录在 seg_move_dist 里落, 两条路共用同一套字段 */
+            p->seg_exit_ey_m = p->arc_ey_m;
+            p->seg_exit_in_yawerr_deg = 0.0f;   /* ARC 无"带进来"一说, 看出口 YE */
+            /* seg_exit_yawerr_deg 由 seg_arc 每拍写, 完成那一拍的值即出口偏差 */
+            p->seg_exit_seg = p->idx;
+            p->seg_exit_kind = 0u;
+            p->seg_exit_new = 1u;
         }
         p->idx++;
         p->started = 0;     /* 下一段下拍重新进段 */
@@ -654,17 +703,19 @@ uint8_t mf_path_is_waiting(const mf_path_ctx_t *p)
     return (uint8_t)(p->path[p->idx].type == MF_SEG_WAIT);
 }
 
-uint8_t mf_path_pop_arc_report(mf_path_ctx_t *p, uint16_t *seg_index,
-                               float *ey_m, float *yaw_err_deg)
+uint8_t mf_path_pop_seg_exit(mf_path_ctx_t *p, uint16_t *seg_index, uint8_t *kind,
+                             float *ey_m, float *in_yawerr_deg, float *out_yawerr_deg)
 {
-    if ((p == 0) || (p->arc_exit_new == 0u))
+    if ((p == 0) || (p->seg_exit_new == 0u))
     {
         return 0u;
     }
-    p->arc_exit_new = 0u;
-    if (seg_index != 0)   { *seg_index   = p->arc_exit_seg; }
-    if (ey_m != 0)        { *ey_m        = p->arc_exit_ey_m; }
-    if (yaw_err_deg != 0) { *yaw_err_deg = p->arc_exit_yawerr_deg; }
+    p->seg_exit_new = 0u;
+    if (seg_index != 0)       { *seg_index       = p->seg_exit_seg; }
+    if (kind != 0)            { *kind            = p->seg_exit_kind; }
+    if (ey_m != 0)            { *ey_m            = p->seg_exit_ey_m; }
+    if (in_yawerr_deg != 0)   { *in_yawerr_deg   = p->seg_exit_in_yawerr_deg; }
+    if (out_yawerr_deg != 0)  { *out_yawerr_deg  = p->seg_exit_yawerr_deg; }
     return 1u;
 }
 static float seg_next_entry_speed(const mf_path_ctx_t *p)

@@ -98,11 +98,11 @@ void mf_stop(mf_ctx_t *m);
 uint8_t mf_is_done(const mf_ctx_t *m);
 uint8_t mf_is_waiting(const mf_ctx_t *m);   /* 当前段是否为 WAIT(主动停等), 见 mf_path_is_waiting */
 /**
- * @brief 取走最近一次 ARC 段出口质量记录（读后清标志），见 mf_path_pop_arc_report
+ * @brief 取走最近一次"段出口质量记录"（读后清标志），见 mf_path_pop_seg_exit
  * @return 1=取到新记录
  */
-uint8_t mf_pop_arc_report(mf_ctx_t *m, uint16_t *seg_index,
-                          float *ey_m, float *yaw_err_deg);
+uint8_t mf_pop_seg_exit(mf_ctx_t *m, uint16_t *seg_index, uint8_t *kind,
+                        float *ey_m, float *in_yawerr_deg, float *out_yawerr_deg);
 const mf_status_t *mf_get_status(mf_ctx_t *m);
 
 /* 单步便捷指令：内部各自打包成单段路径，即“一条段的路径” */
@@ -119,5 +119,9 @@ void mf_set_velocity(mf_ctx_t *m, float vx, float vy, float wz);
 /* ---------- 位姿 ---------- */
 void mf_set_pose(mf_ctx_t *m, float x, float y, float yaw);     /* 重定位/标定 */
 const mf_pose_t *mf_get_pose(const mf_ctx_t *m);
+
+/* ---------- 航向基准（单基准架构，见 mf_config.h 的 MF_HEADING_FRAME_EN） ---------- */
+/* 在 GYRO_ZERO 那一刻调用一次，把"最开始时的车头朝向"钉成全程唯一航向基准 */
+void mf_set_heading_ref(mf_ctx_t *m, float yaw_deg);
 
 #endif /* MF_MOTION_H */

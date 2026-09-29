@@ -150,6 +150,11 @@ void Car_Nav_Task(void)
 			{
 				ResetHWT101();
 				mf_set_pose(mf_app(), 0.0f, 0.0f, 0.0f);
+				/* 单基准航向(MF_HEADING_FRAME_EN): 把"最开始这一刻的车头朝向"钉成全程
+				 * 唯一的航向基准, 此后跨表/起新段都不再重定锚 —— 直线段于是主动把上游
+				 * 残差纠回来。必须在 mf_app_init() 之后调用: 它是懒初始化, 由本函数第一拍
+				 * 完成(mf_init -> mf_path_init 会把基准清掉) */
+				mf_set_heading_ref(mf_app(), 0.0f);
 			}
 			Tracking_Abort();
 			break;
