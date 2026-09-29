@@ -15,6 +15,8 @@
 void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);
 /* 转台动作登记到调试口回显区: 实现 GetData/interurp.c */
 void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg);
+/* 作废上电静置期攒下的台架转台命令(bench_fresh): 实现 GetData/interurp.c */
+void Car_Dbg2_BenchDrop(void);
 /* HWT101 航向置零: 实现 GetData/Control_Car.c(属采样层, 待迁 Car_Sense.c) */
 void ResetHWT101(void);
 

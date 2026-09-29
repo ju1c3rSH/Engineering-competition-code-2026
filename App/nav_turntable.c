@@ -268,6 +268,9 @@ void Emm_Pos_Control(void)
  * 调用时点: TIM5 启动之前 + 驱动器上电自检完成之后(约 1s) */
 void Car_Turntable_BootZero(void)
 {
+	/* 上电静置期(USART2 已活/TIM5 未起)攒下的台架命令在此作废: 与下面 tt_sent_key
+	 * 同源 —— 零点对齐之前到达的一切转台意图都不许在 TIM5 启动后被补执行 */
+	Car_Dbg2_BenchDrop();
 	tt_arm = 0u;
 	tt_sent_key = TT_KEY_UNSENT;   /* 驱动器计数器已清零, 旧"已下发"记录全部作废 */
 	tt.busy = 0u;

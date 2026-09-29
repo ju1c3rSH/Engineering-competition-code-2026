@@ -187,6 +187,18 @@ void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg)
 	__enable_irq();
 }
 
+/* 作废上电静置期攒下的台架转台命令。UART_Task_Init 一到静置结束(2.5s)之间 USART2
+ * 是活的而 TIM5 还没起, 这期间任何裸字节('1'~'7'/'w'/'e'/'x')都只攒成 bench_fresh,
+ * 留到主循环第一圈就会拿噪声驱动转台。调用点: Car_Turntable_BootZero() */
+void Car_Dbg2_BenchDrop(void)
+{
+	__disable_irq();
+	dbg2.bench_fresh = 0u;
+	dbg2.bench_kind  = 0u;
+	dbg2.bench_arg   = 0u;
+	__enable_irq();
+}
+
 static void Car_Ack_Send(uint8_t sub_echo, uint8_t status)
 {
 #if CAR_ACK_EN
