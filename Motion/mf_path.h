@@ -70,7 +70,8 @@ typedef struct
     float seg_exit_dyaw_deg;    /* ARC 出口的**实际转角** |Δyaw_imu|(deg, 恒正)。
                                  * 这是"弧到底转够了没有"的直接读数 —— 名义 90,
                                  * 旧到位余量(1.0°)下实测只有 89.1~89.6, 每条弧少转 0.7°
-                                 * ⇒ 出口沿切线少走 11mm。见 mf_config.h 的 MF_TOL_ARRIVE_DEG */
+                                 * ⇒ 出口沿切线少走 11mm。到位余量已改为**按实测步长运行期计算**
+                                 * (mf_config.h 的到位余量说明), 本条就是它的验收读数 */
     uint16_t seg_exit_seg;      /* 出口所在的段下标 */
     uint8_t  seg_exit_kind;     /* 0=ARC / 1=直线 MOVE */
     uint8_t  seg_exit_new;      /* 1=有新记录待取 */
@@ -178,7 +179,7 @@ float mf_path_exit_radius_m(const mf_path_ctx_t *p);
  *
  * 判"弧转够了没有"的直接读数。少转 0.7° = 出口沿切线少走 11mm, 而 EY/YE/R 因为都是
  * "位姿 vs 名义圆"的自证量看不出它 —— 唯一旁证是下一段 MOVE 的 LN:IE(替弧补角)。
- * 见 mf_config.h 的 MF_TOL_ARRIVE_DEG
+ * 到位余量按实测步长运行期算(见 mf_config.h 的到位余量说明), 本条就是它的验收读数
  */
 float mf_path_exit_dyaw_deg(const mf_path_ctx_t *p);
 
