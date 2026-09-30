@@ -13,7 +13,7 @@
 
 #include <stdint.h>
 
-void Car_Debug_Stat_Print(void);   /* '?'/p 周期: 状态块(CHASSIS/TRK2/WHEEL/POSE/WTBL/EMM/LINK) */
+void Car_Debug_Stat_Print(void);   /* '?'/p 周期: 状态块(CHASSIS/TRK2/WHEEL/POSE/WTBL/EMM/LINK/HWT) */
 void Car_SegChange_Log(void);      /* 主循环: seg_index/state 变化时打一行 SEG(原库层 ISR printf) */
 void Car_SegExit_Log(void);        /* 主循环: 段跑完打一行 —— ARC 出 EY/YE, 直线出 LN:IE/YE */
 void Car_TrkChange_Log(void);      /* 主循环: 跟瞄状态迁移(四态机)打一行 TRK:旧>新 */

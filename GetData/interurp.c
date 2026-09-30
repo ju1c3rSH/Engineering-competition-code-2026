@@ -12,6 +12,10 @@ int16_t RWzH = 0;
 int16_t WzL = 0;
 int16_t WzH = 0;
 
+/* HWT101 帧接收计数(ISR 内 ++, TIM4 采样层读): 0x52 角速度 / 0x53 角度 */
+volatile uint32_t GyroWz_Seq = 0u;
+volatile uint32_t YawSeq = 0u;
+
 uint8_t Rxbuffer1[RXbuffer1_size] = {0};
 uint8_t Rxbuffer2[RXbuffer2_size] = {0};
 uint8_t Rxbuffer3[RXbuffer3_size] = {0};
@@ -363,11 +367,16 @@ void UART_Task_Init(void)
 }
 void Uart3_task()
 {
-	/*检索并解包hwt101: 按本次突发实际长度扫描, sum8 校验通过才采用。
-	 * 旧实现固定扫前 22 字节且不校验——多包输出时 0x53 角度包可能落在
-	 * 扫描窗外(航向冻结), 数据字节恰为 55 53 时会假同步(航向跳变)。*/
+	/* 检索并解包 hwt101: 按本次突发实际长度扫描, sum8 校验通过才采用。
+	 * 0x53=角度(航向)、0x52=角速度(速率内环反馈), 两帧同构: [55][TYPE][4B][L][H][2B][SUM],
+	 * 有效数据同在 6/7 字节、中间填充字节恒 0x00 ⇒ 共用同一套 11 字节窗口与 sum8。
+	 * 旧实现固定扫前 22 字节且不校验——多包输出时 0x53 可能落在扫描窗外(航向冻结),
+	 * 数据字节恰为 55 53 时会假同步(航向跳变)。 */
 	uint8_t i, j;
+	uint8_t type;
+	uint8_t yaw_got = 0u, wz_got = 0u;
 	uint16_t sum;
+	int16_t raw_wz;
 	uint8_t sta = (uint8_t)UART3_RX_STA;
 
 	if (sta > RXbuffer3_size)
@@ -376,30 +385,58 @@ void Uart3_task()
 	}
 	if (sta < 11u)
 	{
-		return;   /* 不足以容纳一个完整角度包 */
+		return;   /* 不足以容纳一个完整数据包 */
 	}
 	for (i = 0u; i <= sta - 11u; i++)
 	{
-		if ((Rxbuffer3[i] == 0x55u) && (Rxbuffer3[i + 1u] == 0x53u))
+		type = Rxbuffer3[i + 1u];
+		if ((Rxbuffer3[i] != 0x55u) || ((type != 0x53u) && (type != 0x52u)))
 		{
-			sum = 0u;
-			for (j = 0u; j < 10u; j++)
+			continue;
+		}
+		sum = 0u;
+		for (j = 0u; j < 10u; j++)
+		{
+			sum += Rxbuffer3[i + j];
+		}
+		if ((uint8_t)sum != Rxbuffer3[i + 10u])
+		{
+			continue;   /* 数据字节凑出的假同步 */
+		}
+
+		if ((type == 0x53u) && (yaw_got == 0u))
+		{
+			float yaw;
+
+			yaw_got = 1u;
+			YawL = Rxbuffer3[i + 6u];
+			YawH = Rxbuffer3[i + 7u];
+			VL = Rxbuffer3[i + 8u];
+			VH = Rxbuffer3[i + 9u];
+
+			/* 算完一次写入: 原先是"赋值 + 条件取负"两次写, TIM4 拍可能读到中间态
+			 * (200° 而非 -160°), 差分会因此吃一个 ~360° 的假跳变 */
+			yaw = (float)((YawH << 8) | YawL) / 32768.0f * 180.0f;
+			if (yaw > 180.0f)
 			{
-				sum += Rxbuffer3[i + j];
+				yaw = -(360.0f - yaw);
 			}
-			if ((uint8_t)sum == Rxbuffer3[i + 10u])
-			{
-				YawL = Rxbuffer3[i + 6u];
-				YawH = Rxbuffer3[i + 7u];
-				VL = Rxbuffer3[i + 8u];
-				VH = Rxbuffer3[i + 9u];
-				Yaw_struct.Yaw = (float)((YawH<<8)|YawL)/32768.0f*180.0f;
-				if(Yaw_struct.Yaw > 180)
-				{
-					Yaw_struct.Yaw = -(360.0f - Yaw_struct.Yaw);
-				}
-				break;   /* 取突发内第一个通过校验的角度包 */
-			}
+			Yaw_struct.Yaw = yaw;
+			YawSeq++;
+		}
+		else if ((type == 0x52u) && (wz_got == 0u))
+		{
+			wz_got = 1u;
+			WzL = Rxbuffer3[i + 6u];
+			WzH = Rxbuffer3[i + 7u];
+			raw_wz = (int16_t)(((uint16_t)WzH << 8) | (uint16_t)WzL);
+			Yaw_struct.Wz_dps = (float)raw_wz / 32768.0f * 2000.0f;
+			GyroWz_Seq++;
+		}
+
+		if ((yaw_got != 0u) && (wz_got != 0u))
+		{
+			break;   /* 两类各取突发内第一个通过校验的包 */
 		}
 	}
 }
@@ -467,6 +504,8 @@ void Car_DebugTask(void)
 	float    tt_ang;
 	uint8_t  ack_f = 0u, nack_f = 0u, evt_f = 0u, query_f = 0u, periodic_f = 0u;
 	uint8_t  tt_f = 0u, bench_f = 0u;
+
+	Hwt101_RateTask();   /* 0x53 帧率滚动统计: 每圈刷新, 与有没有敲 '?' 无关 */
 
 	__disable_irq();
 	ack_n  = dbg2.ack_cnt;

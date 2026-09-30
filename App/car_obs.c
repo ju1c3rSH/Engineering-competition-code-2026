@@ -32,6 +32,9 @@ void Car_Debug_Stat_Print(void)
 {
 	extern volatile uint32_t Dbg2_TxFail_Cnt;   /* stm32f4xx_it.c: 调试口链路健康计数 */
 	extern volatile uint32_t Dbg2_RxErr_Cnt;
+	extern uint16_t Hwt101_RateHz;              /* Control_Car.c: 当前(滚动)0x53 帧率 */
+	extern uint16_t Hwt101_RateBoot;            /* Control_Car.c: 上电那次采样(配置判据) */
+	extern volatile uint32_t YawSeq;            /* interurp.c: 0x53 角度帧接收计数 */
 	const mf_status_t *st;
 	const mf_pose_t *pose;
 	mf_ctx_t *m;
@@ -119,6 +122,11 @@ void Car_Debug_Stat_Print(void)
 	printf("LINK:MS=%u TF=%u RXE=%u\r\n",
 	       (unsigned)HAL_GetTick(),
 	       (unsigned)Dbg2_TxFail_Cnt, (unsigned)Dbg2_RxErr_Cnt);
+	/* HWT101 输出速率: RRATE=当前滚动帧率(最近一个窗口) / BOOT=上电那次采样。
+	 * 判"速率配置生效没有"看 RRATE: ≈200 已配到 200Hz / ≈10 仍出厂默认 / 0 模块没通。
+	 * SEQ=0x53 帧计数(不涨即断流) —— 速率内环的差分反馈直接依赖它 */
+	printf("HWT:RRATE=%u BOOT=%u SEQ=%u\r\n",
+	       (unsigned)Hwt101_RateHz, (unsigned)Hwt101_RateBoot, (unsigned)YawSeq);
 }
 
 /* 跟瞄状态迁移打点(主循环): Tracking_Goto 在 ISR 只登记, 这里打一行。

@@ -56,6 +56,20 @@ void Car_Control()
 	IWDG->KR = 0xAAAAU;                  /* 喂独立看门狗(198ms): 本函数停摆即复位清 PWM */
 }
 
+/* HWT101 配置/命令帧发送: 上一帧 DMA 在途时发会 HAL_BUSY 静默失败 —— 等就绪再发, 带上限
+ * 免上电阶段死等。**内部含 HAL_Delay, 只许上电初始化(main.c)调用**, 中断内调会堵控制拍 */
+static void Hwt101_CfgSend(uint8_t *cmd)
+{
+	uint16_t wait_ms = 0u;
+
+	while ((huart3.gState != HAL_UART_STATE_READY) && (wait_ms < 50u))
+	{
+		HAL_Delay(1u);
+		wait_ms++;
+	}
+	(void)HAL_UART_Transmit_DMA(&huart3, cmd, 5u);
+}
+
 //HWT101角度置零: 缓冲必须 static —— Transmit_DMA 异步搬运, 栈数组函数返回即失效会发坏字节
 void ResetHWT101(void)
 {
@@ -67,34 +81,83 @@ void ResetHWT101(void)
 	HAL_UART_Transmit_DMA(&huart3, temp, 5);
 }
 
+/* HWT101 上电配置: 输出速率由出厂默认 10Hz 提到 200Hz(RRATE 寄存器, 写模块内部 Flash)。
+ * 速率是速率内环能不能用差分的**前提**(见 docs/坑-编码器与里程.md §7.6)。配置命令单向
+ * 无 ACK, 所以用"单位时间收到的 0x53 帧数"验; 已达标就不写模块 Flash(它有擦写寿命) */
+#define HWT101_CFG_RRATE_EN     1      /* 置 0 = 完全不碰模块配置 */
+#define HWT101_RATE_TARGET_HZ   50u    /* 判定阈值: 远高于出厂 10Hz 即认为配置已生效 */
+#define HWT101_RATE_WIN_MS      500u   /* 帧率统计窗口(ms) */
+
+/* 0x53 帧率(Hz)两个口径, 必须分开看 —— 只打一个会误判(量化见 docs/坑-编码器与里程.md §7.6):
+ * Hwt101_RateHz   = 最近一个窗口的滚动值(主循环刷新) -> 判"配置生效没有"看它;
+ * Hwt101_RateBoot = 上电那一次采样 -> "要不要写模块 Flash"的判据, 留作事后审计。
+ * 上电采样必须在模块出流之后做: 采早了把启动期低读成速率, 会白写一遍模块 Flash */
+uint16_t Hwt101_RateHz   = 0u;
+uint16_t Hwt101_RateBoot = 0u;
+
+#if HWT101_CFG_RRATE_EN
+static uint16_t Hwt101_MeasureYawHz(void)
+{
+	uint32_t f0 = YawSeq;
+	uint16_t t_ms = 0u;
+
+	while (t_ms < HWT101_RATE_WIN_MS)
+	{
+		HAL_Delay(10u);
+		t_ms += 10u;
+	}
+	return (uint16_t)(((YawSeq - f0) * 1000u) / HWT101_RATE_WIN_MS);
+}
+#endif
+
+/* 帧率滚动统计: 主循环(Car_DebugTask)每圈调用, 每满一个窗口用帧计数增量算一次。
+ * 与上电那次一次性采样互补 —— 它反映"现在", 任何时候查都作数 */
+void Hwt101_RateTask(void)
+{
+	static uint32_t prev_seq = 0u;
+	static uint32_t prev_ms  = 0u;
+	uint32_t now_ms  = HAL_GetTick();
+	uint32_t now_seq = YawSeq;
+	uint32_t span    = now_ms - prev_ms;
+
+	if (span >= HWT101_RATE_WIN_MS)
+	{
+		Hwt101_RateHz = (uint16_t)(((now_seq - prev_seq) * 1000u) / span);
+		prev_seq = now_seq;
+		prev_ms  = now_ms;
+	}
+}
+
 /**
-  * @brief 配置 HWT101 输出速率为 200Hz
- * @note  配置会保存到 IMU 内部 Flash，后续上电无需重复配置。
- *        建议仅在首次使用或 IMU 恢复出厂设置后调用一次。
- */
+  * @brief 把 HWT101 输出速率配到 200Hz(出厂 10Hz 对速率内环不够用), 并记下实测帧率
+  * @note  寄存器取自维特官方协议: RRATE=0x03(值 0x0B=200Hz), KEY=0x69(写 0xB588 解锁)。
+  *        旧码写 {FF AA 69 05 00}: 打的是 KEY 寄存器(只认 0xB588, 其他值无效)且 0x05 是
+  *        5Hz ⇒ 被模块静默丢弃, 速率一直停在出厂 10Hz。见 docs/坑-编码器与里程.md §7.6
+  *        **调用时机有约束**: 必须等模块出流(main.c 在配置前的那个 delay), 否则首测低读
+  *        被判成"没达标", 每次上电都白写一遍模块 Flash
+  */
 void ConfigHWT101(void)
 {
-    /* 1. 解锁寄存器 (进入配置模式) */
-    static uint8_t unlock_cmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5};
-    if (huart3.gState != HAL_UART_STATE_READY) {
-        HAL_Delay(10);
-    }
-    HAL_UART_Transmit_DMA(&huart3, unlock_cmd, 5);
-    HAL_Delay(100);  /* 等待 IMU 进入配置模式 */
+#if HWT101_CFG_RRATE_EN
+	static uint8_t unlock_cmd[]    = {0xFF, 0xAA, 0x69, 0x88, 0xB5};
+	static uint8_t set_200hz_cmd[] = {0xFF, 0xAA, 0x03, 0x0B, 0x00};
+	static uint8_t save_cmd[]      = {0xFF, 0xAA, 0x00, 0x00, 0x00};
 
-    /* 2. 设置输出速率为 200Hz (寄存器 RRATE, 值 0x05) */
-    static uint8_t set_200hz_cmd[] = {0xFF, 0xAA, 0x69, 0x05, 0x00};
-    if (huart3.gState != HAL_UART_STATE_READY) {
-        HAL_Delay(10);
-    }
-    HAL_UART_Transmit_DMA(&huart3, set_200hz_cmd, 5);
-    HAL_Delay(100);  /* 等待寄存器写入完成 */
+	Hwt101_RateBoot = Hwt101_MeasureYawHz();   /* 先看现状: 已达标就别再写模块 Flash */
+	Hwt101_RateHz   = Hwt101_RateBoot;
+	if (Hwt101_RateBoot >= HWT101_RATE_TARGET_HZ)
+	{
+		return;
+	}
 
-    /* 3. 保存配置并重启 IMU */
-    static uint8_t save_cmd[] = {0xFF, 0xAA, 0x00, 0x00, 0x00};
-    if (huart3.gState != HAL_UART_STATE_READY) {
-        HAL_Delay(10);
-    }
-    HAL_UART_Transmit_DMA(&huart3, save_cmd, 5);
-    HAL_Delay(500);  /* 等待 IMU 保存并重启 */
+	Hwt101_CfgSend(unlock_cmd);
+	HAL_Delay(100u);
+	Hwt101_CfgSend(set_200hz_cmd);
+	HAL_Delay(100u);
+	Hwt101_CfgSend(save_cmd);
+	HAL_Delay(500u);
+
+	Hwt101_RateBoot = Hwt101_MeasureYawHz();   /* 复验: 仍不达标会经 HWT: 行暴露出来 */
+	Hwt101_RateHz   = Hwt101_RateBoot;
+#endif
 }

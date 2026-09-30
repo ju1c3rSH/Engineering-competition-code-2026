@@ -36,13 +36,19 @@ typedef struct
 	PID_TypeDef Yaw_pid;
 	float Yaw;
 	float Tar_Yaw;
-	float Yaw_Gz;
+	float Wz_dps;      /* IMU 角速度 Z(deg/s): HWT101 0x52 帧, 供速率内环(mf_rate.h)用 */
 
 }Yaw_TypeDef;
 
 void Yaw_pid_Init(void);
 void Car_Control(void);
 void ConfigHWT101(void);
+/* 0x53 帧率(Hz)两个口径, 都是 '?' 的 HWT: 行要打的量: RateHz=最近一个窗口的滚动值
+ * (主循环 Hwt101_RateTask 刷新) / RateBoot=上电那次采样(即"要不要写模块 Flash"的判据)。
+ * 判"速率配置生效没有"必须看 RateHz —— 上电采样可能落在模块启动期被低读 */
+void Hwt101_RateTask(void);
+extern uint16_t Hwt101_RateHz;
+extern uint16_t Hwt101_RateBoot;
 /* ResetHWT101 / Car_Event_Send 属跨层接缝(实现分别在本文件与 interurp.c), 声明收在
  * App/car_link.h —— App 子模块不能反向 include 本头(成环), 故接缝单点声明在那儿 */
 
