@@ -48,6 +48,9 @@ typedef struct
     float arc_r_abs;        /* |radius_m| */
     float arc_sgn;          /* +1=左转 / -1=右转（d_yaw 符号；与 radius 同号） */
     float arc_ey_m;         /* 本拍带符号横向偏差 m，正=弧外（诊断与横向环共用） */
+    float arc_remain_prev_deg;  /* 上一拍的 remain_yaw：两者的差就是**本段实测抽样步长**，
+                                 * 到位余量取它的一半才有零系统偏差（见 mf_config.h）。
+                                 * 进段时置为 d_yaw（首拍的步长即第一拍的转角） */
     float slip_gain;        /* 本段的开环滑移基线（弧线 = MF_ARC_SLIP_GAIN，其余 1.0）。
                              * 速率内环(mf_rate.h)拿它当输出侧前馈；见 mf_config.h */
 

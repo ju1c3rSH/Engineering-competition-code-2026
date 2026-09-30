@@ -22,6 +22,7 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->arc_r_abs = 0.0f;
     p->arc_sgn = 1.0f;
     p->arc_ey_m = 0.0f;
+    p->arc_remain_prev_deg = 0.0f;
     p->slip_gain = 1.0f;
     p->seg_exit_ey_m = 0.0f;
     p->seg_exit_yawerr_deg = 0.0f;
@@ -279,8 +280,9 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
     {
         return 1u;
     }
-    if (remain <= MF_TOL_ARRIVE_M)
+    if (remain <= (0.5f * mf_absf(out->vx_mps) * dt))
     {
+        /* 到位余量同上: = 本拍步长的一半(运行期), 不是常数 —— 见 mf_config.h 的推导 */
         /* 直线段出口记录: IE=进段航向误差(带进来多少) / YE=出口残差(纠完剩多少)。
          * 单基准架构下 IE 才有非零值 —— 旧行为(MF_KEEP 取进段实测)IE 恒 0, 上游误差
          * 被锁死、现场看不见, 所以这一对数是"新旧架构有没有生效"的直接判据 */
@@ -311,6 +313,7 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
     const mf_arc_t *a = &s->p.arc;
     float acc, target, v_stop, v_next;
     float yaw_done, remain_yaw, remain_m, radius_abs;
+    float step_deg, tol_deg;
 
     v_next = seg_next_entry_speed(p);
     acc = (a->acc_mps2 > 0.0f) ? a->acc_mps2 : MF_DEFAULT_ACC;
@@ -318,6 +321,21 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
     remain_yaw = (a->d_yaw_deg - yaw_done)
                * ((a->d_yaw_deg >= 0.0f) ? 1.0f : -1.0f);  /* 剩余转角, 正=未走完 */
     target = (a->speed_mps < 0.0f) ? -a->speed_mps : a->speed_mps;
+
+    /* 到位余量 = 本段**抽样步长**的一半, 运行期量出来(推导见 mf_config.h)。
+     * 优先用实测(上一拍到本拍 remain 的减少量); 首拍或本拍航向未出新样时退回名义
+     * (v/R)·dt。两者都是运行期量, 换档/降速/改拍周期自动跟上 —— 这里不许出现常数 */
+    {
+        float nom = mf_absf(seg_arc_wz_ff(p, a)) * dt;
+
+        step_deg = p->arc_remain_prev_deg - remain_yaw;
+        if (step_deg < (0.5f * nom))
+        {
+            step_deg = nom;
+        }
+    }
+    p->arc_remain_prev_deg = remain_yaw;
+    tol_deg = 0.5f * step_deg;
 
     if (v_next >= 0.0f)
     {
@@ -335,7 +353,7 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
     /* 没走完就不许停: 末段弧的下一段要求停稳时 v_stop 会把目标减到 0, 而 remain_yaw
      * 可能还大于到位余量 ⇒ 车停在段里永远走不完。见 MF_ARC_CREEP_MPS
      * (用运行期比较而不是 #if: 预处理器不认浮点字面量。宏为 0 时编译器会把整个分支折掉) */
-    if ((MF_ARC_CREEP_MPS > 0.0f) && (remain_yaw > MF_TOL_ARRIVE_DEG)
+    if ((MF_ARC_CREEP_MPS > 0.0f) && (remain_yaw > tol_deg)
         && (target < MF_ARC_CREEP_MPS))
     {
         target = MF_ARC_CREEP_MPS;
@@ -398,7 +416,7 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
         }
     }
 
-    return (uint8_t)(remain_yaw <= MF_TOL_ARRIVE_DEG);
+    return (uint8_t)(remain_yaw <= tol_deg);
 }
 
 /* 原地转向（绝对/相对统一）: 前向速度斜坡归零再转, 角速度缓起, 驻留判到位 */
@@ -559,6 +577,8 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
             p->arc_cx_m = pose->x_m - r * sinf(yaw_rad);
             p->arc_cy_m = pose->y_m + r * cosf(yaw_rad);
             p->arc_ey_m = 0.0f;     /* 进段必然在名义弧上 */
+            /* 首拍的"上一拍 remain" = 全程剩余 ⇒ 第一拍的步长 = 本拍实际转角 */
+            p->arc_remain_prev_deg = s->p.arc.d_yaw_deg;
         }
         /* 弧线是唯一"全程都在转弯"的段, 滑移亏损也全程都在 —— 给它前馈基线 */
         p->slip_gain = MF_ARC_SLIP_GAIN;

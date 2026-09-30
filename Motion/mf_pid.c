@@ -8,17 +8,21 @@ void mf_pid_init(mf_pid_t *pid, float kp, float ki, float kd,
     pid->kd = kd;
     pid->i_max = i_max;
     pid->out_max = out_max;
+    pid->d_win = 1u;    /* 采样层下发前用逐拍差分: 不假设任何帧率 */
     mf_pid_reset(pid);
 }
 
 void mf_pid_reset(mf_pid_t *pid)
 {
+    uint8_t i;
+
     pid->integral = 0.0f;
-    pid->last_err = 0.0f;
-    pid->e1 = 0.0f;
-    pid->e2 = 0.0f;
-    pid->first = 1;
-    pid->filled = 0u;
+    for (i = 0u; i <= MF_YAW_DIFF_WIN_MAX; ++i)
+    {
+        pid->e_hist[i] = 0.0f;
+    }
+    pid->hist_fill = 0u;
+    /* d_win 不复位: 它是配置(和 kp/kd 同类), 不是状态 */
 }
 
 static float mf_clamp(float v, float lim)
@@ -35,30 +39,36 @@ float mf_pid_calc(mf_pid_t *pid, float err, float dt)
 {
     float d_raw;
     float unsat, out;
+    uint8_t w, i;
 
-    if (pid->first)
+    /* 微分项: 跨 w 拍差分, w 由采样层按**实测帧率**下发(见 mf_pid.h)。
+     * (err − e_hist[w−1])/(w·dt): 跨满一个"整数帧数交替周期"就把该根谱线杀掉;
+     * 慢变真值几乎原样透过(相位代价约半个窗 = w·dt/2)。
+     * hist_fill < w 时给 0 —— 这同时充当"首拍不起跳踢"(旧 first 标志的职责) */
+    w = pid->d_win;
+    if (w < 1u)
     {
-        pid->last_err = err;    /* 首拍不做微分踢 */
-        pid->first = 0;
+        w = 1u;
+    }
+    if (w > MF_YAW_DIFF_WIN_MAX)
+    {
+        w = MF_YAW_DIFF_WIN_MAX;
     }
 
-    /* 微分项: 见 mf_pid.h 的 MF_PID_D_AVG_TICKS —— 默认 2 拍滑窗差分, 在 50Hz 有零点,
-     * 精确抵消"250Hz 航向帧 ÷ 100Hz 控制拍"造成的每拍 2/3 帧交替。1 = 旧行为(逐位相同) */
-#if (MF_PID_D_AVG_TICKS >= 2)
-    if (pid->filled >= 2u)
+    if (pid->hist_fill >= w)
     {
-        d_raw = (err - pid->e2) / (2.0f * dt);
+        d_raw = (err - pid->e_hist[w - 1u]) / ((float)w * dt);
     }
     else
     {
         d_raw = 0.0f;
-        pid->filled++;
+        pid->hist_fill++;
     }
-    pid->e2 = pid->e1;
-    pid->e1 = err;
-#else
-    d_raw = (err - pid->last_err) / dt;   /* 滑窗字段在本模式下只被 reset 写过一次 */
-#endif
+    for (i = MF_YAW_DIFF_WIN_MAX; i > 0u; --i)
+    {
+        pid->e_hist[i] = pid->e_hist[i - 1u];
+    }
+    pid->e_hist[0] = err;
 
     unsat = pid->kp * err
           + pid->ki * pid->integral
@@ -89,7 +99,6 @@ float mf_pid_calc(mf_pid_t *pid, float err, float dt)
         out = unsat;
     }
     pid->integral = mf_clamp(pid->integral, pid->i_max);
-    pid->last_err = err;
 
     return out;
 }
