@@ -22,6 +22,7 @@
 #include "mf_pid.h"
 #include "mf_odom.h"
 #include "mf_path.h"
+#include "mf_rate.h"
 
 /* 手动指令 / 声明式路径 */
 typedef enum
@@ -36,6 +37,9 @@ typedef struct
     float track_width_m;    /* 差速/履带：等效轨距 m（需打滑标定）；麦轮则缺省此项 */
     float half_length_m;    /* 麦轮：半车长 m */
     float half_width_m;     /* 麦轮：半车宽 m */
+
+    /* 里程计形状来源（见 mf_config.h 的 MF_ODOM_ARC_SRC）：0=旧弧长反解 1=轮速均值（实测半径） */
+    uint8_t odom_arc_src;
 
     /* 限幅 */
     float max_vx_mps;
@@ -71,8 +75,9 @@ typedef struct
 #endif
 
     mf_path_ctx_t path;
+    mf_rate_t rate;             /* 角速度内环（MF_WZ_RATE_EN，见 mf_rate.h） */
     mf_body_cmd_t manual_cmd;   /* 手动模式指令 */
-    mf_body_cmd_t cmd;          /* 本周期最终车体指令（调试用） */
+    mf_body_cmd_t cmd;          /* 本周期最终车体指令（调试用）；wz_dps 已是速率内环输出 */
     mf_status_t status;
 
     uint32_t in_seq;            /* 上次已消费的采样序号（去重：快照未更新则跳过） */
@@ -95,6 +100,12 @@ void mf_start_path_chain(mf_ctx_t *m, const mf_seg_t *path, const mf_seg_t *next
 /* 取走"刚跨过表边界"标志(读后清), 见 mf_path_pop_chain */
 uint8_t mf_pop_chain(mf_ctx_t *m);
 void mf_stop(mf_ctx_t *m);
+/* 清速率内环状态（积分/滤波）。上层把 cmd 硬置 0（跟瞄驻停/故障硬停）时必须调用，
+ * 否则内环积分会在"输出未被采纳"的驻留期里空转，放行瞬间甩出未指令的转向 */
+void mf_clear_rate(mf_ctx_t *m);
+/* 取速率内环快照(诊断只读): sp=外环设定 / meas=IMU 实测 / out=下发(含基线+PI) /
+ * n_ok,n_stale,n_sign=三种分支的累计拍数(上电起, 停车不清)。见 car_obs.c 的 RATE: 行 */
+void mf_rate_get_info(const mf_ctx_t *m, mf_rate_info_t *info);
 uint8_t mf_is_done(const mf_ctx_t *m);
 uint8_t mf_is_waiting(const mf_ctx_t *m);   /* 当前段是否为 WAIT(主动停等), 见 mf_path_is_waiting */
 /**
@@ -103,6 +114,16 @@ uint8_t mf_is_waiting(const mf_ctx_t *m);   /* 当前段是否为 WAIT(主动停
  */
 uint8_t mf_pop_seg_exit(mf_ctx_t *m, uint16_t *seg_index, uint8_t *kind,
                         float *ey_m, float *in_yawerr_deg, float *out_yawerr_deg);
+/* 最近一次 ARC 出口的 R(m), 见 mf_path.h:mf_path_exit_radius_m。⚠ 它是自证量(R≡R_cmd),
+ * 判物理半径要用卷尺 */
+float mf_exit_radius_m(const mf_ctx_t *m);
+/* 最近一次 ARC 的实际转角(deg, 恒正; 名义 90), 见 mf_path.h:mf_path_exit_dyaw_deg */
+float mf_exit_dyaw_deg(const mf_ctx_t *m);
+/* 实测弧半径(m, 恒正) 与新鲜标志(*valid 可为 NULL): 见 mf_odom.h 的 mf_reff_t。
+ * 当前只供观测(调试口 RAD: 行); 弧半径的判据认它或 R=/卷尺, 不认 ARC:EY */
+float mf_get_reff(const mf_ctx_t *m, uint8_t *valid);
+/* 当前生效的里程计形状来源(0/1): 调试口回报, 免得"跑在哪个分支"只能靠猜 */
+uint8_t mf_get_odom_arc_src(const mf_ctx_t *m);
 const mf_status_t *mf_get_status(mf_ctx_t *m);
 
 /* 单步便捷指令：内部各自打包成单段路径，即“一条段的路径” */

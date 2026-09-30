@@ -47,7 +47,12 @@ typedef struct
 {
     float    wheel_dist_m[MF_WHEEL_MAX]; /* 各轮累计位移 m（带符号，前进为正） */
     float    yaw_deg;                    /* 外部航向 deg（±180；编码器航向源时忽略） */
+    float    wz_dps;                     /* IMU 实测车体角速度 deg/s（逆时针为正；无源填 0） */
+    uint8_t  wz_valid;                   /* wz_dps 是否为本拍新鲜反馈；0=停更，内环退回纯前馈 */
     uint32_t seq;                        /* 采样序号：与上次相同=未出新样，本拍跳过 */
+    uint32_t yaw_seq;                    /* 航向帧计数(0x53)：yaw_deg 是零阶保持值，"这一拍是不是
+                                          * 新样"只能靠它判 —— 凡要用"航向增量除位移"(弧半径/形状)
+                                          * 的地方，分子分母必须覆盖同一段时间间隔。无 IMU 填 0 */
 } mf_state_in_t;
 
 /* 特殊值：段参数里的“不指定/保持进入时状态” */

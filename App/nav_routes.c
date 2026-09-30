@@ -100,7 +100,7 @@ static const mf_seg_t tbl_rebase_bomb[] =   /* NAV_REBASE_BOMB: 排爆区末段(
                                              * nav_entry_turn[6] 置 0 = 主控 NAV_DONE 后再发(=串行) */
 {
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),      /* 右 90: 原 tbl_bomb 表尾转弯 */
-	SEG_MOVE(MF_M_SPEED(Low_speed),    MF_M_DIST(49.0f)),/* 末段低速进作业点 */
+	SEG_MOVE(MF_M_SPEED(Low_speed),    MF_M_DIST(47.0f)),/* 末段低速进作业点 */
 	SEG_TURN_TO(NAV_REBASE_BOMB_YAW_DEG),                /* 对坑前重锚: 五个闭环 90° 弧的终点。
 	                                                      * 几何真值, 不掺补偿 —— 基准偏差统一走
 	                                                      * MF_HEADING_BIAS_DEG(见其定义处注释) */

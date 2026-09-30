@@ -1,12 +1,99 @@
 ﻿#include "car_obs.h"
+#include "car_link.h"
 #include "main.h"
 #include "Emm_V5.h"
 #include "mf_path.h"
+#include "mf_math.h"          /* mf_absf: 弧几何观测行(RAD:) */
 #include "motion_app.h"
 #include "nav_task.h"
 #include "nav_turntable.h"
 #include "nav_tracking.h"
 #include <stdio.h>
+
+/* RAD: 行"算半径"的最小角速度(dps): 低于它 v/ω 只是"接近静止的随机比值", 打了反而误导 */
+#define CAR_OBS_RAD_MIN_DPS   20.0f
+
+/* ---- 段内瞬时跟踪('t' 命令) -------------------------------------------------
+ * 为什么需要它: ARC:/LN: 两行是**出口统计量**(只给段尾的 EY/YE), 段内的振荡/卡顿在它们身上
+ * 完全看不见。判"转向一卡一卡"卡在哪一环只能看时序, 一行同时给出三层:
+ *   SP/W/O/I  = 外环设定 / IMU 实测(航向差分) / 内环输出 / 积分贡献  -> 速率内环
+ *   CL/SL/CR/SR = 左右轮速环的指令/实测                  -> 轮速环与履带接触
+ *   RS        = 段内剩余里程(mm)                          -> 定位在段的哪个位置
+ *   GZ        = 0x52 陀螺帧直接给出的角速度(dps)           -> **判 W 的真伪**
+ * 读法: ① GZ 平滑而 W 以 2 个采样为周期反相摆动 = W 的摆动是采样伪影, 不是车体真在抖
+ *         (机理: 250Hz 航向帧 ÷ 100Hz 控制拍 = 每拍 2/3 帧交替, 见 mf_pid.h);
+ *      ② GZ 与 W 同幅同相 = 振荡是真的, 再往下列找;
+ *      ③ W≈SP 而 SL/SR 一阵一阵掉到 0 = 轮速环 stick-slip(机械/摩擦), 控制环无罪;
+ *      ④ SP 自己就在摆 = 外环航向环欠阻尼(kp/kd 未按内环重校, 见 docs/坑-编码器与里程.md §5)
+ * 触发: 't' 武装, 首次出现 |SP| >= CAR_OBS_TRACE_TRIG_DPS(只有弧/转向段才会到)即开窗 4s */
+#define CAR_OBS_TRACE_MS          4000u
+#define CAR_OBS_TRACE_PERIOD_MS   50u     /* 20Hz: 能分辨 5Hz 级的振荡 */
+#define CAR_OBS_TRACE_TRIG_DPS    30.0f
+
+static uint8_t  tr_state;                  /* 0=空闲 1=武装(等弧/转向段) 2=采集 */
+static uint32_t tr_end_ms;
+static uint32_t tr_last_ms;
+
+void Car_Obs_TraceArm(void)
+{
+	tr_state = 1u;
+	printf("TRC:ARM (等 |SP|>=%d dps)\r\n", (int)CAR_OBS_TRACE_TRIG_DPS);
+}
+
+void Car_Obs_TraceTask(void)
+{
+	mf_ctx_t *m = mf_app();
+	mf_rate_info_t ri;
+	uint32_t now = HAL_GetTick();
+
+	if (tr_state == 0u)                                     /* 空闲: 只剩一次判断 */
+	{
+		return;
+	}
+	if ((uint32_t)(now - tr_last_ms) < CAR_OBS_TRACE_PERIOD_MS)
+	{
+		return;                                             /* 武装态与采集态统一 20Hz 节流 */
+	}
+	tr_last_ms = now;
+
+	__disable_irq();
+	mf_rate_get_info(m, &ri);   /* 快照必须在**这里**取: 首版只在武装分支取, 采集分支打的是未初始化
+	                             * 的局部 —— 现场表现为 SP/W/O/I 恒 0、偶发 INT_MAX(2026-09-30 实拍) */
+	__enable_irq();
+
+	if (tr_state == 1u)                                     /* 武装: 等弧/转向段的 |SP| */
+	{
+		if (mf_absf(ri.sp_dps) < CAR_OBS_TRACE_TRIG_DPS)
+		{
+			return;
+		}
+		tr_state  = 2u;
+		tr_end_ms = now + CAR_OBS_TRACE_MS;
+		printf("TRC:START %ums\r\n", (unsigned)CAR_OBS_TRACE_MS);
+	}
+
+	{
+		float cl, sl, cr, sr, rs, gz;
+
+		__disable_irq();
+		cl = m->wheel[0].cmd_mps;
+		sl = m->wheel[0].speed_mps;
+		cr = m->wheel[1].cmd_mps;
+		sr = m->wheel[1].speed_mps;
+		rs = mf_path_remain_m(&m->path);
+		gz = Car_GetGyroWzDps();
+		__enable_irq();
+		printf("TRC:SP=%d W=%d GZ=%d O=%d I=%d CL=%d SL=%d CR=%d SR=%d RS=%d\r\n",
+		       (int)ri.sp_dps, (int)ri.meas_dps, (int)gz, (int)ri.out_dps, (int)ri.i_term_dps,
+		       (int)(cl * 1000.0f), (int)(sl * 1000.0f),
+		       (int)(cr * 1000.0f), (int)(sr * 1000.0f), (int)(rs * 1000.0f));
+	}
+	if ((uint32_t)(tr_end_ms - now) >= 0x80000000u)          /* 模块化比较: now 已过 tr_end */
+	{
+		tr_state = 0u;
+		printf("TRC:END\r\n");
+	}
+}
 
 /* "这一拍到底谁在写 vx" —— 段表出没出速度 / 跟瞄有没有压零。
  * 生产者 TIM4 ISR(Car_Obs_SetVx), 消费者主循环 Car_Debug_Stat_Print。
@@ -49,8 +136,12 @@ void Car_Debug_Stat_Print(void)
 	int16_t  vxp_mm, vxf_mm;
 	uint8_t  ovl_flag;
 	float    x_m, y_m, yaw_deg, wl_cmd, wl_spd, wr_cmd, wr_spd, tt_deg;
+	float    reff_m;
+	uint8_t  reff_valid;
+	uint8_t  arc_src;
 	Tt_Info_t tti;
 	Trk_Info_t tri;
+	mf_rate_info_t ri;
 
 	/* 快照四次取样的前三段(见函数头 D-1): ①② 的 GetInfo 自带临界区, 塞进下方关中断块
 	 * 会被它内部的 __enable_irq() 提前放行 TIM4; ③ 两次裸读单字节原子但无窗口保护。
@@ -90,6 +181,9 @@ void Car_Debug_Stat_Print(void)
 	tt_settle = tti.settle_ms;
 	tt_code   = tti.code;
 	tt_tick   = tti.last_tick; /* 台架标定用: 最近一次下发的脉冲数(解位置当量) */
+	mf_rate_get_info(m, &ri);  /* 速率内环快照: 与本行以上同处一个关中断窗口 */
+	reff_m = mf_get_reff(m, &reff_valid);   /* 实测弧半径: 同一窗口内取, 与 pose 同拍 */
+	arc_src = mf_get_odom_arc_src(m);       /* 里程计形状来源: "跑在哪个分支"必须看得见 */
 	__enable_irq();
 
 	printf("CHASSIS:NAV=%c ID=%02u SEG=%u/%u TRK=%c E=%d F=%u AGE=%u HOLD=%u\r\n",
@@ -127,6 +221,61 @@ void Car_Debug_Stat_Print(void)
 	 * SEQ=0x53 帧计数(不涨即断流) —— 速率内环的差分反馈直接依赖它 */
 	printf("HWT:RRATE=%u BOOT=%u SEQ=%u\r\n",
 	       (unsigned)Hwt101_RateHz, (unsigned)Hwt101_RateBoot, (unsigned)YawSeq);
+	/* 断流硬告警: 最近一个窗口一帧 0x53 都没收到 ⇒ 航向冻结(弧永远走不完)、速率内环退化成
+	 * "开环基线+冻结积分"。最常见原因是模块波特率不是 115200 —— 官方 BAUD(0x04) 出厂默认
+	 * 0x0002=9600, 而本工程 USART3 固定 115200 且固件不写也不验(§7.11), 换模块/恢复出厂即中招 */
+	if (Hwt101_RateHz == 0u)
+	{
+		printf("HWT:WARN NOFRAME BOOT=%u SEQ=%u -> check BAUD=115200(reg 0x04)/wiring\r\n",
+		       (unsigned)Hwt101_RateBoot, (unsigned)YawSeq);
+	}
+	/* 角速度内环健康度: SP=外环设定(它"想要"的 deg/s) W=IMU 实测 O=实际下发(含开环基线
+	 * +PI), B=开环基线贡献(=SP×基线增益), I=积分贡献(ki·∫e; O−B−I 就是 P 项)。
+	 * 基线与积分是**同一份补偿的两半**(基线越准 I 越接近 0), 不是两套补偿。
+	 * OK/ST/SN = 闭环/反馈停更/反馈反号 的累计拍数。
+	 * 读法: ① ST 或 SN 在涨 = 反馈链断了, 补偿只剩开环基线 ⇒ 先查 HWT: SEQ 涨不涨;
+	 *      ② OK 在涨且 W≈SP = 内环真在闭环(半径由它保证, 可把基线往 1.0 收);
+	 *      ③ OK 在涨但 W 只有 SP 的 0.6 倍 = 环在、对象跟不上(轮速环饱和/堵转/基线偏小),
+	 *         看 O 是否已顶到 150 上限。W/O 就是对象增益 k, 直接用来复标 MF_ARC_SLIP_GAIN */
+	printf("RATE:SP=%d W=%d O=%d B=%d I=%d OK=%u ST=%u SN=%u\r\n",
+	       (int)ri.sp_dps, (int)ri.meas_dps, (int)ri.out_dps,
+	       (int)ri.base_dps, (int)ri.i_term_dps,
+	       (unsigned)ri.n_ok, (unsigned)ri.n_stale, (unsigned)ri.n_sign);
+	/* 弧的实时几何(纯观测): 三条独立尺子量同一条弧 —— RSP=设定半径 v/|wz_sp|(段表想要的);
+	 * RM=实测半径 v/|ω_meas|(IMU 说的); REF=库内同间隔实测半径(轮位移÷IMU 转角, mf_odom.c)。
+	 * RV=REF 是否新鲜(不转弯就没有新估计); KH=对象增益 ω_meas/ω_out(%); YF=0x53 帧÷控制拍(%),
+	 * YF<100 说明航向按拍是零阶保持, 凡"增量÷位移"类量都要按同间隔配对; YF 是 1s 窗口量,
+	 * 同一行里其余字段是当拍量(可差 1s)。OSRC=里程计形状来源(0=旧弧长反解/1=轮速均值)。
+	 * ⚠ 判半径只认 RM/REF/R=(或卷尺): ARC:EY 与 odom 形状同源, 结构性看不见打滑(§8)。
+	 * 速率闸取 20dps(弧工作点的一半): 再小就是"接近静止的随机比值", 打出来只会误导 */
+	{
+		static uint32_t yf_seq, yf_tick, yf_ms;
+		static uint16_t yf = 0u;      /* 保持上一窗口值: 否则两次查询间隔 <1s 时会打 0(误导成"没帧") */
+		uint32_t tick_now = ri.n_ok + ri.n_stale + ri.n_sign;
+		uint32_t now = HAL_GetTick();
+		float v = (mf_absf(wl_spd) + mf_absf(wr_spd)) * 0.5f;
+		int rsp = (mf_absf(ri.sp_dps) >= CAR_OBS_RAD_MIN_DPS)
+		          ? (int)(v / (mf_absf(ri.sp_dps) * (MF_PI_F / 180.0f)) * 1000.0f) : 0;
+		int rmeas = (mf_absf(ri.meas_dps) >= CAR_OBS_RAD_MIN_DPS)
+		            ? (int)(v / (mf_absf(ri.meas_dps) * (MF_PI_F / 180.0f)) * 1000.0f) : 0;
+		int kh = (mf_absf(ri.out_dps) >= CAR_OBS_RAD_MIN_DPS)
+		         ? (int)(ri.meas_dps / ri.out_dps * 100.0f) : 0;
+
+		if ((uint32_t)(now - yf_ms) >= 1000u)   /* 1s 窗口; 首查给出上电以来均值 */
+		{
+			uint32_t dq  = YawSeq - yf_seq;
+			uint32_t dtk = tick_now - yf_tick;
+
+			yf = (uint16_t)((dtk != 0u) ? ((dq * 100u) / dtk) : 0u);
+			yf_seq  = YawSeq;
+			yf_tick = tick_now;
+			yf_ms   = now;
+		}
+		printf("RAD:RSP=%d RM=%d REF=%d RV=%u KH=%d YF=%u OSRC=%u TR=%u\r\n",
+		       rsp, rmeas, (int)(reff_m * 1000.0f), (unsigned)reff_valid, kh,
+		       (unsigned)yf, (unsigned)arc_src,
+		       (unsigned)(MF_ARC_WZ_TRIM * 1000.0f));   /* TR=弧径向 trim ×1000 */
+	}
 }
 
 /* 跟瞄状态迁移打点(主循环): Tracking_Goto 在 ISR 只登记, 这里打一行。
@@ -226,10 +375,16 @@ void Car_SegChange_Log(void)
 }
 
 /* 段出口质量(每跑完一条 ARC / 直线 MOVE 打一行):
- *   ARC:<段> EY=<mm> YE=<0.1°>   EY=出口横向偏差(正=弧外侧, 负=往里切); YE=出口航向偏差
+ *   ARC:<段> EY=<mm> YE=<0.1°> R=<mm> DY=<0.1°>
+ *       EY=出口横向偏差(正=弧外侧); YE=出口航向偏差; DY=**本段实际转角**(名义 900)。
+ *       R 与 EY 都是"位姿 vs 名义圆"的**自证量**(内环让 R≡R_cmd), 少转 0.7° 它们照样全 0;
+ *       **DY 才是"弧转够了没有"的读数** —— 实测 891~896(名义 900), 每条弧少转 0.7°
+ *       ⇒ 出口沿切线少走 11mm(见 mf_config.h 的 MF_TOL_ARRIVE_DEG)
  *   LN :<段> IE=<0.1°> YE=<0.1°> IE=进段航向误差(带进来多少); YE=出口残差(纠完剩多少)
- * 判据: 单弧 |EY| 压到 ±10mm 内; 直线 YE≈0 且 IE 不随路程增长 —— 后者是单基准航向
- * 架构(MF_HEADING_FRAME_EN=1)的现场验收点: 旧行为下 IE 恒 0(上游误差被锁死看不见) */
+ *       ⚠ **IE 非零 = 上一条弧没转够**(MOVE 在替它补角), 不是直线没走直 —— 这是弧到位
+ *       余量错配的现场指纹, 与 ARC:DY 成对看
+ * 判据: |EY| ≤ ±10mm; DY 收到 900±3; 直线 YE≈0 且 IE 不随路程增长(单基准航向架构
+ * 的验收点: 旧行为下 IE 恒 0, 上游误差被锁死看不见) */
 void Car_SegExit_Log(void)
 {
 	uint16_t seg;
@@ -247,8 +402,10 @@ void Car_SegExit_Log(void)
 	}
 	if (kind == 0u)
 	{
-		printf("ARC:%u EY=%d YE=%d\r\n", (unsigned)seg,
-		       (int)(ey * 1000.0f), (int)(oe * 10.0f));
+		printf("ARC:%u EY=%d YE=%d R=%d DY=%d\r\n", (unsigned)seg,
+		       (int)(ey * 1000.0f), (int)(oe * 10.0f),
+		       (int)(mf_exit_radius_m(mf_app()) * 1000.0f),
+		       (int)(mf_exit_dyaw_deg(mf_app()) * 10.0f));
 	}
 	else
 	{

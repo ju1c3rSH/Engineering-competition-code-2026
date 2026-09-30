@@ -114,8 +114,7 @@ int main(void)
     Fault_Boot_Report();
   }
   
-	Yaw_pid_Init();
-  Motor_Init();
+	Motor_Init();
 	/* 先等 HWT101 出流再配置: 它上电 ~200ms 内一帧不发, 采早了会把启动期低读成速率,
 	 * 而那个读数正是"要不要写模块 Flash"的判据(Control_Car.c 的 Hwt101_RateBoot) */
   HAL_Delay(500);

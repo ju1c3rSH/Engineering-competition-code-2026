@@ -13,8 +13,9 @@
 //串口数据存储数组
 #define RXbuffer1_size     8
 #define RXbuffer2_size     10
-/* 128: RRATE 配到 200Hz 后每个 IDLE 突发 = 0x52+0x53 = 22B, 旧值 44 只容 2 个突发
- * (10ms)就写满触发 DMA 停摆(丢帧, 靠下一拍 RxRearm 恢复); 128 ≈ 58ms 余量 */
+/* 128: RRATE=200Hz 时模块连续出流(0x52+0x53 各 11B), 一个 IDLE 突发实测多为单帧 11B、
+ * 两帧粘连时 22B; 旧值 44 只容 2 个突发就写满触发 DMA 停摆(丢帧, 靠下一拍 RxRearm 恢复),
+ * 128 ≈ 数个突发的余量。解析按**实际突发长度**扫描, 不依赖 22B 这个经验值 */
 #define RXbuffer3_size     128
 #define RXbuffer6_size     30
 /* 32B: 旧值 16 只容 1 帧, Brain 连续两帧一个 IDLE 突发(NAV 重发+其他)时 DMA 回绕
@@ -26,12 +27,6 @@ extern uint8_t Rxbuffer2[RXbuffer2_size];
 extern uint8_t Rxbuffer3[RXbuffer3_size];
 extern uint8_t Rxbuffer6[RXbuffer6_size];
 extern uint8_t Rxbuffer4[RXbuffer4_size];
-
-extern uint8_t Rxbuffer1_2[RXbuffer1_size];
-extern uint8_t Rxbuffer2_2[RXbuffer2_size];
-extern uint8_t Rxbuffer3_2[RXbuffer3_size];
-extern uint8_t Rxbuffer6_2[RXbuffer6_size];
-extern uint8_t Rxbuffer4_2[RXbuffer4_size];
 
 extern __IO uint16_t UART2_RX_STA;    /* stm32f4xx_it.c: 本次 IDLE 突发字节数(0x8000=完成) */
 extern __IO uint16_t UART3_RX_STA;    /* stm32f4xx_it.c: 本次 IDLE 突发字节数 */

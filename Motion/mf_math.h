@@ -14,6 +14,11 @@ static inline float mf_wrap_deg(float a)
     return a;
 }
 
+static inline float mf_absf(float v)
+{
+    return (v < 0.0f) ? -v : v;
+}
+
 static inline float mf_clampf(float v, float lim)
 {
     if (v > lim)  return lim;

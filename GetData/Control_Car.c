@@ -11,24 +11,13 @@
  *   2. 它是底盘外部要调的吗?     -> 原型进 Control_Car.h 契约面, 实现放对应子模块
  *   3. 它在跨 >=3 个子模块装配?  -> 留
  *
- * 已知杂质: HWT101 三函数(Yaw_pid_Init/ResetHWT101/ConfigHWT101)既非拍序也非装配,
- * 属采样层, 应归 Car_Sense.c; 因 interurp.c 直接写 Yaw_struct.Yaw, 搬动会牵动协议层,
- * 留给下一轮单独做。
+ * 已知杂质: HWT101 两函数(ConfigHWT101/ResetHWT101)既非拍序也非装配, 属采样层, 应归
+ * Car_Sense.c; 因 interurp.c 直接写 Yaw_struct.Yaw, 搬动会牵动协议层, 留给下一轮单独做。
  */
 #include "Control_Car.h"
 #include "Car_Sense.h"
 
 Yaw_TypeDef Yaw_struct;
-
-void Yaw_pid_Init()
-{
-	Yaw_struct.Yaw_pid.Kp                  = 0.15f;
-	Yaw_struct.Yaw_pid.Ki                  = 0.0f;
-	Yaw_struct.Yaw_pid.Kd                  = 0.0f;
-	Yaw_struct.Yaw_pid.I_Max               = 0.0f;
-	Yaw_struct.Yaw_pid.Out_Max             = 0.8f;
-	Yaw_struct.Yaw_pid.Out                 = 0.0f;
-}
 
 /* 10ms 控制拍(TIM4 ISR)的唯一编排点: 下面这个调用顺序**本身就是语义** ——
  * 哪一步必须在 mf_tick 之前/之后、哪一步必须无条件跑, 全系统只在此处定义。
@@ -94,6 +83,16 @@ void ResetHWT101(void)
 float Car_GetYawDeg(void)
 {
 	return Yaw_struct.Yaw;
+}
+
+/* 当前 HWT101 Z 轴角速度(deg/s, 0x52 帧直接给出, 不是差分)
+ * 用途: ① 观测口径 —— 与"航向差分"并排打出来, 才能判后者里有多少是
+ * 250Hz 帧÷100Hz 拍造成的采样伪影(见 mf_pid.h 的 MF_PID_D_AVG_TICKS);
+ * ② 备选的速率反馈源(mf_config.h 的 MF_WZ_RATE_GYRO_FRAME_EN), 但**必须先台架
+ * 确认符号** —— 协议文档没给方向, 反了就是正反馈 */
+float Car_GetGyroWzDps(void)
+{
+	return Yaw_struct.Wz_dps;
 }
 
 /* HWT101 上电配置: 输出速率由出厂默认 10Hz 提到 200Hz(RRATE 寄存器, 写模块内部 Flash)。

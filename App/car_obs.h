@@ -18,6 +18,8 @@ void Car_SegChange_Log(void);      /* 主循环: seg_index/state 变化时打一
 void Car_SegExit_Log(void);        /* 主循环: 段跑完打一行 —— ARC 出 EY/YE, 直线出 LN:IE/YE */
 void Car_TrkChange_Log(void);      /* 主循环: 跟瞄状态迁移(四态机)打一行 TRK:旧>新 */
 void Car_TrkDetail_Log(void);      /* 主循环: ARMED/STOPPED 期 10Hz 打点 TRKD(判误差卡哪) */
+void Car_Obs_TraceArm(void);       /* 't': 武装段内瞬时跟踪(命中弧/转向段自动开窗) */
+void Car_Obs_TraceTask(void);      /* 主循环每圈调: 武装态/采集态才有输出, 其余立即返回 */
 
 /* 控制拍 -> 观测层单向发布(TIM4 ISR 写, main 上下文读) */
 void Car_Obs_SetVx(int16_t path_mm, int16_t final_mm, uint8_t overlay);

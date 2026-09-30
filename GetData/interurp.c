@@ -2,16 +2,6 @@
 #include "protocol.h"
 #include "selftest.h"
 
-int16_t YawL = 0;
-int16_t YawH = 0;
-int VL = 0;
-int VH = 0;
-
-int16_t RWzL = 0;
-int16_t RWzH = 0;
-int16_t WzL = 0;
-int16_t WzH = 0;
-
 /* HWT101 帧接收计数(ISR 内 ++, TIM4 采样层读): 0x52 角速度 / 0x53 角度 */
 volatile uint32_t GyroWz_Seq = 0u;
 volatile uint32_t YawSeq = 0u;
@@ -21,12 +11,6 @@ uint8_t Rxbuffer2[RXbuffer2_size] = {0};
 uint8_t Rxbuffer3[RXbuffer3_size] = {0};
 uint8_t Rxbuffer6[RXbuffer6_size] = {0};
 uint8_t Rxbuffer4[RXbuffer4_size] = {0};
-
-uint8_t Rxbuffer1_2[RXbuffer1_size] = {0};
-uint8_t Rxbuffer2_2[RXbuffer2_size] = {0};
-uint8_t Rxbuffer3_2[RXbuffer3_size] = {0};
-uint8_t Rxbuffer6_2[RXbuffer6_size] = {0};
-uint8_t Rxbuffer4_2[RXbuffer4_size] = {0};
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
@@ -134,6 +118,7 @@ static volatile struct
 	volatile uint8_t evt_fresh;
 	volatile uint8_t query_fresh;
 	volatile uint8_t periodic_fresh;   /* 调试口 'p': 翻转周期状态输出 */
+	volatile uint8_t trace_fresh;      /* 调试口 't': 武装"段内瞬时跟踪"(见 car_obs.c) */
 	/* 转台事件登记 + 台架命令寄存 */
 	uint8_t  tt_kind;                  /* 登记 kind: 0=停止 1=打码 2=微调 3=上电零点对齐 */
 	uint8_t  tt_code;                  /* 本次登记的码 */
@@ -147,24 +132,19 @@ static volatile struct
 /* 入队后的观测登记: ISR 与主循环双上下文都会调, 关中断保护计数字段 */
 static void Car_Dbg2_Record(uint8_t ack, uint8_t sub, uint8_t code)
 {
-	uint16_t n;
-
 	__disable_irq();
 	if (ack != 0u)
 	{
 		dbg2.ack_cnt++;
-		n = dbg2.ack_cnt;
 		dbg2.ack_fresh = 1u;
 	}
 	else
 	{
 		dbg2.nack_cnt++;
-		n = dbg2.nack_cnt;
 		dbg2.nack_fresh = 1u;
 	}
 	dbg2.last_sub = sub;
 	dbg2.last_code = code;
-	(void)n;
 	__enable_irq();
 }
 
@@ -406,17 +386,15 @@ void Uart3_task()
 
 		if ((type == 0x53u) && (yaw_got == 0u))
 		{
+			int16_t yaw_raw;
 			float yaw;
 
 			yaw_got = 1u;
-			YawL = Rxbuffer3[i + 6u];
-			YawH = Rxbuffer3[i + 7u];
-			VL = Rxbuffer3[i + 8u];
-			VH = Rxbuffer3[i + 9u];
+			yaw_raw = (int16_t)(((uint16_t)Rxbuffer3[i + 7u] << 8) | (uint16_t)Rxbuffer3[i + 6u]);
 
 			/* 算完一次写入: 原先是"赋值 + 条件取负"两次写, TIM4 拍可能读到中间态
 			 * (200° 而非 -160°), 差分会因此吃一个 ~360° 的假跳变 */
-			yaw = (float)((YawH << 8) | YawL) / 32768.0f * 180.0f;
+			yaw = (float)yaw_raw / 32768.0f * 180.0f;
 			if (yaw > 180.0f)
 			{
 				yaw = -(360.0f - yaw);
@@ -427,9 +405,7 @@ void Uart3_task()
 		else if ((type == 0x52u) && (wz_got == 0u))
 		{
 			wz_got = 1u;
-			WzL = Rxbuffer3[i + 6u];
-			WzH = Rxbuffer3[i + 7u];
-			raw_wz = (int16_t)(((uint16_t)WzH << 8) | (uint16_t)WzL);
+			raw_wz = (int16_t)(((uint16_t)Rxbuffer3[i + 7u] << 8) | (uint16_t)Rxbuffer3[i + 6u]);
 			Yaw_struct.Wz_dps = (float)raw_wz / 32768.0f * 2000.0f;
 			GyroWz_Seq++;
 		}
@@ -444,8 +420,9 @@ void Uart2_task()
 {
 	uint8_t i, sta = (uint8_t)(UART2_RX_STA & 0x7FFFu);
 
-	/* 消费 0x8000 完成位约定: 突发内扫 '?', 命中置查询标志供 Car_DebugTask 回报
-	 * (历史 Uart2_task 恒空壳, 此处首次实现; ISR 只置标志, 打印全在主循环) */
+	/* 消费 0x8000 完成位约定: 突发内扫命令, 命中的置标志供 Car_DebugTask 处理。
+	 * '?'=状态块 / 'p'=翻 1Hz 周期块 / 't'=武装段内瞬时跟踪(20Hz×4s, 见 car_obs.c)
+	 * 'x''w''e''1'~'7'=台架直转转台 (ISR 只置标志, 打印与执行全在主循环) */
 	if (sta == 0u)
 	{
 		return;
@@ -463,6 +440,10 @@ void Uart2_task()
 		else if (Rxbuffer2[i] == 'p')
 		{
 			dbg2.periodic_fresh = 1u;   /* 翻转 1Hz 周期状态输出开关 */
+		}
+		else if (Rxbuffer2[i] == 't')
+		{
+			dbg2.trace_fresh = 1u;      /* 武装段内瞬时跟踪(20Hz×4s, 命中弧段自动开窗) */
 		}
 		/* 台架直转命令: ISR 只置标志, 命令执行/打印全在 Car_DebugTask 主循环 */
 		else if (Rxbuffer2[i] == 'x')
@@ -503,7 +484,7 @@ void Car_DebugTask(void)
 	uint8_t  tt_kind, tt_code, bench_kind, bench_arg;
 	float    tt_ang;
 	uint8_t  ack_f = 0u, nack_f = 0u, evt_f = 0u, query_f = 0u, periodic_f = 0u;
-	uint8_t  tt_f = 0u, bench_f = 0u;
+	uint8_t  tt_f = 0u, bench_f = 0u, trace_f = 0u;
 
 	Hwt101_RateTask();   /* 0x53 帧率滚动统计: 每圈刷新, 与有没有敲 '?' 无关 */
 
@@ -525,6 +506,7 @@ void Car_DebugTask(void)
 	if (dbg2.evt_fresh != 0u)      { dbg2.evt_fresh = 0u;      evt_f = 1u; }
 	if (dbg2.query_fresh != 0u)    { dbg2.query_fresh = 0u;    query_f = 1u; }
 	if (dbg2.periodic_fresh != 0u) { dbg2.periodic_fresh = 0u; periodic_f = 1u; }
+	if (dbg2.trace_fresh != 0u)    { dbg2.trace_fresh = 0u;    trace_f = 1u; }
 	if (dbg2.tt_fresh != 0u)       { dbg2.tt_fresh = 0u;       tt_f = 1u; }
 	if (dbg2.bench_fresh != 0u)    { dbg2.bench_fresh = 0u;    bench_f = 1u; }
 	__enable_irq();
@@ -603,6 +585,11 @@ void Car_DebugTask(void)
 	Car_SegExit_Log();     /* 段出口质量: ARC 出 EY/YE, 直线出 LN:IE/YE */
 	Car_TrkChange_Log();   /* 跟瞄状态迁移: 四态机换态才打一行 TRK:旧>新 */
 	Car_TrkDetail_Log();   /* ARMED/STOPPED 期 10Hz 打点 TRKD: 判"误差卡在哪一环" */
+	if (trace_f != 0u)
+	{
+		Car_Obs_TraceArm();   /* 't': 武装段内跟踪, 命中弧段自动开窗(见 car_obs.c) */
+	}
+	Car_Obs_TraceTask();      /* 段内瞬时跟踪: 未武装/未命中时立即返回 */
 
 	/* RT:FINISH / PD: 漂移行; 推进本身在 10ms 定时里, 打印只能在主循环 */
 	SELFTEST_DEBUG_POLL();

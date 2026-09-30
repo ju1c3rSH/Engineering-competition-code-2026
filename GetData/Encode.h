@@ -11,8 +11,8 @@
 #include "Control_Car.h"
 #include "stdint.h"
 
-//编码器ARR最大值
-#define Encode_ARR 		65535
+// 编码器读取：读后把 CNT 回写到中点，单次可测 ±(65535-20000) 脉冲（CubeMX 里编码器定时器 ARR=65535）
+#define ENCODER_CNT_MID  20000
 
 // PWM定时器ARR值宏定义(与 CubeMX ARR 一致: tim.c Period=1680-1, 否则满占空比封顶89.3%)
 #define PWM_ARR 1679  // 84MHz/2 = 42MHz / 1680 = 25kHz PWM
@@ -24,8 +24,6 @@
 #define PWM_TIM       htim3
 #define GAP_TIM       htim4
 
-#define SPEED_RECORD_NUM 100 //求平均值数组
-
 // 电机数量
 enum Motor_name{
 
@@ -34,16 +32,12 @@ enum Motor_name{
 	Motor_Count,
 };
 
-//电机工作时的各项数据
+//电机工作时的各项数据(只有 Pos 被采样层读走当里程; 其余是本层的中间量)
 typedef struct{
 
 	float encoder;
 	float Speed;
 	float Pos;
-	float Tar_Speed;
-	float Acc;
-	float dt;
-	float Filtered_speed;
 	
 }Parameter_TypeDef;   
 
@@ -59,15 +53,11 @@ typedef struct {
 		float Encoder_line_count;
 		float Encoder_multiple;
 		Parameter_TypeDef Parameter;
-    PID_TypeDef speed_pid;     // 速度PID
 } Motor_TypeDef;
 
 void Motor_Init(void);         //电机初始化
-int abs_int(int num);          //求其绝对值
 float Read_Encoder_Value(uint8_t motor_id);//读取编码器脉冲 
 void Gat_Motor_data(uint8_t motor_id);
-float speed_control(float accel, float current_vel, float target_vel, float DT);
-float Speed_Low_Filter(float new_Spe,float *speed_Record);
 
 
 

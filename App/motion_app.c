@@ -20,6 +20,9 @@ void mf_app_init(void)
 		.track_width_m = 0.25f,
 		.half_length_m = 0.0f,
 		.half_width_m  = 0.0f,
+		/* 里程计形状来源: 1 = 距离取轮速均值 ⇒ 弧半径变成**实测值**(e_y/e_psi 才活)。
+		 * 0 = 旧弧长反解(A/B 用, 只在补偿坏掉时自洽)。见 mf_config.h 的推导 */
+		.odom_arc_src  = (uint8_t)MF_ODOM_ARC_SRC,
 		.max_vx_mps    = 1.5f,           /* 覆盖 High_speed 1.41m/s */
 		.max_vy_mps    = 0.0f,
 		.max_wz_dps    = 150.0f,         /* Middle 弧线稳态 57dps + 修正余量 */

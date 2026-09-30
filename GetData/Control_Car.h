@@ -33,14 +33,11 @@
 
 typedef struct
 {
-	PID_TypeDef Yaw_pid;
-	float Yaw;
-	float Tar_Yaw;
+	float Yaw;         /* HWT101 航向(deg, ±180; interurp.c 的 0x53 解析写入) */
 	float Wz_dps;      /* IMU 角速度 Z(deg/s): HWT101 0x52 帧, 供速率内环(mf_rate.h)用 */
 
 }Yaw_TypeDef;
 
-void Yaw_pid_Init(void);
 void Car_Control(void);
 void ConfigHWT101(void);
 /* 0x53 帧率(Hz)两个口径, 都是 '?' 的 HWT: 行要打的量: RateHz=最近一个窗口的滚动值

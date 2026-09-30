@@ -48,12 +48,26 @@ typedef struct
     float arc_r_abs;        /* |radius_m| */
     float arc_sgn;          /* +1=左转 / -1=右转（d_yaw 符号；与 radius 同号） */
     float arc_ey_m;         /* 本拍带符号横向偏差 m，正=弧外（诊断与横向环共用） */
+    float slip_gain;        /* 本段的开环滑移基线（弧线 = MF_ARC_SLIP_GAIN，其余 1.0）。
+                             * 速率内环(mf_rate.h)拿它当输出侧前馈；见 mf_config.h */
 
     /* ARC 段出口质量记录（段完成那一拍落一次，等上层取走）。
      * ARC 与直线 MOVE 共用这一套，kind 区分；直线段无名义线，ey 恒 0（见 mf_path.c） */
     float seg_exit_ey_m;        /* ARC: 出口横向偏差 m，正=弧外 */
     float seg_exit_yawerr_deg;  /* 出口航向偏差 deg（纠完剩多少） */
     float seg_exit_in_yawerr_deg; /* 进段航向偏差 deg（带进来多少），仅直线段填 */
+    float seg_exit_radius_m;    /* ARC 出口的 R = 本段编码器轮程 / |IMU 转角| (m)。
+                                 * ⚠ **它不是物理半径** —— 它与指令半径是自证的: 速率内环让
+                                 * ω_actual = ω_sp = v_wheel/R_cmd, 于是
+                                 * R = v_wheel/ω_actual ≡ R_cmd (恒等)。
+                                 * 物理半径 = R_cmd·(1−纵向打滑), 打滑在机上不可观测 ⇒
+                                 * **判真半径只能用卷尺**(见 mf_config.h 的 MF_ARC_WZ_TRIM)。
+                                 * 本值的用途是"内环有没有把 ω 关到位": 它明显偏离 R_cmd
+                                 * 就说明反解/限幅出问题了 */
+    float seg_exit_dyaw_deg;    /* ARC 出口的**实际转角** |Δyaw_imu|(deg, 恒正)。
+                                 * 这是"弧到底转够了没有"的直接读数 —— 名义 90,
+                                 * 旧到位余量(1.0°)下实测只有 89.1~89.6, 每条弧少转 0.7°
+                                 * ⇒ 出口沿切线少走 11mm。见 mf_config.h 的 MF_TOL_ARRIVE_DEG */
     uint16_t seg_exit_seg;      /* 出口所在的段下标 */
     uint8_t  seg_exit_kind;     /* 0=ARC / 1=直线 MOVE */
     uint8_t  seg_exit_new;      /* 1=有新记录待取 */
@@ -144,6 +158,26 @@ uint8_t mf_path_is_waiting(const mf_path_ctx_t *p);
  */
 uint8_t mf_path_pop_seg_exit(mf_path_ctx_t *p, uint16_t *seg_index, uint8_t *kind,
                              float *ey_m, float *in_yawerr_deg, float *out_yawerr_deg);
+
+/**
+ * @brief 最近一次 ARC 出口的 R = 本段轮程 / |本段 IMU 转角|（m，恒正）
+ *
+ * 名义 TURN_RADIUS_M = 0.9425。**它不等于物理半径** —— 速率内环让 ω_actual = ω_sp =
+ * v_wheel/R_cmd, 于是本值 ≡ v_wheel/ω_actual ≡ R_cmd(自证)。物理半径还要乘
+ * (1−纵向打滑), 而打滑机上不可观测 ⇒ **判真半径只能用卷尺**(mf_config.h: MF_ARC_WZ_TRIM)。
+ * 本值偏离名义 = "内环没把 ω 关到位/输出被限幅", 是内环健康的判据, 不是几何判据。
+ * @return 名义上 >0; 尚无 ARC 出口记录时返回 0
+ */
+float mf_path_exit_radius_m(const mf_path_ctx_t *p);
+
+/**
+ * @brief 最近一次 ARC 的**实际转角** |Δyaw_imu|（deg，恒正；名义 90）
+ *
+ * 判"弧转够了没有"的直接读数。少转 0.7° = 出口沿切线少走 11mm, 而 EY/YE/R 因为都是
+ * "位姿 vs 名义圆"的自证量看不出它 —— 唯一旁证是下一段 MOVE 的 LN:IE(替弧补角)。
+ * 见 mf_config.h 的 MF_TOL_ARRIVE_DEG
+ */
+float mf_path_exit_dyaw_deg(const mf_path_ctx_t *p);
 
 float mf_path_remain_m(const mf_path_ctx_t *p);   /* 剩余里程估算(m): 只算位移段, ARC 全额计入 */
 

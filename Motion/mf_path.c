@@ -22,9 +22,12 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->arc_r_abs = 0.0f;
     p->arc_sgn = 1.0f;
     p->arc_ey_m = 0.0f;
+    p->slip_gain = 1.0f;
     p->seg_exit_ey_m = 0.0f;
     p->seg_exit_yawerr_deg = 0.0f;
     p->seg_exit_in_yawerr_deg = 0.0f;
+    p->seg_exit_radius_m = 0.0f;
+    p->seg_exit_dyaw_deg = 0.0f;
     p->seg_exit_seg = 0u;
     p->seg_exit_kind = 0u;
     p->seg_exit_new = 0u;
@@ -104,6 +107,7 @@ void mf_path_stop(mf_path_ctx_t *p)
     p->cur_speed = 0.0f;    /* 停路径即视为停稳, 新路径从 0 起坡 */
     p->cur_wz = 0.0f;
     p->prev_wz = 0.0f;
+    p->slip_gain = 1.0f;    /* 手动/停稳段没有弧线几何, 滑移基线必须复位 */
 }
 
 uint8_t mf_path_pop_chain(mf_path_ctx_t *p)
@@ -291,6 +295,13 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
     return 0u;
 }
 
+/* 弧线几何前馈 wz_ff = v/R × 径向 trim。trim 见 mf_config.h —— 它是**物理半径的唯一旋钮**
+ * (基线/内环/横向项全被速率内环吸收, 改不动稳态半径)。三处用同一个式子, 不许各写一份 */
+static float seg_arc_wz_ff(const mf_path_ctx_t *p, const mf_arc_t *a)
+{
+    return (p->cur_speed / a->radius_m) * (180.0f / MF_PI_F) * MF_ARC_WZ_TRIM;
+}
+
 /* 定半径弧线: 走够 d_yaw 即完成(判据只用 IMU 转角); 设定值取"名义切线航向"
  * = 圆心→车体方位角 + sgn·90°(由里程计位置推出), 再加横向偏差比例项。旧律对比见 Motion/README.md */
 static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
@@ -321,6 +332,15 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
         }
     }
 
+    /* 没走完就不许停: 末段弧的下一段要求停稳时 v_stop 会把目标减到 0, 而 remain_yaw
+     * 可能还大于到位余量 ⇒ 车停在段里永远走不完。见 MF_ARC_CREEP_MPS
+     * (用运行期比较而不是 #if: 预处理器不认浮点字面量。宏为 0 时编译器会把整个分支折掉) */
+    if ((MF_ARC_CREEP_MPS > 0.0f) && (remain_yaw > MF_TOL_ARRIVE_DEG)
+        && (target < MF_ARC_CREEP_MPS))
+    {
+        target = MF_ARC_CREEP_MPS;
+    }
+
     out->vx_mps = seg_speed_ramp(p, target, acc, dt);
     out->vy_mps = 0.0f;
 
@@ -343,20 +363,39 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
 #if MF_ARC_XTRACK_EN
         /* 横向项**必须乘 arc_sgn**(左+1/右-1): e_y 恒正=弧外、不分左右, 但"回弧内往哪边打"分左右
          * —— 漏乘会把右转弧推向弧外(实测右转 EY +103 vs 左转 +77)。
-         * 注意 arc_xtrack_sim.py 只有左转用例, 这个符号错在仿真里不会暴露; 改仿真务必补右转用例。 */
-        out->wz_dps = mf_pid_calc(p->pid_yaw, e_psi, dt)
-                    + (p->cur_speed / a->radius_m) * (180.0f / MF_PI_F)
-                    + MF_ARC_XTRACK_K * p->arc_ey_m * p->arc_sgn;
+         * 注意 arc_xtrack_sim.py 只有左转用例, 这个符号错在仿真里不会暴露; 改仿真务必补右转用例。
+         * 另: 本项只当**微调** —— 半径的主责归速率内环(v/R + 内环闭环), 故自带 MF_ARC_XTRACK_MAX_FRAC
+         * 限幅, 免得它顶到段内限幅、与内环抢同一个误差(见 mf_config.h 的回路增益估算) */
+        {
+            float wz_ff = seg_arc_wz_ff(p, a);
+            float xt    = MF_ARC_XTRACK_K * p->arc_ey_m * p->arc_sgn;
+            float xt_lim = mf_absf(wz_ff) * MF_ARC_XTRACK_MAX_FRAC;
+
+            out->wz_dps = mf_pid_calc(p->pid_yaw, e_psi, dt) + wz_ff + mf_clampf(xt, xt_lim);
+        }
 #else
         {
             float yaw_sp = p->entry.yaw_deg
                          + ((p->dist_accum - p->dist_base_m) / a->radius_m)
                            * (180.0f / MF_PI_F);
             float err = mf_wrap_deg(yaw_sp - pose->yaw_deg);
-            out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt)
-                        + (p->cur_speed / a->radius_m) * (180.0f / MF_PI_F);
+            out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt) + seg_arc_wz_ff(p, a);
         }
 #endif
+
+        /* 弧线自限幅: 上面三项叠加(航向P + v/R + 横向K·e_y)可以顶到 cfg.max_wz_dps,
+         * 那是 R≈0.27m 的原地上转 —— 履带横向刮擦物理上做不到, 只会把车钉住、SP 钉在
+         * 限幅上十几秒而弧走不完(2026-09-30 实测)。上限定在几何前馈的
+         * MF_ARC_WZ_MAX_MULT 倍: 半径最紧只允许做到 R/该倍数, 慢一点也不会自锁 */
+        {
+            float wz_ff  = seg_arc_wz_ff(p, a);
+            float wz_lim = mf_absf(wz_ff) * MF_ARC_WZ_MAX_MULT;
+
+            if (wz_lim > 1.0f)
+            {
+                out->wz_dps = mf_clampf(out->wz_dps, wz_lim);
+            }
+        }
     }
 
     return (uint8_t)(remain_yaw <= MF_TOL_ARRIVE_DEG);
@@ -476,6 +515,7 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
     p->time_ms = 0;
     p->tol_hold_ms = 0u;
     p->subphase = 0;
+    p->slip_gain = 1.0f;    /* 默认不补滑移; 只有 ARC 段改它(见 mf_config.h) */
     p->cur_wz = p->prev_wz;     /* 角速度斜坡从上拍实际输出续起, 不回零 */
     /* cur_speed 刻意不清零: 跨段保持, 段间速度衔接由各段的
      * seg_speed_ramp/抛物线减速完成 */
@@ -520,6 +560,8 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
             p->arc_cy_m = pose->y_m + r * cosf(yaw_rad);
             p->arc_ey_m = 0.0f;     /* 进段必然在名义弧上 */
         }
+        /* 弧线是唯一"全程都在转弯"的段, 滑移亏损也全程都在 —— 给它前馈基线 */
+        p->slip_gain = MF_ARC_SLIP_GAIN;
         break;
     case MF_SEG_TURN_TO:
     case MF_SEG_TURN_REL:
@@ -657,6 +699,16 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
              * 由上层主循环取走打 ARC: 行。旧律/新律都记, 指标同源可直接 A/B。
              * 直线段(MOVE)的记录在 seg_move_dist 里落, 两条路共用同一套字段 */
             p->seg_exit_ey_m = p->arc_ey_m;
+            /* 实际转角与轮程: 判"转够了没有"与"内环关到位没有"(
+             * 两者的口径与陷阱见 mf_path.h 的字段注释) */
+            {
+                float hdg_d = mf_absf(mf_wrap_deg(pose->yaw_deg - p->entry.yaw_deg));
+                float dyaw_rad = hdg_d * (MF_PI_F / 180.0f);
+
+                p->seg_exit_dyaw_deg = hdg_d;
+                p->seg_exit_radius_m = (dyaw_rad > 1.0e-3f)
+                                     ? (p->dist_accum / dyaw_rad) : 0.0f;
+            }
             p->seg_exit_in_yawerr_deg = 0.0f;   /* ARC 无"带进来"一说, 看出口 YE */
             /* seg_exit_yawerr_deg 由 seg_arc 每拍写, 完成那一拍的值即出口偏差 */
             p->seg_exit_seg = p->idx;
@@ -682,6 +734,16 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
     }
     p->prev_wz = out->wz_dps;   /* 记录本拍最终角速度, 供下段进段做斜坡种子 */
     return done;
+}
+
+float mf_path_exit_radius_m(const mf_path_ctx_t *p)
+{
+    return p->seg_exit_radius_m;
+}
+
+float mf_path_exit_dyaw_deg(const mf_path_ctx_t *p)
+{
+    return p->seg_exit_dyaw_deg;
 }
 
 mf_path_state_t mf_path_get_state(const mf_path_ctx_t *p)
@@ -778,7 +840,7 @@ float mf_path_remain_m(const mf_path_ctx_t *p)
     else if (p->path[p->idx].type == MF_SEG_ARC)
     {
         const mf_arc_t *a = &p->path[p->idx].p.arc;
-        remain += fabsf(a->d_yaw_deg) * (3.14159265f / 180.0f) * fabsf(a->radius_m);
+        remain += fabsf(a->d_yaw_deg) * (MF_PI_F / 180.0f) * fabsf(a->radius_m);
     }
 
     for (i = (uint16_t)(p->idx + 1u); p->path[i].type != MF_SEG_END; i++)
@@ -789,7 +851,7 @@ float mf_path_remain_m(const mf_path_ctx_t *p)
         }
         else if (p->path[i].type == MF_SEG_ARC)
         {
-            remain += fabsf(p->path[i].p.arc.d_yaw_deg) * (3.14159265f / 180.0f)
+            remain += fabsf(p->path[i].p.arc.d_yaw_deg) * (MF_PI_F / 180.0f)
                       * fabsf(p->path[i].p.arc.radius_m);
         }
     }

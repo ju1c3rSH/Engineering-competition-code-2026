@@ -14,8 +14,9 @@ void mf_inverse_kinematics(const mf_body_cmd_t *cmd, float track_w,
     (void)half_len;
     (void)half_wid;
 
-#if MF_DIFF_BOOST_EN
-    /* 差速前馈补偿: 按转向方向放大差速指令(系数 MF_DIFF_BOOST_POS/NEG, 标定见 mf_config.h) */
+#if (MF_DIFF_BOOST_EN && !MF_WZ_RATE_EN)
+    /* 差速前馈补偿: 按转向方向放大差速指令(系数 MF_DIFF_BOOST_POS/NEG, 标定见 mf_config.h)。
+     * MF_WZ_RATE_EN=1 时本项必须失效 —— 打滑亏损已由速率内环的积分项补偿, 再乘是双重补偿 */
     wz_rad *= (cmd->wz_dps >= 0.0f) ? MF_DIFF_BOOST_POS : MF_DIFF_BOOST_NEG;
 #endif
 

@@ -95,6 +95,8 @@ static void Tracking_HoldStill(mf_ctx_t *motion)
 	motion->path.cur_speed = 0.0f;
 	motion->path.cur_wz = 0.0f;
 	motion->path.prev_wz = 0.0f;
+	/* 同上, 硬置零期间速率内环的输出被丢弃, 积分必须一起泄放(否则放行即甩转向) */
+	mf_clear_rate(motion);
 }
 
 static void Tracking_RaiseFault(uint8_t reason);   /* 前置声明: Tracking_Start 无段表时调 */

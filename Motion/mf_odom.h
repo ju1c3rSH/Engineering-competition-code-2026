@@ -12,6 +12,23 @@
 
 #include "mf_types.h"
 
+/* 弧实测半径估计器（观测口径）：R_eff = Σ轮位移 / |ΣΔψ|
+ * 分子分母必须覆盖**同一段时间**：航向是"帧到达才步进"的零阶保持量，拿单拍位移除单拍航向
+ * 增量会在帧率≠控制拍率时给出 0 与数倍的跳变（阈值见 mf_config.h 的 MF_REFF_*）。
+ * 本值是弧几何**唯一的非循环观测量** —— odom 的形状 ds_enc/Δθ_enc 里打滑因子被约掉，结构性
+ * 等于指令半径，ARC 的 e_y/e_psi 因此看不见半径错（docs/坑-编码器与里程.md §8） */
+typedef struct
+{
+    float    r_m;             /* 上次结算的实测半径(m, 恒正)；0 = 尚无 */
+    float    ds_acc_m;        /* 当前结算窗口内累计的轮位移(带符号) */
+    float    dyaw_acc_deg;    /* 同窗口内累计的航向转角(带符号) */
+    float    last_yaw_deg;    /* 窗口起点航向 */
+    uint32_t last_seq;        /* 窗口起点的航向帧计数 */
+    uint16_t stale;           /* 距上次成功结算的拍数 */
+    uint8_t  seeded;
+    uint8_t  valid;           /* 当前是否有新鲜半径(stale 未超时) */
+} mf_reff_t;
+
 typedef struct
 {
     mf_pose_t pose;         /* 融合输出位姿 */
@@ -19,6 +36,8 @@ typedef struct
     float half_length_m;    /* 麦轮几何参数：半车长 */
     float half_width_m;     /* 麦轮几何参数：半车宽 */
     float last_ds_for_xy;   /* 本拍反解后实际用于 x/y 的位移 */
+    uint8_t arc_src;        /* 形状来源（MF_ODOM_ARC_SRC，可由 mf_cfg_t 覆盖）：0=弧长反解 1=轮速均值 */
+    mf_reff_t reff;         /* 弧实测半径估计（独立观测量） */
 } mf_odom_t;
 
 void mf_odom_init(mf_odom_t *o, float track_width_m,
@@ -29,8 +48,17 @@ void mf_odom_init(mf_odom_t *o, float track_width_m,
  * @param o        里程计对象
  * @param wheel    各轮状态（本函数读取 delta_m 增量）
  * @param imu_yaw  外部航向（deg，多圈）；MF_YAW_SOURCE 为 ENCODER 时忽略
+ * @param yaw_seq  航向帧计数（快照 mf_state_in_t.yaw_seq）：判"本拍航向是不是新样"，
+ *                 供 R_eff 的"同间隔配对"用；编码器航向源填 0
  */
-void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw);
+void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw,
+                    uint32_t yaw_seq);
+
+/** @brief 实测弧半径(m) 与新鲜标志；*valid 可为 NULL。恒正，0 = 尚无估计 */
+float mf_odom_get_reff(const mf_odom_t *o, uint8_t *valid);
+
+/** @brief 当前生效的形状来源（0=弧长反解 / 1=轮速均值），供调试口回报 */
+uint8_t mf_odom_get_arc_src(const mf_odom_t *o);
 
 /** @brief 重定位（比赛起点标定 / 到达地标后校准漂移） */
 void mf_odom_set_pose(mf_odom_t *o, float x, float y, float yaw);

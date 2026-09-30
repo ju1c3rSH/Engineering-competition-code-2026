@@ -30,8 +30,4 @@
 /* 原转弯机制: 90° 弧中心线走 π 轮转, 反解 R=2π×轮径(基线 Diameter=15 单位=1 轮转) */
 #define TURN_RADIUS_M (2.0f * M_PI_F * WHEEL_DIA_M)
 
-/* 旧 speed_control() 的 Acc=45 轮转/s^2。speed_control 本体仍在 GetData/Encode.c,
- * 属待清死代码; 保留此宏作为下一轮清理时的换算锚点 */
-#define TURN_ACC_MPS2 MF_M_ACC(45.0f)
-
 #endif /* _CAR_UNITS_H_ */

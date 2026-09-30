@@ -22,5 +22,9 @@ void Car_Dbg2_BenchDrop(void);
 void ResetHWT101(void);
 /* 当前 HWT101 航向读数(deg, ±180): GYRO_ZERO 钉航向基准用, 实现 GetData/Control_Car.c */
 float Car_GetYawDeg(void);
+/* 当前 HWT101 Z 轴角速度(deg/s, 0x52 帧): 调试口 TRC 行的 GZ= 列用它把
+ * "真转速"与"航向差分"并排摆出来 —— 两者差多少, 差分里就有多少采样伪影。
+ * 实现 GetData/Control_Car.c */
+float Car_GetGyroWzDps(void);
 
 #endif /* _CAR_LINK_H_ */
