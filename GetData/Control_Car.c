@@ -70,15 +70,30 @@ static void Hwt101_CfgSend(uint8_t *cmd)
 	(void)HAL_UART_Transmit_DMA(&huart3, cmd, 5u);
 }
 
-//HWT101角度置零: 缓冲必须 static —— Transmit_DMA 异步搬运, 栈数组函数返回即失效会发坏字节
+/* HWT101 Z 轴角度归零(CALIYAW=0x76)。官方协议要求四步: 解锁(KEY=0x69 写 0xB588) → 延时
+ * → 归零(0x76 写 0x0000) → 延时 → 保存(SAVE=0x00 写 0x0000)。旧实现只发了中间那条归零帧:
+ * 缺解锁模块静默拒写、缺保存掉电不保留 ⇒ 从未生效过。
+ * **阻塞约 1.2s** ⇒ 只许上电(main.c)调用。nav 的 GYRO_ZERO 不依赖它: 那里直接把"当前
+ * 航向"钉成基准(nav_task.c), 归零只影响读数是否从 0 起, 不影响基准正确性 */
 void ResetHWT101(void)
 {
-	static uint8_t temp[] = {0xff, 0xAA, 0X76, 0x00, 0x00};
-	if (huart3.gState != HAL_UART_STATE_READY)
-	{
-		return;   /* 上帧置零还在途: 跳过(命令幂等, 免 HAL_BUSY 静默失败) */
-	}
-	HAL_UART_Transmit_DMA(&huart3, temp, 5);
+	static uint8_t unlock_cmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5};   /* KEY: 写 0xB588 解锁 */
+	static uint8_t cazero_cmd[] = {0xFF, 0xAA, 0x76, 0x00, 0x00};   /* CALIYAW: 0x0000 = Z 轴归零 */
+	static uint8_t save_cmd[]   = {0xFF, 0xAA, 0x00, 0x00, 0x00};   /* SAVE: 保存配置 */
+
+	Hwt101_CfgSend(unlock_cmd);
+	HAL_Delay(200u);      /* 官方示例延时; 解锁后有 10s 窗口, 三步须在此内完成 */
+	Hwt101_CfgSend(cazero_cmd);
+	HAL_Delay(500u);
+	Hwt101_CfgSend(save_cmd);
+	HAL_Delay(500u);
+}
+
+/* 当前 HWT101 航向读数(deg, ±180): 跨层接缝给 App 层用(car_link.h)。
+ * 单 float 读, Cortex-M4 对齐访问原子, 与 USART3 中断写的竞争无需临界区 */
+float Car_GetYawDeg(void)
+{
+	return Yaw_struct.Yaw;
 }
 
 /* HWT101 上电配置: 输出速率由出厂默认 10Hz 提到 200Hz(RRATE 寄存器, 写模块内部 Flash)。

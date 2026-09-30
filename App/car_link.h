@@ -17,7 +17,10 @@ void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);
 void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg);
 /* 作废上电静置期攒下的台架转台命令(bench_fresh): 实现 GetData/interurp.c */
 void Car_Dbg2_BenchDrop(void);
-/* HWT101 航向置零: 实现 GetData/Control_Car.c(属采样层, 待迁 Car_Sense.c) */
+/* HWT101 Z 轴角度归零: 阻塞约 1.2s 的"解锁/归零/保存"序列, **只许上电初始化调用**,
+ * 中断内调会堵控制拍。实现 GetData/Control_Car.c(属采样层, 待迁 Car_Sense.c) */
 void ResetHWT101(void);
+/* 当前 HWT101 航向读数(deg, ±180): GYRO_ZERO 钉航向基准用, 实现 GetData/Control_Car.c */
+float Car_GetYawDeg(void);
 
 #endif /* _CAR_LINK_H_ */

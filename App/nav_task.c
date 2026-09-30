@@ -145,16 +145,20 @@ void Car_Nav_Task(void)
 		case CAR_SUB_TRACKING_START:    Tracking_Start(a0, a1); break;
 		case CAR_SUB_TRACKING_STOP:     Tracking_Stop(a0); break;
 		case CAR_SUB_GYRO_ZERO:
-			/* 车静止时置零，此刻必在原点(上电流程：扫码->置零->起步) */
+			/* 车静止时把"此刻"定为位姿原点(上电流程: 扫码->置零->起步)。
+			 * 航向基准**不再依赖模块归零**: 直接把此刻实测航向钉成基准 —— 车头朝向即
+			 * 基准方向, 起始误差恒为 0。模块归零(ResetHWT101)是阻塞约 1.2s 的解锁/归零/
+			 * 保存序列, 只能在上电做(main.c), 不能在本 10ms 拍里调 */
 			if (nav.state != NAV_RUN)
 			{
-				ResetHWT101();
-				mf_set_pose(mf_app(), 0.0f, 0.0f, 0.0f);
+				float yaw0 = Car_GetYawDeg();
+
+				mf_set_pose(mf_app(), 0.0f, 0.0f, yaw0);
 				/* 单基准航向(MF_HEADING_FRAME_EN): 把"最开始这一刻的车头朝向"钉成全程
 				 * 唯一的航向基准, 此后跨表/起新段都不再重定锚 —— 直线段于是主动把上游
 				 * 残差纠回来。必须在 mf_app_init() 之后调用: 它是懒初始化, 由本函数第一拍
 				 * 完成(mf_init -> mf_path_init 会把基准清掉) */
-				mf_set_heading_ref(mf_app(), 0.0f);
+				mf_set_heading_ref(mf_app(), yaw0);
 			}
 			Tracking_Abort();
 			break;
