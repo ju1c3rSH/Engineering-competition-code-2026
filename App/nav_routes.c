@@ -28,16 +28,19 @@ static const mf_seg_t tbl_qr[] =          /* NAV_TO_QR: flag0 出发首段 43(�
 	SEG_END
 };
 static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: 排爆区去程(末段转弯+末段直线已移入重锚表) */
+/* ⚠ 2026-09-30: 五条 MOVE 已按 0.96 缩(47/19/49/37/50 → 45.1/18.2/47.0/35.5/48.0)。
+ * 直线物理长度 = (单位/15)×π×**真实**轮径, 而真实有效轮径 ≈156.3mm(固件假设 150)——
+ * 同一比例也让弧半径变成 982(卷尺), 见 mf_config.h: MF_ARC_WZ_TRIM。两处同源, 要改一起改。 */
 {
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(47.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(45.1f)),
 	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),   /* 左 90 (flag1) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(19.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(18.2f)),
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag2) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(49.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(47.0f)),
 	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),   /* 左 90 (flag4) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(37.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(35.5f)),
 	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag6) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(50.0f)),
+	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(48.0f)),
 	SEG_END
 };
 static const mf_seg_t tbl_bucket[] =      /* NAV_TO_BUCKET: 桶与排爆作业点在车道两侧同一点位,
