@@ -22,7 +22,7 @@
                           .p.turn = { (y), 0.0f } }
 #define SEG_END         { .type = MF_SEG_END }
 
-static const mf_seg_t tbl_qr[] =          /* NAV_TO_QR: flag0 出发首段 43(台架单段用) */
+static const mf_seg_t tbl_qr[] =          /* NAV_TO_QR: flag0 出发首段(台架单段用, 长度随意改) */
 {
 	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(47.0f)),
 	SEG_END

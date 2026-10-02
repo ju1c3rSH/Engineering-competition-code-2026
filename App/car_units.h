@@ -22,7 +22,9 @@
 /* 驱动轮直径(m)。TODO: 台架 5m 直线复标定 */
 #define WHEEL_DIA_M   0.150f
 
-/* 原路线里程约定: 旧 Car_Pos 1 单位 = 1/15 驱动轮转 */
+/* 原路线里程约定: 旧 Car_Pos 1 单位 = 1/15 驱动轮转 = π·Ø150/15 = **31.42 mm 轮上行程**。
+ * ⚠ Ø150 的轮面周长恰好是 15π cm ⇒ 1 单位 = π cm ≈ 3.14 cm —— 它不是 1 cm, 差一个 π。
+ * 段表按这条读: 217 单位 ≈ 6.8 m 轮上(不是 2.17 m); 真值另乘 真实轮径/0.150 ≈ 1.04 */
 #define MF_M_DIST(u)    (((float)(u) / 15.0f) * (M_PI_F * WHEEL_DIA_M))
 #define MF_M_SPEED(rps) ((float)(rps) * (M_PI_F * WHEEL_DIA_M))
 #define MF_M_ACC(rps2)  ((float)(rps2) * (M_PI_F * WHEEL_DIA_M))

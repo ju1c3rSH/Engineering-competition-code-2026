@@ -8,7 +8,7 @@ void mf_pid_init(mf_pid_t *pid, float kp, float ki, float kd,
     pid->kd = kd;
     pid->i_max = i_max;
     pid->out_max = out_max;
-    pid->d_win = 1u;    /* 采样层下发前用逐拍差分: 不假设任何帧率 */
+    pid->d_win = 1u;    /* 采样层未下发(实测 200Hz = 2 帧/拍, 逐拍差分即真值): 见 mf_pid.h */
     mf_pid_reset(pid);
 }
 
