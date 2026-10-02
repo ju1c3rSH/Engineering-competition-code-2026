@@ -17,14 +17,16 @@ void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);
 void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg);
 /* 作废上电静置期攒下的台架转台命令(bench_fresh): 实现 GetData/interurp.c */
 void Car_Dbg2_BenchDrop(void);
-/* HWT101 Z 轴角度归零: 阻塞约 1.2s 的"解锁/归零/保存"序列, **只许上电初始化调用**,
- * 中断内调会堵控制拍。实现 GetData/Control_Car.c(属采样层, 待迁 Car_Sense.c) */
-void ResetHWT101(void);
-/* 当前 HWT101 航向读数(deg, ±180): GYRO_ZERO 钉航向基准用, 实现 GetData/Control_Car.c */
-float Car_GetYawDeg(void);
-/* 当前 HWT101 Z 轴角速度(deg/s, 0x52 帧): 调试口 TRC 行的 GZ= 列用它把
- * "真转速"与"航向差分"并排摆出来 —— 两者差多少, 差分里就有多少采样伪影。
- * 实现 GetData/Control_Car.c */
-float Car_GetGyroWzDps(void);
+
+/* ---- HWT101(采样层驱动 GetData/hwt101.c)----
+ * 这一层刻意保留"壳函数"而不是让 App 直接调驱动: 依赖方向单一, 换驱动/改协议
+ * 版本不动 App 的读数调用点。
+ * ⚠ HWT101_Cfg/Hwt101_ZeroYaw 类配置函数**不上这里** —— 它们阻塞(HAL_Delay),
+ *   只许 main() 上电阶段调用, 不该出现在 App 的可见面上。
+ * 诊断字段走 hwt101.h 的 Hwt101_Health(): 该头是**叶子头**(只含 stdint.h,
+ * 不反向 include 任何东西), 所以观测层 car_obs.c 可以直接 include 它取类型,
+ * 不构成环。 */
+float Car_GetYawDeg(void);      /* 航向角(deg, ±180), GYRO_ZERO 钉基准用 */
+float Car_GetGyroWzDps(void);   /* 0x52 直给角速度(deg/s), 调试口 TRC 的 GZ= 列 */
 
 #endif /* _CAR_LINK_H_ */

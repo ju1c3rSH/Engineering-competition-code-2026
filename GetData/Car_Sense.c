@@ -3,6 +3,7 @@
 #include "mf_math.h"
 #include "Encode.h"
 #include "Control_Car.h"
+#include "hwt101.h"
 
 static CarSense_Snap_t snap;
 
@@ -31,7 +32,7 @@ static float CarSense_YawRate(float yaw, uint8_t *valid)
 	static uint32_t last_frame;                  /* 上次收到的 0x53 帧序号 */
 	static uint16_t stale = MF_WZ_RATE_FB_TICKS; /* 距上次收到帧的拍数; 初值=尚无反馈 */
 	static uint8_t  filled;                      /* 滑窗已积累样本数 0..CARSENSE_WZ_DIFF_TICKS */
-	uint32_t frame = YawSeq;                     /* 单次读: 读-比-写中途被 USART3 插入会吞帧 */
+	uint32_t frame = Hwt101_YawSeq();                /* 单次读: 读-比-写中途被 USART3 插入会吞帧 */
 	float d;
 	float rate;
 
@@ -72,13 +73,17 @@ static float CarSense_YawRate(float yaw, uint8_t *valid)
 #if MF_WZ_RATE_GYRO_FRAME_EN
 	{
 		static uint32_t last_seq;
-		float w = Yaw_struct.Wz_dps;
+		float w = Hwt101_GetWzDps();
 
-		/* 0x52 帧: sum8 只有 1/256 效力, 假同步会注入任意值 ⇒ 用差分的量程上限拦一道 */
-		if ((GyroWz_Seq != last_seq) &&
+		/* 0x52 帧。⚠ 这条路现在多一道**交叉校验**(hwt101 库内): 库比对 0x52 直给
+		 * 与 0x53 差分, 不一致时**不采纳**该 Wz 并清 has_wz ⇒ GetWzDps() 返回 0.0f
+		 * 且 WzSeq 不增长。所以"值离谱"和"没新帧"在这里是同一种表现, 由下面的
+		 * 帧计数门 + 量程闸一起兜住。
+		 * 量程闸仍要留: sum8 只有 1/256 效力, 交叉校验挡住的只是与差分不符的那些。 */
+		if ((Hwt101_WzSeq() != last_seq) &&
 		    (w <= MF_WZ_RATE_MEAS_MAX_DPS) && (w >= -MF_WZ_RATE_MEAS_MAX_DPS))
 		{
-			last_seq = GyroWz_Seq;
+			last_seq = Hwt101_WzSeq();
 			rate = w;
 			stale = 0u;
 		}
@@ -98,8 +103,8 @@ void CarSense_Sample(void)
 	 * 都要靠它判"本拍是不是新样", 才能让分子分母覆盖同一段时间。
 	 * 顺序不能反: 中断在两次读之间插进来会得到"旧航向 + 新序号" ⇒ 门控把那帧增量永久吞掉;
 	 * 先读序号则最坏只是把这帧的增量推到下一拍(那时序号最新, 差额照样算进去) */
-	snap.yaw_seq = YawSeq;
-	snap.yaw_deg = Yaw_struct.Yaw;
+	snap.yaw_seq = Hwt101_YawSeq();
+	snap.yaw_deg = Hwt101_GetYawDeg();
 	snap.wz_dps = CarSense_YawRate(snap.yaw_deg, &snap.wz_valid);
 
 	/* 180° 旋转：框架左 = 物理右 = Motor_0；框架右 = 物理左 = Motor_1

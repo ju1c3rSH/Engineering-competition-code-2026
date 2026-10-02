@@ -1,10 +1,12 @@
 ﻿#include "interurp.h"
 #include "protocol.h"
 #include "selftest.h"
+#include "hwt101.h"
 
-/* HWT101 帧接收计数(ISR 内 ++, TIM4 采样层读): 0x52 角速度 / 0x53 角度 */
-volatile uint32_t GyroWz_Seq = 0u;
-volatile uint32_t YawSeq = 0u;
+/* HWT101 帧接收计数与读数已移入 GetData/hwt101.c（独立驱动库）。
+ * 帧计数经 Hwt101_YawSeq()/Hwt101_WzSeq() 暴露, 读数经
+ * Hwt101_GetYawDeg()/Hwt101_GetWzDps()。原来在这里的 Yaw_struct 全局量
+ * 与 interurp.c 的扫描式解析已删除(见 docs/坑-编码器与里程.md §9)。 */
 
 uint8_t Rxbuffer1[RXbuffer1_size] = {0};
 uint8_t Rxbuffer2[RXbuffer2_size] = {0};
@@ -347,74 +349,24 @@ void UART_Task_Init(void)
 }
 void Uart3_task()
 {
-	/* 检索并解包 hwt101: 按本次突发实际长度扫描, sum8 校验通过才采用。
-	 * 0x53=角度(航向)、0x52=角速度(速率内环反馈), 两帧同构: [55][TYPE][4B][L][H][2B][SUM],
-	 * 有效数据同在 6/7 字节、中间填充字节恒 0x00 ⇒ 共用同一套 11 字节窗口与 sum8。
-	 * 旧实现固定扫前 22 字节且不校验——多包输出时 0x53 可能落在扫描窗外(航向冻结),
-	 * 数据字节恰为 55 53 时会假同步(航向跳变)。 */
-	uint8_t i, j;
-	uint8_t type;
-	uint8_t yaw_got = 0u, wz_got = 0u;
-	uint16_t sum;
-	int16_t raw_wz;
+	/* HWT101 帧解析已收敛到独立库(GetData/hwt101.c): 字节流状态机 + 0x52/0x53/0x5F
+	 * 三种帧 + 0x52/0x53 交叉校验。旧实现在这里"在突发里枚举起点试 sum8", 遇到
+	 * 坏帧会把攒下的字节全丢 ⇒ 真实帧头落在中间时就永久错位(单测 T4/T12 复现过)。
+	 *
+	 * 这里只负责: 按本次 IDLE 突发的**实际长度**把字节喂进去。
+	 * 必须传实际长度而不是常量 22 —— 模块出流是连续流, 一个突发里帧数不固定。
+	 * 解析本身 O(n) 无循环上界, 跑在优先级 0 的 USART3 中断里, 无 printf/无 Delay。 */
 	uint8_t sta = (uint8_t)UART3_RX_STA;
 
 	if (sta > RXbuffer3_size)
 	{
 		sta = RXbuffer3_size;
 	}
-	if (sta < 11u)
+	if (sta == 0u)
 	{
-		return;   /* 不足以容纳一个完整数据包 */
+		return;
 	}
-	for (i = 0u; i <= sta - 11u; i++)
-	{
-		type = Rxbuffer3[i + 1u];
-		if ((Rxbuffer3[i] != 0x55u) || ((type != 0x53u) && (type != 0x52u)))
-		{
-			continue;
-		}
-		sum = 0u;
-		for (j = 0u; j < 10u; j++)
-		{
-			sum += Rxbuffer3[i + j];
-		}
-		if ((uint8_t)sum != Rxbuffer3[i + 10u])
-		{
-			continue;   /* 数据字节凑出的假同步 */
-		}
-
-		if ((type == 0x53u) && (yaw_got == 0u))
-		{
-			int16_t yaw_raw;
-			float yaw;
-
-			yaw_got = 1u;
-			yaw_raw = (int16_t)(((uint16_t)Rxbuffer3[i + 7u] << 8) | (uint16_t)Rxbuffer3[i + 6u]);
-
-			/* 算完一次写入: 原先是"赋值 + 条件取负"两次写, TIM4 拍可能读到中间态
-			 * (200° 而非 -160°), 差分会因此吃一个 ~360° 的假跳变 */
-			yaw = (float)yaw_raw / 32768.0f * 180.0f;
-			if (yaw > 180.0f)
-			{
-				yaw = -(360.0f - yaw);
-			}
-			Yaw_struct.Yaw = yaw;
-			YawSeq++;
-		}
-		else if ((type == 0x52u) && (wz_got == 0u))
-		{
-			wz_got = 1u;
-			raw_wz = (int16_t)(((uint16_t)Rxbuffer3[i + 7u] << 8) | (uint16_t)Rxbuffer3[i + 6u]);
-			Yaw_struct.Wz_dps = (float)raw_wz / 32768.0f * 2000.0f;
-			GyroWz_Seq++;
-		}
-
-		if ((yaw_got != 0u) && (wz_got != 0u))
-		{
-			break;   /* 两类各取突发内第一个通过校验的包 */
-		}
-	}
+	Hwt101_FeedBytes(Rxbuffer3, (uint16_t)sta);
 }
 void Uart2_task()
 {
@@ -487,7 +439,6 @@ void Car_DebugTask(void)
 	uint8_t  tt_f = 0u, bench_f = 0u, trace_f = 0u;
 
 	Hwt101_RateTask();   /* 0x53 帧率滚动统计: 每圈刷新, 与有没有敲 '?' 无关 */
-
 	__disable_irq();
 	ack_n  = dbg2.ack_cnt;
 	nack_n = dbg2.nack_cnt;
@@ -564,6 +515,14 @@ void Car_DebugTask(void)
 	}
 	if (query_f != 0u)
 	{
+		/* 回读 HWT101 版本号(0x27 读 0x2E): 官方 AGV 零偏流程是「版本号 1003X.1.8
+		 * 开始的参考」, 换模块/换批次时用它确认能不能依赖那套流程。
+		 * 只在 '?' 时读, 不进上电路径 —— 读命令虽免解锁, 但应答要占一条 USART3
+		 * 收发, 上电静置期没必要花这个时间。应答由 Hwt101_FeedBytes 解析,
+		 * 结果进 health.version, **下一拍**的 HWT: 行才带上(回读有 ~30ms 延迟)。
+		 * ⚠ 唯一代价: 这条 11 字节应答会占掉一帧的窗口, 交叉校验可能因此丢一个
+		 *   Wz —— 只在人工敲 '?' 时发生, 不影响行驶。 */
+		Hwt101_ReadVersion();
 		Car_Debug_Stat_Print();
 	}
 	if (periodic_f != 0u)   /* 'p': 翻转 1Hz 周期状态块, 翻转回执确认 */

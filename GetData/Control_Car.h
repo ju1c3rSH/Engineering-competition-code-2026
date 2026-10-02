@@ -31,23 +31,13 @@
  * 自测覆盖见 Selftest/selftest.h —— 本文件不再持有任何测试宏;
  * CAR_NAV_ID_COUNT 契约已迁到 App/nav_routes.h(经上面 include 仍对本文件可见) */
 
-typedef struct
-{
-	float Yaw;         /* HWT101 航向(deg, ±180; interurp.c 的 0x53 解析写入) */
-	float Wz_dps;      /* IMU 角速度 Z(deg/s): HWT101 0x52 帧, 供速率内环(mf_rate.h)用 */
-
-}Yaw_TypeDef;
-
 void Car_Control(void);
-void ConfigHWT101(void);
-/* 0x53 帧率(Hz)两个口径, 都是 '?' 的 HWT: 行要打的量: RateHz=最近一个窗口的滚动值
- * (主循环 Hwt101_RateTask 刷新) / RateBoot=上电那次采样(即"要不要写模块 Flash"的判据)。
- * 判"速率配置生效没有"必须看 RateHz —— 上电采样可能落在模块启动期被低读 */
-void Hwt101_RateTask(void);
-extern uint16_t Hwt101_RateHz;
-extern uint16_t Hwt101_RateBoot;
-/* ResetHWT101 / Car_Event_Send 属跨层接缝(实现分别在本文件与 interurp.c), 声明收在
- * App/car_link.h —— App 子模块不能反向 include 本头(成环), 故接缝单点声明在那儿 */
+
+/* HWT101 全部迁到独立驱动库 GetData/hwt101.h(采样层): 帧解析(0x52/0x53/0x5F)、
+ * 0x52/0x53 交叉校验、寄存器读写、上电配置(测帧率/RRATE)、观测字段(帧率/帧计数/
+ * 坏帧/版本号)。原先本文件里的 ConfigHWT101/ResetHWT101/Hwt101_RateTask/
+ * Hwt101_RateHz/Hwt101_RateBoot 与 Yaw_struct 全局量已删除。
+ * 外部需要帧计数或诊断字段时经 hwt101.h 的 Hwt101_Health() 取, 不再 extern 变量。 */
 
 /* 转台(Emm_Pos_Control / Car_Turntable_BootZero / 台架三函数 / 急停 / 码表)已迁到
  * App/nav_turntable.h(经上面 include 仍对本文件可见) */
@@ -58,7 +48,9 @@ extern uint16_t Hwt101_RateBoot;
  * Car_TrkChange_Log / Car_TrkDetail_Log)已迁到 App/car_obs.h —— 那是全工程唯一的
  * printf 出口, 经上面 include 仍对本文件及外部可见 */
 
-extern Yaw_TypeDef Yaw_struct;
+/* 跨层接缝(Car_Event_Send / Car_GetYawDeg / Car_GetGyroWzDps)单点声明在 App/car_link.h
+ * —— App 子模块不能反向 include 本头(成环), 故接缝声明在那儿 */
 
 
 #endif
+

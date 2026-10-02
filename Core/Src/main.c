@@ -27,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 #include "Encode.h"
 #include "interurp.h"
+#include "hwt101.h"      /* HWT101 驱动: Init/ZeroYaw(上电阻塞调用) */
 #include "selftest.h"
 #include "stdint.h"
 
@@ -116,10 +117,21 @@ int main(void)
   
 	Motor_Init();
 	/* 先等 HWT101 出流再配置: 它上电 ~200ms 内一帧不发, 采早了会把启动期低读成速率,
-	 * 而那个读数正是"要不要写模块 Flash"的判据(Control_Car.c 的 Hwt101_RateBoot) */
+	 * 而那个读数正是"要不要写模块 Flash"的判据(hwt101.c 的 Hwt101_MeasureYawHz) */
   HAL_Delay(500);
-	ConfigHWT101();
-  ResetHWT101();
+  /* HWT101 全部初始化收进驱动库(GetData/hwt101.c): 测 0x53 帧率, 未达标才写 RRATE
+   * 到 200Hz。旧码是 ConfigHWT101()+ResetHWT101() 两步, 现合并为一次调用。
+   * ⚠ 本函数含 HAL_Delay, 阻塞 ~500ms(已达标时) ~1.3s(要写 RRATE 时),
+   *   只能在这里调 —— 中断内调会堵控制拍。 */
+  Hwt101_Init();
+#if HWT101_CFG_ZEROWAW_EN
+  /* CALIYAW 归零: 阻塞约 1.2s(解锁→写→保存三步 + 官方要求的延时)。
+   * 默认 HWT101_CFG_ZEROWAY_EN=0 **不做**: 单基准航向架构(MF_HEADING_FRAME_EN=1)下
+   * GYRO_ZERO 走 Car_GetYawDeg() 取实测航向钉基准, 物理归零只影响"读数是否从 0 起",
+   * 不影响基准正确性。它与 GYROBAIS(0x4C 陀螺零偏)是两个独立寄存器, 做了也不破坏零偏,
+   * 但那 1.2s 纯是上电开销 ⇒ 需要"看数从 0 起"时置 1 即可。 */
+  Hwt101_ZeroYaw();
+#endif
 	HAL_Delay(2000);
 	{
 		/* 转台上电零点对齐: 把驱动器"当前位置"清零(电机不动)并把 MCU 记账角对齐到同一

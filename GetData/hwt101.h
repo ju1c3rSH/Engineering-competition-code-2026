@@ -1,0 +1,172 @@
+/**
+ * @file    hwt101.h
+ * @brief   维特 HWT101 姿态传感器驱动（采样层）
+ *
+ * 本库收敛原先散在三处的 HWT101 代码：帧解析(原 Uart3_task 的扫描段)、
+ * 寄存器读写与上电配置(原 Control_Car.c 的 ConfigHWT101/ResetHWT101)、帧计数与
+ * 观测字段(原 interurp.c 的 YawSeq/GyroWz_Seq + Control_Car.c 的 RateHz)。
+ *
+ * ---- 依赖层级（硬约束，改动前先读）----
+ *   本库位于**采样层**，与 Car_Sense 同级。被依赖者，方向恒为
+ *       hwt101  <-  Car_Sense.c / Control_Car.c / car_obs.c
+ *   绝不允许本库反向 include Control_Car.h 或任何 App/ 头 —— App 层是采样层的
+ *   使用者，反向包含会成环（同 AGENTS.md 对 App/ 各模块的约定）。
+ *   本库只 include: main.h（HAL/GPIO 类型）、stdint.h。不含 mf_*、不含 protocol.h。
+ *
+ * ---- 分层（内部实现，外部只看到本文件）----
+ *   1) 帧解析层  Hwt101_Feed*()  纯逻辑：只吃字节、不碰 UART/HAL/Delay。
+ *      ⇒ 可以在 PC 上直接单测（见 build_verify/hwt101_test/）。
+ *   2) 寄存器层  Hwt101_*Reg()   11 字节帧的编解码，同样是纯函数。
+ *   3) 配置层    Hwt101_Init/ConfigRate/ZeroYaw/ReadVersion  **含 HAL_Delay，阻塞**。
+ *
+ * ---- 时序与中断约束（违反会出事）----
+ *   - 本库所有函数都不在中断里做阻塞发送。帧解析无 printf、无 Delay。
+ *   - Hwt101_Init() / ConfigRate() / ZeroYaw() / ManualBias() **含 HAL_Delay**，
+ *     只能在 main() 上电阶段调用（与既有 ConfigHWT101/ResetHWT101 同约束）。
+ *   - Hwt101_FeedBytes() 在 USART3 IDLE 中断里调用（优先级 0），只做纯解析，
+ *     复杂度与字节数成正比、无循环搜索上界，最坏 O(n)。
+ *
+ * ---- 协议依据 ----
+ *   维特官方协议 <https://wit-motion.yuque.com/wumwnr/ltst03/seuiba>：
+ *   写帧 [FF AA ADDR DATAL DATAH]，读帧 [FF AA 27 ADDR 00]，
+ *   回读应答头 0x55 0x5F；数据输出帧头 0x55 + TYPE(0x52 角速度 / 0x53 角度)。
+ *   所有配置必须「解锁 KEY(0x69)=0xB588 → 延时 → 写 → 延时 → 保存 SAVE(0x00)=0x0000」，
+ *   且官方明确**解锁后 10s 内必须完成写与保存**，否则不生效。
+ */
+#ifndef __HWT101_H__
+#define __HWT101_H__
+
+#include <stdint.h>
+
+/* ================= 帧类型（官方 TYPE 字节） ================= */
+#define HWT101_TYPE_WZ        0x52u   /* 角速度帧: [55][52][00][00][RWzL][RWzH][WzL][WzH][00][00][SUM] */
+#define HWT101_TYPE_YAW       0x53u   /* 角度帧:   [55][53][00][00][00][00][YawL][YawH][VL][VH][SUM]  */
+#define HWT101_TYPE_REG       0x5Fu   /* 回读应答: [55][5F][d0][d1][d2][d3][d4][d5][d6][d7][SUM]     */
+
+/* 数据帧固定 11 字节；写帧固定 5 字节 */
+#define HWT101_FRAME_LEN      11u
+#define HWT101_WRITE_LEN      5u
+#define HWT101_HEAD           0x55u
+#define HWT101_WRITE_HEAD0    0xFFu
+#define HWT101_WRITE_HEAD1    0xAAu
+
+/* ================= 寄存器地址（官方表，勿凭记忆改） ================= */
+#define HWT101_REG_SAVE       0x00u   /* 保存 0x0000 / 重启 0x00FF / 恢复出厂 0x0001 */
+#define HWT101_REG_CALSE      0x01u   /* 手动获取零偏（旧称 CALSE） */
+#define HWT101_REG_RRATE      0x03u   /* 输出速率 */
+#define HWT101_REG_BAUD       0x04u   /* 波特率（**出厂默认 0x0002 = 9600**） */
+#define HWT101_REG_LEDOFF     0x1Bu   /* 关闭 LED */
+#define HWT101_REG_READADDR   0x27u   /* 读寄存器 */
+#define HWT101_REG_VERSION    0x2Eu   /* 版本号（0x2E~0x2F，R） */
+#define HWT101_REG_GYROBAIS   0x4Cu   /* Z 轴零偏值（R/W，/1000 得 °/s） */
+#define HWT101_REG_GYROCALITHR 0x61u  /* 陀螺仪静止阈值（配合 0x63） */
+#define HWT101_REG_GYROCALTIME 0x63u  /* 陀螺仪自动校准时间 */
+#define HWT101_REG_WERROR     0x6Au   /* 陀螺仪变化值（R） */
+#define HWT101_REG_WZTIME     0x6Eu   /* 角速度连续静止时间（配合 0x6F） */
+#define HWT101_REG_WZSTATIC   0x6Fu   /* 角速度积分阈值（/1000 得 °/s） */
+#define HWT101_REG_CALIYAW    0x76u   /* Z 轴角度归零 */
+#define HWT101_REG_MANUALCALI 0xA6u   /* 手动零偏开关（**免解锁免保存**） */
+#define HWT101_REG_NOAUTOCALI 0xA7u   /* 关闭自动零偏（**免解锁免保存**） */
+/* 出厂标定，官方明确「请勿修改」——本库刻意不提供写接口 */
+#define HWT101_REG_PGSCALE    0x50u   /* Z 轴标定因素 P */
+#define HWT101_REG_GSCALERANGE 0x52u  /* Z 轴校准角度 */
+
+/* ---- RRATE 取值（官方枚举） ---- */
+#define HWT101_RRATE_10HZ     0x06u   /* 出厂默认 */
+#define HWT101_RRATE_100HZ    0x09u
+#define HWT101_RRATE_200HZ    0x0Bu   /* 本工程目标值 */
+#define HWT101_RRATE_500HZ    0x0Cu   /* 500Hz 在 115200 下占用率过高，勿用（见 docs §8.11） */
+
+/* ---- BAUD 取值 ---- */
+#define HWT101_BAUD_115200    0x06u   /* 本工程 USART3 固定值；模块出厂是 0x02=9600 */
+
+/* ---- 解锁 / 保存 ---- */
+#define HWT101_KEY_UNLOCK     0xB588u /* 写 0x69 只认这个值，其他无效 */
+#define HWT101_KEY_SAVE       0x0000u
+
+/* ================= 量纲换算（官方给法，勿改系数） ================= */
+#define HWT101_WZ_FULLSCALE   2000.0f /* 角速度 ±2000°/s */
+#define HWT101_YAW_FULLSCALE  180.0f  /* 航向角 ±180° */
+
+/* ================= 观测/诊断结构 ================= */
+/* 帧率统计口径见 docs/坑-编码器与里程.md §7.6/§8.11：
+ * RateHz 计的是「解出 0x53 的次数」，是突发级下界，不等于模块真实帧率 */
+typedef struct
+{
+	uint32_t yaw_seq;        /* 0x53 帧计数（新鲜度判据：与「车是否在转」解耦） */
+	uint32_t wz_seq;         /* 0x52 帧计数 */
+	uint32_t bad_sum;        /* sum8 校验失败帧数 */
+	uint32_t reg_err;        /* 0x5F 应答解析失败次数 */
+	uint16_t rate_hz;        /* 最近一个窗口的 0x53 帧率（主循环刷新） */
+	uint16_t rate_boot;      /* 上电那一次采样：判「要不要写模块 Flash」的依据 */
+	uint16_t version;        /* 回读版本号原始值（未调用 Hwt101_ReadVersion 时为 0） */
+	uint8_t  has_version;    /* 1 = 版本号已成功回读 */
+	uint8_t  xchk_ok;        /* 交叉校验通过计数（低 16 位滚动） */
+	uint8_t  xchk_discard;   /* 交叉校验丢弃计数（低 16 位滚动）：非 0 说明链路有错帧 */
+} hwt101_health_t;
+
+/* ================= 对外接口 ================= */
+
+/* ---- 生命周期 ---- */
+void Hwt101_Init(void);      /* 上电调用：状态机清零 + 测帧率 + 必要时配 RRATE */
+
+/* ---- 帧解析（纯逻辑，无 HAL 依赖，可在 PC 单测） ---- */
+/* USART3 IDLE 中断里调，喂本次突发的实际字节。O(n)，无阻塞，无 printf */
+void Hwt101_FeedBytes(const uint8_t *buf, uint16_t len);
+
+/* ---- 读数（采样层读，Car_Sense / 上层用） ---- */
+float Hwt101_GetYawDeg(void);   /* 航向角，±180 */
+float Hwt101_GetWzDps(void);    /* 0x52 直给角速度，±2000 */
+
+/* ---- 帧计数（新鲜度判据） ---- */
+uint32_t Hwt101_YawSeq(void);
+uint32_t Hwt101_WzSeq(void);
+
+/* ---- 诊断 ---- */
+const hwt101_health_t *Hwt101_Health(void);
+void Hwt101_RateTask(void);     /* 主循环每圈调：刷新 rate_hz 滚动窗口 */
+
+/* ---- 配置层：**含 HAL_Delay 阻塞，只许 main() 上电阶段调用** ---- */
+void Hwt101_ConfigRate(uint8_t rrate);  /* 写 RRATE 并保存（解锁→写→保存） */
+void Hwt101_ZeroYaw(void);              /* CALIYAW 归零：解锁→0x76 写 0→保存 */
+void Hwt101_ReadVersion(void);          /* 回读 0x2E 版本号（阻塞，结果进 Health） */
+void Hwt101_SetAutoCalib(uint8_t off);  /* NOAUTOCALI=0xA7：1 关自动零偏（免解锁） */
+void Hwt101_ManualBias(uint8_t start); /* MANUALCALI=0xA6：1 进/0 退零偏采集（免解锁） */
+
+/* ---- 编译期开关（放这里是因为它们是"本库行为的一部分"） ---- */
+/* CALIYAW 归零会阻塞约 1.2s。单基准航向架构(MF_HEADING_FRAME_EN=1)下 GYRO_ZERO
+ * 改用实测航向钉基准，物理归零只影响读数是否从 0 起。默认 0 = 不做这次归零。 */
+#ifndef HWT101_CFG_ZEROWAW_EN
+#define HWT101_CFG_ZEROWAW_EN       0
+#endif
+/* 帧率判定阈值：远高于出厂 10Hz 即认为 RRATE 已生效。已达标则不写模块 Flash
+ * （官方模块 Flash 有擦写寿命） */
+#ifndef HWT101_RATE_TARGET_HZ
+#define HWT101_RATE_TARGET_HZ       50u
+#endif
+/* 帧率统计窗口(ms) */
+#ifndef HWT101_RATE_WIN_MS
+#define HWT101_RATE_WIN_MS          500u
+#endif
+/* 交叉校验：|ψ̇_0x52 − Δψ/dt| 超过此值即判该组两帧不一致（deg/s）。
+ * 0 = 关闭交叉校验。留 0 可在切换 0x52 直给前先只观测不拦截。 */
+#ifndef HWT101_XCHK_EN
+#define HWT101_XCHK_EN              1
+#endif
+#ifndef HWT101_XCHK_TOL_DPS
+#define HWT101_XCHK_TOL_DPS         40.0f
+#endif
+/* 交叉校验的**死区**: |Wz| 与 |上一帧 Wz| 都低于它就不判。
+ * 理由: 静止/过零时航向差分只剩量化噪声(±0.5~1.4dps), 与 Wz 的零偏同量级,
+ * 此时比值全是误报。40dps 远低于实车工作点(弧段 ~43dps)又高于噪声, 留够余量 */
+#ifndef HWT101_XCHK_MIN_DPS
+#define HWT101_XCHK_MIN_DPS         40.0f
+#endif
+/* 0x52/0x53 的帧间隔(s): 模块每周期各发一帧, RRATE=200Hz ⇒ 5ms。
+ * ⚠ 与 HWT101_RRATE_200HZ 必须一致: 改速率时同步改这里, 否则交叉校验的
+ *   Δψ/Δt 分母错, 表现为"好好的链路被大量丢弃"。可在 HWT: 行核对 */
+#ifndef HWT101_FRAME_DT_S
+#define HWT101_FRAME_DT_S           0.005f
+#endif
+
+#endif /* __HWT101_H__ */

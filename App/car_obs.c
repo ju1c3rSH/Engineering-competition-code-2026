@@ -8,6 +8,7 @@
 #include "nav_task.h"
 #include "nav_turntable.h"
 #include "nav_tracking.h"
+#include "hwt101.h"           /* 叶子头(只含 stdint.h): 取 hwt101_health_t 诊断字段 */
 #include <stdio.h>
 
 /* RAD: 行"算半径"的最小角速度(dps): 低于它 v/ω 只是"接近静止的随机比值", 打了反而误导 */
@@ -119,9 +120,10 @@ void Car_Debug_Stat_Print(void)
 {
 	extern volatile uint32_t Dbg2_TxFail_Cnt;   /* stm32f4xx_it.c: 调试口链路健康计数 */
 	extern volatile uint32_t Dbg2_RxErr_Cnt;
-	extern uint16_t Hwt101_RateHz;              /* Control_Car.c: 当前(滚动)0x53 帧率 */
-	extern uint16_t Hwt101_RateBoot;            /* Control_Car.c: 上电那次采样(配置判据) */
-	extern volatile uint32_t YawSeq;            /* interurp.c: 0x53 角度帧接收计数 */
+	/* HWT101 全部诊断字段已收进驱动库的 hwt101_health_t(GetData/hwt101.c),
+	 * 经 Hwt101_Health() 取。原先在这里 extern 的 Hwt101_RateHz/RateBoot/YawSeq
+	 * 三个散量已删除 —— 它们现在是 health 的成员, 少三个跨层 extern。 */
+	const hwt101_health_t *hw = Hwt101_Health();
 	const mf_status_t *st;
 	const mf_pose_t *pose;
 	mf_ctx_t *m;
@@ -234,18 +236,26 @@ void Car_Debug_Stat_Print(void)
 	printf("LINK:MS=%u TF=%u RXE=%u\r\n",
 	       (unsigned)HAL_GetTick(),
 	       (unsigned)Dbg2_TxFail_Cnt, (unsigned)Dbg2_RxErr_Cnt);
-	/* HWT101 输出速率: RRATE=当前滚动帧率(最近一个窗口) / BOOT=上电那次采样。
+	/* HWT101 链路健康(诊断字段现由驱动库 hwt101_health_t 统一持有):
+	 * RRATE=当前滚动 0x53 帧率 / BOOT=上电那次采样 / SEQ=0x53 帧计数(不涨即断流)
+	 * BAD=sum8 校验失败帧数 / XOK/XBAD=交叉校验通过/丢弃(见下)
+	 * VER=回读版本号(0=未回读) / VH/VL=版本高位/低位
 	 * 判"速率配置生效没有"看 RRATE: ≈200 已配到 200Hz / ≈10 仍出厂默认 / 0 模块没通。
-	 * SEQ=0x53 帧计数(不涨即断流) —— 速率内环的差分反馈直接依赖它 */
-	printf("HWT:RRATE=%u BOOT=%u SEQ=%u\r\n",
-	       (unsigned)Hwt101_RateHz, (unsigned)Hwt101_RateBoot, (unsigned)YawSeq);
+	 * 帧率是突发级下界, 不等于模块真实帧率(一个突发可含多帧) → 见 docs §8.11 */
+	printf("HWT:RRATE=%u BOOT=%u SEQ=%u BAD=%u XOK=%u XBAD=%u VER=%u.%u\r\n",
+	       (unsigned)hw->rate_hz, (unsigned)hw->rate_boot, (unsigned)hw->yaw_seq,
+	       (unsigned)hw->bad_sum, (unsigned)hw->xchk_ok, (unsigned)hw->xchk_discard,
+	       (unsigned)(hw->version >> 8), (unsigned)(hw->version & 0xFFu));
+	/* 交叉校验: 0x52 直给 与 0x53 差分 是同一个 ψ̇ 的两次独立测量, 差值超阈即丢该 Wz。
+	 * XBAD 常年 0 = 链路干净(这机制只是保险); 持续增长 = 真有错帧, 且形态是
+	 * "错字节伪装成合理小值" —— 那种错 sum8 查不出来, 只能靠这层冗余 */
 	/* 断流硬告警: 最近一个窗口一帧 0x53 都没收到 ⇒ 航向冻结(弧永远走不完)、速率内环退化成
 	 * "开环基线+冻结积分"。最常见原因是模块波特率不是 115200 —— 官方 BAUD(0x04) 出厂默认
 	 * 0x0002=9600, 而本工程 USART3 固定 115200 且固件不写也不验(§7.11), 换模块/恢复出厂即中招 */
-	if (Hwt101_RateHz == 0u)
+	if (hw->rate_hz == 0u)
 	{
 		printf("HWT:WARN NOFRAME BOOT=%u SEQ=%u -> check BAUD=115200(reg 0x04)/wiring\r\n",
-		       (unsigned)Hwt101_RateBoot, (unsigned)YawSeq);
+		       (unsigned)hw->rate_boot, (unsigned)hw->yaw_seq);
 	}
 	/* 角速度内环健康度: SP=外环设定(它"想要"的 deg/s) W=IMU 实测 O=实际下发(含开环基线
 	 * +PI), B=开环基线贡献(=SP×基线增益), I=积分贡献(ki·∫e; O−B−I 就是 P 项)。
@@ -287,9 +297,9 @@ void Car_Debug_Stat_Print(void)
 			/* 存原始 dq/dtk 而非百分比: 百分比会把 1:1 的健康值压到 100, 正好落在
 			 * "丢帧/<100" 的判据边界上, 丢一帧读成 99=误判故障。原始比值里丢帧
 			 * 表现为 199/200, 一眼可辨(见上面注释) */
-			yf_dq   = YawSeq - yf_seq;
+			yf_dq   = hw->yaw_seq - yf_seq;
 			yf_dtk  = tick_now - yf_tick;
-			yf_seq  = YawSeq;
+			yf_seq  = hw->yaw_seq;
 			yf_tick = tick_now;
 			yf_ms   = now;
 		}

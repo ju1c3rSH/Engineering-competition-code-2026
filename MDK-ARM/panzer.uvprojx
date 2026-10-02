@@ -748,6 +748,21 @@
               <FileType>5</FileType>
               <FilePath>..\GetData\car_config.h</FilePath>
             </File>
+            <File>
+              <FileName>hwt101.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GetData\hwt101.c</FilePath>
+            </File>
+            <File>
+              <FileName>hwt101.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\GetData\hwt101.h</FilePath>
+            </File>
+            <File>
+              <FileName>hwt101_testable.inc</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\GetData\hwt101_testable.inc</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

@@ -33,12 +33,11 @@ extern __IO uint16_t UART3_RX_STA;    /* stm32f4xx_it.c: 本次 IDLE 突发字�
 extern __IO uint16_t UART4_RX_STA;    /* stm32f4xx_it.c: 本次 IDLE 突发字节数 */
 extern __IO uint16_t UART6_RX_STA;    /* stm32f4xx_it.c: 张大头 USART6 IDLE 突发字节数 */
 
-/* HWT101 角速度(0x52)帧接收计数: 每解出一帧 ++, 采样层据此判断本拍有无新转速 */
-extern volatile uint32_t GyroWz_Seq;
-/* HWT101 角度(0x53)帧接收计数: 速率内环判"传感器是否还在发帧"(与"车是否在转"解耦) */
-extern volatile uint32_t YawSeq;
-
-
+/* HWT101 的帧计数已移入驱动库 GetData/hwt101.c:
+ *   0x53 角度帧计数 -> Hwt101_YawSeq()   (与"车是否在转"解耦的新鲜度判据)
+ *   0x52 角速度帧计数 -> Hwt101_WzSeq()
+ * 读数 -> Car_GetYawDeg()/Car_GetGyroWzDps()(接缝声明在 App/car_link.h)
+ * 诊断字段 -> Hwt101_Health()。此处不再 extern 任何 HWT101 全量。 */
 
 void UART_Task_Init(void);
 void Uart3_task(void);
