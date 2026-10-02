@@ -28,6 +28,7 @@ HWT101_LOCAL struct
 	float prev_yaw_deg;
 	uint8_t has_wz;          /* 已采纳过一个通过校验的 Wz */
 	uint8_t has_prev_yaw;    /* 已收到过至少两帧 0x53(有了可差分的前值) */
+	uint8_t reg_pending;     /* 等待解释的 0x5F 应答对应哪个寄存器; 0=无 */
 } ps;
 
 /* 诊断计数。ISR 写、主循环读。
@@ -71,19 +72,28 @@ HWT101_LOCAL float Hwt101_WzToDps(int16_t raw)
 /* 原始航向码 → deg，归一到 ±180（官方: raw/32768*180，值域本就是 ±180） */
 HWT101_LOCAL float Hwt101_YawToDeg(int16_t raw)
 {
-	float yaw = (float)raw / 32768.0f * HWT101_YAW_FULLSCALE;
+	/* raw 是 int16_t, raw/32768*180 的值域是 [-180.0, +179.994] ⇒ 天然就在 ±180 内,
+	 * **不需要**再 clamp(早期版本这里有一段越界归一, 属死代码, 已删)。
+	 * 真正需要归一的是**两个航向相减**: 见 Hwt101_WrapDeg。 */
+	return (float)raw / 32768.0f * HWT101_YAW_FULLSCALE;
+}
 
-	/* 协议值域是 [-180,180]；越界说明取整边界，按官方 wrap 归一。
-	 * 必须在写入前归一: 差分时若吃到 360 度跨度就是一次假跳变 */
-	if (yaw > 180.0f)
+/* 角度差归一到 ±180。**这是跨 ±180 穿越时唯一正确的做法**。
+ * 两个都在 [-180,180] 的航向直接相减, 可达范围是 ±360: 车每转过 180° 就必然穿越一次
+ * (+179.9 → -179.9 给出 dyaw=-359.8, 除以 5ms 得 -71960 dps, 任何容差都会被击穿)。
+ * 官方未定义角度差的表示法, 这里按最短弧取, 与 mf_math.h 的 mf_wrap_deg 同义;
+ * 刻意自备而不 include mf_math.h —— 采样层不该反向依赖运动库。 */
+HWT101_LOCAL float Hwt101_WrapDeg(float d)
+{
+	while (d > 180.0f)
 	{
-		yaw = HWT101_YAW_FULLSCALE - yaw;
+		d -= 360.0f;
 	}
-	else if (yaw < -180.0f)
+	while (d < -180.0f)
 	{
-		yaw = -HWT101_YAW_FULLSCALE - yaw;
+		d += 360.0f;
 	}
-	return yaw;
+	return d;
 }
 
 /* 本库自带的 fabs: 不引 mf_math.h —— 采样层不该依赖运动库(依赖方向反了),
@@ -193,31 +203,34 @@ void Hwt101_FeedBytes(const uint8_t *buf, uint16_t len)
 			 * 量程闸(MF_WZ_RATE_MEAS_MAX_DPS)挡大错(航向阶跃/假同步),
 			 * 本交叉校验挡小错(错字节伪装成合理小值) —— 互补, 不重复丢帧。
 			 *
-			 * 判据: |Wz − Δψ/Δt| >  tol。Δψ 取**最近两帧 0x53** 之差, Δt 取
-			 * 两帧的模块输出间隔(按 RRATE 折算, 200Hz ⇒ 5ms)。两路是模块同刻
+			 * 判据: |Wz − Δψ/Δt| >  tol。Δψ 取**最近两帧 0x53** 之差并 wrap 到 ±180,
+			 * Δt 取两帧的模块输出间隔(按 RRATE 折算, 200Hz ⇒ 5ms)。两路是模块同刻
 			 * 发出的成对帧, 所以这个比值与 Wz 应当一致。
 			 * ⚠ 幅值低于 HWT101_XCHK_MIN_DPS 时不判: 静止/过零时 Δψ 的量化噪声
-			 *   与 Wz 的零偏同量级, 比值无意义, 判了全是误报。 */
+			 *   与 Wz 的零偏同量级, 比值无意义, 判了全是误报。
+			 * ⚠ Δψ **必须** wrap: 见 Hwt101_WrapDeg。不 wrap 则每转过 180° 必然
+			 *   误丢一帧(现象是"车每 8 秒丢一次反馈"), 曾是 P0 级缺陷。 */
 			if ((ps.has_prev_yaw != 0u) && (ps.has_wz != 0u)
 			    && (Hwt101_AbsF(wz) > HWT101_XCHK_MIN_DPS)
 			    && (Hwt101_AbsF(ps.last_wz_dps) > HWT101_XCHK_MIN_DPS))
 			{
-				float dyaw = ps.yaw_deg - ps.prev_yaw_deg;   /* 已 wrap 到 ±180 */
+				float dyaw = Hwt101_WrapDeg(ps.yaw_deg - ps.prev_yaw_deg);
 				float yaw_rate = dyaw / HWT101_FRAME_DT_S;
 				float err = Hwt101_AbsF(wz - yaw_rate);
 
 				if (err > HWT101_XCHK_TOL_DPS)
 				{
-					/* 两路对不上: 记丢弃, 且**不采纳**本帧 Wz。
-					 * 采纳会让一个错字节变成持续虚假偏置(比一次跳变更难发现),
-					 * 这正是交叉校验要治的形态。航向侧照常更新(它是裁判基准)。 */
+					/* 两路对不上: 记丢弃, 且**真正不采纳**本帧 Wz。
+					 * ⚠ 这里必须 continue —— 早先版本只清了 has_wz, 而紧随其后的
+					 *   "wz_seq++ / last_wz_dps=wz / has_wz=1" 无条件执行、把它盖回去,
+					 *   交叉校验形同虚设(代码评审 P0-1): GetWzDps() 照常返回那个被判死
+					 *   的值。continue 才同时挡住帧计数与采纳两件事 ——
+					 *   帧计数必须一起跳, 因为 Car_Sense 靠 WzSeq() 变化判"新帧"。
+					 * ⚠ 航向侧照常更新(它是裁判基准, 不该被自己判死)。 */
 					health.xchk_discard++;
-					ps.has_wz = 0u;   /* 清有效位 ⇒ 下一帧重新积累再判 */
+					continue;   /* 不 wz_seq++、不采纳 last_wz_dps、不置 has_wz */
 				}
-				else
-				{
-					health.xchk_ok++;
-				}
+				health.xchk_ok++;
 			}
 			else
 			{
@@ -234,13 +247,21 @@ void Hwt101_FeedBytes(const uint8_t *buf, uint16_t len)
 			 * VERSION(0x2E) 占 d0..d3, 按官方:
 			 *   VERSION = (VHH<<24)|(VHL<<16)|(VLH<<8)|VLL
 			 * 示例 55 5F 01 41 EF 89 → 0x89EF4101 = 10173.1.1
-			 * 本库只留原始 32 位, 拆位显示交给观测层(格式会变, 别在驱动里定型) */
-			uint32_t ver = ((uint32_t)ps.buf[2])
-			             | ((uint32_t)ps.buf[3] << 8)
-			             | ((uint32_t)ps.buf[4] << 16)
-			             | ((uint32_t)ps.buf[5] << 24);
-			health.version = (uint16_t)ver;
-			health.has_version = 1u;
+			 * ⚠ 早期版本把结果截成 uint16 存(0x4101), 那个数字与官方版本号语义
+			 *   无关、无法用于判版本, 现存完整 32 位(评审 P1-6)。
+			 * ⚠ 0x5F 是**所有**寄存器回读的通用应答头。0x2E 恰�� d0..d3, 所以本分支
+			 *   只有在"当前回读的就是 0x2E"时才解释; 否则忽略(否则将来加 RRATE
+			 *   回读, 版本号会被 RRATE 数据静默覆盖)。 */
+			if (ps.reg_pending == (uint8_t)HWT101_REG_VERSION)
+			{
+				uint32_t ver = ((uint32_t)ps.buf[2])
+				             | ((uint32_t)ps.buf[3] << 8)
+				             | ((uint32_t)ps.buf[4] << 16)
+				             | ((uint32_t)ps.buf[5] << 24);
+				health.version = ver;
+				health.has_version = 1u;
+				ps.reg_pending = 0u;   /* 消费掉, 避免重复应答被当成新的一次 */
+			}
 		}
 		else
 		{
@@ -275,6 +296,11 @@ uint32_t Hwt101_WzSeq(void)
 const hwt101_health_t *Hwt101_Health(void)
 {
 	return &health;
+}
+
+void Hwt101_ExpectReg(uint8_t reg)
+{
+	ps.reg_pending = reg;
 }
 
 /* ---- 寄存器层: 写帧编解码（纯函数） ---- */

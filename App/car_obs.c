@@ -238,14 +238,18 @@ void Car_Debug_Stat_Print(void)
 	       (unsigned)Dbg2_TxFail_Cnt, (unsigned)Dbg2_RxErr_Cnt);
 	/* HWT101 链路健康(诊断字段现由驱动库 hwt101_health_t 统一持有):
 	 * RRATE=当前滚动 0x53 帧率 / BOOT=上电那次采样 / SEQ=0x53 帧计数(不涨即断流)
-	 * BAD=sum8 校验失败帧数 / XOK/XBAD=交叉校验通过/丢弃(见下)
-	 * VER=回读版本号(0=未回读) / VH/VL=版本高位/低位
+	 * BAD=sum8 校验失败帧数 / XOK/XBAD=交叉校验通过/丢弃 / TXF=配置帧发送失败
+	 * VP=版本号产品段(17bit) / VH=硬件段(6bit) / VS=软件段(8bit)
 	 * 判"速率配置生效没有"看 RRATE: ≈200 已配到 200Hz / ≈10 仍出厂默认 / 0 模块没通。
-	 * 帧率是突发级下界, 不等于模块真实帧率(一个突发可含多帧) → 见 docs §8.11 */
-	printf("HWT:RRATE=%u BOOT=%u SEQ=%u BAD=%u XOK=%u XBAD=%u VER=%u.%u\r\n",
+	 * ⚠ TXF 非 0 = 有配置帧没发出去(写寄存器单向无 ACK, 这是唯一线索)。
+	 * ⚠ 帧率是突发级下界, 不等于模块真实帧率(一个突发可含多帧) → 见 docs §8.11 */
+	printf("HWT:RRATE=%u BOOT=%u SEQ=%u BAD=%u XOK=%u XBAD=%u TXF=%u VER=%u.%u.%u\r\n",
 	       (unsigned)hw->rate_hz, (unsigned)hw->rate_boot, (unsigned)hw->yaw_seq,
 	       (unsigned)hw->bad_sum, (unsigned)hw->xchk_ok, (unsigned)hw->xchk_discard,
-	       (unsigned)(hw->version >> 8), (unsigned)(hw->version & 0xFFu));
+	       (unsigned)hw->tx_fail,
+	       (unsigned)((hw->version >> 15) & 0x1FFFFu),   /* 产品版本 17bit */
+	       (unsigned)((hw->version >> 9) & 0x3Fu),       /* 硬件版本 6bit */
+	       (unsigned)(hw->version & 0xFFu));             /* 软件版本 8bit */
 	/* 交叉校验: 0x52 直给 与 0x53 差分 是同一个 ψ̇ 的两次独立测量, 差值超阈即丢该 Wz。
 	 * XBAD 常年 0 = 链路干净(这机制只是保险); 持续增长 = 真有错帧, 且形态是
 	 * "错字节伪装成合理小值" —— 那种错 sum8 查不出来, 只能靠这层冗余 */

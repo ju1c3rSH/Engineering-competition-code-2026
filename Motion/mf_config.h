@@ -309,7 +309,7 @@
  * 1 = HWT101 0x52 角速度帧(近零延迟、无差分量化噪声)。
  * 0x52 的字节偏移/量纲/校验已对维特官方协议逐项核实(interurp.c 解析与文档一致),
  * 剩下**只有符号方向**文档没给 ⇒ 仍需台架确认: 手动把车匀速转 ~90dps, 同时打印
- * Yaw_struct.Wz_dps 与航向差分, 同号同量级才置 1。内环的反号自检(mf_rate.h)是兜底,
+ * Hwt101_GetWzDps()(0x52 帧) 与航向差分, 同号同量级才置 1。内环的反号自检(mf_rate.h)是兜底,
  * 不足以替代这一步 */
 #ifndef MF_WZ_RATE_GYRO_FRAME_EN
 #define MF_WZ_RATE_GYRO_FRAME_EN  0

@@ -64,6 +64,7 @@
 #define HWT101_REG_WERROR     0x6Au   /* 陀螺仪变化值（R） */
 #define HWT101_REG_WZTIME     0x6Eu   /* 角速度连续静止时间（配合 0x6F） */
 #define HWT101_REG_WZSTATIC   0x6Fu   /* 角速度积分阈值（/1000 得 °/s） */
+#define HWT101_REG_KEY        0x69u   /* 解锁（写 0xB588 才有效，其他值无效） */
 #define HWT101_REG_CALIYAW    0x76u   /* Z 轴角度归零 */
 #define HWT101_REG_MANUALCALI 0xA6u   /* 手动零偏开关（**免解锁免保存**） */
 #define HWT101_REG_NOAUTOCALI 0xA7u   /* 关闭自动零偏（**免解锁免保存**） */
@@ -94,15 +95,18 @@
 typedef struct
 {
 	uint32_t yaw_seq;        /* 0x53 帧计数（新鲜度判据：与「车是否在转」解耦） */
-	uint32_t wz_seq;         /* 0x52 帧计数 */
+	uint32_t wz_seq;         /* 0x52 帧计数（交叉校验丢弃时**不**增长） */
 	uint32_t bad_sum;        /* sum8 校验失败帧数 */
-	uint32_t reg_err;        /* 0x5F 应答解析失败次数 */
+	uint32_t tx_fail;        /* 配置帧发送失败次数（HAL_UART_Transmit != HAL_OK）。
+	                            **非 0 就是"配置没写进去"**：写寄存器单向无 ACK，
+	                            失败唯一可见现象就是这个计数 */
+	uint32_t version;        /* 回读版本号原始 32 位（未回读时为 0）。
+	                            官方: (VHH<<24)|(VHL<<16)|(VLH<<8)|VLL */
 	uint16_t rate_hz;        /* 最近一个窗口的 0x53 帧率（主循环刷新） */
 	uint16_t rate_boot;      /* 上电那一次采样：判「要不要写模块 Flash」的依据 */
-	uint16_t version;        /* 回读版本号原始值（未调用 Hwt101_ReadVersion 时为 0） */
 	uint8_t  has_version;    /* 1 = 版本号已成功回读 */
-	uint8_t  xchk_ok;        /* 交叉校验通过计数（低 16 位滚动） */
-	uint8_t  xchk_discard;   /* 交叉校验丢弃计数（低 16 位滚动）：非 0 说明链路有错帧 */
+	uint8_t  xchk_ok;        /* 交叉校验通过/未判次数（低 8 位滚动，会回绕） */
+	uint8_t  xchk_discard;   /* 交叉校验丢弃次数（低 8 位滚动，会回绕） */
 } hwt101_health_t;
 
 /* ================= 对外接口 ================= */
@@ -122,6 +126,11 @@ float Hwt101_GetWzDps(void);    /* 0x52 直给角速度，±2000 */
 uint32_t Hwt101_YawSeq(void);
 uint32_t Hwt101_WzSeq(void);
 
+/* 声明"下一条 0x5F 应答是要解释哪个寄存器"。Hwt101_ReadVersion() 内部已调;
+ * 单独暴露是为将来加 RRATE/BAUD 回读时不必改解析层。0x5F 是通用应答头,
+ * 不设这个上下文就会把任意回读当成版本号(评审 P1-6) */
+void Hwt101_ExpectReg(uint8_t reg);
+
 /* ---- 诊断 ---- */
 const hwt101_health_t *Hwt101_Health(void);
 void Hwt101_RateTask(void);     /* 主循环每圈调：刷新 rate_hz 滚动窗口 */
@@ -139,32 +148,39 @@ void Hwt101_ManualBias(uint8_t start); /* MANUALCALI=0xA6：1 进/0 退零偏采
 #ifndef HWT101_CFG_ZEROWAW_EN
 #define HWT101_CFG_ZEROWAW_EN       0
 #endif
-/* 帧率判定阈值：远高于出厂 10Hz 即认为 RRATE 已生效。已达标则不写模块 Flash
- * （官方模块 Flash 有擦写寿命） */
+/* 帧率判定阈值：远高于出厂 10Hz 即认为 RRATE 已生效, 从而不写模块 Flash
+ * (官方模块 Flash 有擦写寿命)。已达标就跳过写入。
+ * ⚠ 该值同时**必须保证 HWT101_FRAME_DT_S 成立**: 交叉校验的分母按 200Hz 折算,
+ *   若放行 100Hz, 真实 Δt=10ms 而分母按 5ms ⇒ yaw_rate 是真值的 2 倍 ⇒ 弧段
+ *   每帧都被判不一致(代码评审 P1-1)。取 180: 只有真正接近 200Hz 才放行。 */
 #ifndef HWT101_RATE_TARGET_HZ
-#define HWT101_RATE_TARGET_HZ       50u
+#define HWT101_RATE_TARGET_HZ       180u
 #endif
 /* 帧率统计窗口(ms) */
 #ifndef HWT101_RATE_WIN_MS
 #define HWT101_RATE_WIN_MS          500u
 #endif
-/* 交叉校验：|ψ̇_0x52 − Δψ/dt| 超过此值即判该组两帧不一致（deg/s）。
- * 0 = 关闭交叉校验。留 0 可在切换 0x52 直给前先只观测不拦截。 */
+/* 交叉校验：|ψ̇_0x52 − Δψ/Δt| 超过此值即判该 Wz 不可信(deg/s)。0 = 关闭。
+ * 取 12 而非更大: WzL 单字节全翻转的最大偏差 = 255×(2000/32768) ≈ 15.6dps,
+ * 容差必须显著小于它才有意义(评审 P1-2); 同时远大于两路正常时的量化噪声
+ * (航向 1LSB ≈ 0.0055°, /5ms ≈ 1.1dps), 不会误报。 */
 #ifndef HWT101_XCHK_EN
 #define HWT101_XCHK_EN              1
 #endif
 #ifndef HWT101_XCHK_TOL_DPS
-#define HWT101_XCHK_TOL_DPS         40.0f
+#define HWT101_XCHK_TOL_DPS         12.0f
 #endif
 /* 交叉校验的**死区**: |Wz| 与 |上一帧 Wz| 都低于它就不判。
  * 理由: 静止/过零时航向差分只剩量化噪声(±0.5~1.4dps), 与 Wz 的零偏同量级,
- * 此时比值全是误报。40dps 远低于实车工作点(弧段 ~43dps)又高于噪声, 留够余量 */
+ * 此时比值全是误报。取 40dps: 远低于实车工作点(弧段 ~43dps)、高于噪声。
+ * ⚠ 必须与 TOL 解耦(早期版本两者都取 40, 恰好使保护在刚起步处最弱)。 */
 #ifndef HWT101_XCHK_MIN_DPS
 #define HWT101_XCHK_MIN_DPS         40.0f
 #endif
 /* 0x52/0x53 的帧间隔(s): 模块每周期各发一帧, RRATE=200Hz ⇒ 5ms。
- * ⚠ 与 HWT101_RRATE_200HZ 必须一致: 改速率时同步改这里, 否则交叉校验的
- *   Δψ/Δt 分母错, 表现为"好好的链路被大量丢弃"。可在 HWT: 行核对 */
+ * ⚠ 必须与 HWT101_RATE_TARGET_HZ 一致(那个阈值的作用之一就是保证这点):
+ *   改速率时同步改这里, 否则交叉校验的 Δψ/Δt 分母错, 表现为"好好的链路被
+ *   大量丢弃"。HWT: 行可核对实际 RRATE。 */
 #ifndef HWT101_FRAME_DT_S
 #define HWT101_FRAME_DT_S           0.005f
 #endif
