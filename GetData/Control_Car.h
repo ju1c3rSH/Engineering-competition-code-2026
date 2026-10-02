@@ -54,7 +54,7 @@ extern uint16_t Hwt101_RateBoot;
 
 /* 调度层(Car_Nav_Task / Car_Nav_MailPush)已迁到 App/nav_task.h(经上面 include 仍可见) */
 
-/* 观测层(Car_Debug_Stat_Print / Car_SegChange_Log / Car_SegExit_Log /
+/* 观测层(Car_Debug_Stat_Print / Car_SegChange_Log / Car_SegExit_Log / Car_YawZero_Log /
  * Car_TrkChange_Log / Car_TrkDetail_Log)已迁到 App/car_obs.h —— 那是全工程唯一的
  * printf 出口, 经上面 include 仍对本文件及外部可见 */
 

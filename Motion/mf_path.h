@@ -93,6 +93,15 @@ typedef struct
      * 2026-10 前的实现没有这个基点：表里的绝对角实际钉在"上电那一帧"上，只要上电到置零之间
      * 车被转过 yaw0，第一个绝对段之后的所有段整体偏 yaw0(长直线上的表现就是走斜) */
     float frame_base_deg;   /* = GYRO_ZERO 那一刻的模块读数 deg */
+    uint32_t ref_seq;       /* 基点被钉下的次数(1 起): 调试口靠它打 YAWZERO 事件行 */
+    float line_hdg_deg;     /* 直线段名义线方向(读数域 deg): 进段由目标航向 + 基点解出,
+                             * 只用来算本段的横向偏差 */
+
+    /* 按拍观测（各段分支每拍写，供调试口按拍打印；三个量同拍读才自洽） */
+    float obs_target_deg;   /* 本段航向目标(路线系) */
+    float obs_yawerr_deg;   /* 本拍航向误差(环内实际用的那个值) */
+    float obs_ey_m;         /* 横向偏差: 直线=名义线左侧正 / ARC=弧外正 */
+    uint8_t obs_kind;       /* 0=ARC 1=直线MOVE 2=TURN_TO 3=TURN_REL 4=GOTO */
 
     /* 由运动层注入的控制器（所有权在 mf_motion） */
     mf_pid_t *pid_yaw;      /* 航向保持 / 原地转向 / 方位角 P */
@@ -101,13 +110,15 @@ typedef struct
 
 void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v);
 
-/** @brief 显式钉下全程唯一航向基准（单基准架构，MF_HEADING_FRAME_EN=1）
+/** @brief 显式钉下整表航向基准（MF_HEADING_FRAME_EN=1）
  *
  * 由上层在 GYRO_ZERO 那一刻调用一次（车静止、此刻车头朝向即路线几何的 0°）。
- * 调用后 heading_ref_locked=1，此后任何 mf_path_start()/跨表都**不再重定锚**，
- * nom_yaw 沿路线几何一路推进。未调用时行为与旧版逐字相同（自测形态的兜底）。
- * @param yaw_deg 基准值：通常传 0.0f（= 此刻车头朝向定义为 0°）；
- *                基准与真实几何的固定偏差不在这里加，走 MF_HEADING_BIAS_DEG
+ * 调用后 heading_ref_locked=1：此后任何 mf_path_start()/跨表都**不再重定锚**，
+ * 且**表里写死的绝对角也跟着这次置零走** —— 基点是"置零那一刻的读数"，
+ * 声明角与 nom_yaw 一律解释在"置零时刻车头 = 0"的路线系里（见 frame_base_deg）。
+ * 未调用时行为与旧版逐字相同（自测形态的兜底）。A/B: MF_HEADING_FRAME_EN=0。
+ * @param yaw_deg 传**当前实测航向**(Car_GetYawDeg())。不要求模块物理归零:
+ *                基准与真实几何之间的固定偏差走 MF_HEADING_BIAS_DEG, 不在这里加
  */
 void mf_path_set_heading_ref(mf_path_ctx_t *p, float yaw_deg);
 
@@ -162,7 +173,8 @@ uint8_t mf_path_is_waiting(const mf_path_ctx_t *p);
  *
  * @param seg_index       出口所在段下标（可传 0）
  * @param kind            0=ARC / 1=直线 MOVE（可传 0）
- * @param ey_m            ARC 出口横向偏差 m，正=落在名义弧外侧（可传 0）
+ * @param ey_m            ARC: 出口横向偏差 m，正=落在名义弧外侧; 直线 MOVE: 相对
+ *                        "进段点 + 本段目标航向"这条名义线的横向偏差, 正=左侧（可传 0）
  * @param in_yawerr_deg   进段航向误差 deg，仅直线段有效（可传 0）
  * @param out_yawerr_deg  出口航向残差 deg（可传 0）
  * @return 1=本次取到新记录；0=无新记录（出参不变）
@@ -191,5 +203,30 @@ float mf_path_exit_radius_m(const mf_path_ctx_t *p);
 float mf_path_exit_dyaw_deg(const mf_path_ctx_t *p);
 
 float mf_path_remain_m(const mf_path_ctx_t *p);   /* 剩余里程估算(m): 只算位移段, ARC 全额计入 */
+
+/* ---- 按拍观测（调试口用）：与 mf_path_pop_seg_exit 的区别是"每拍都更新" ---- */
+typedef struct
+{
+    float   target_deg;     /* 本段航向目标（路线系 deg） */
+    float   yaw_err_deg;    /* 本拍航向误差（环内实际用的那个值 deg） */
+    float   ey_m;           /* 横向偏差: 直线=本段名义线左侧正 / ARC=弧外正 */
+    uint8_t kind;           /* 0=ARC 1=直线MOVE 2=TURN_TO 3=TURN_REL 4=GOTO */
+} mf_path_obs_t;
+
+/** @brief 本拍的目标航向/误差/横向偏差（只读, 不参与控制）
+ *
+ * 直线的横向偏差由"进段点 + 本段目标航向"这条名义线算出, 正=左侧。
+ * 它是区分两种"长直线走偏"的现场读数: 沿行程基本不变 = 整段平行挪出去(弧半径/进段
+ * 横向偏移); 随行程线性增长 = 航向基准被转了(越走越斜)。
+ */
+void mf_path_get_obs(const mf_path_ctx_t *p, mf_path_obs_t *obs);
+
+/** @brief 整表重锚基点 = GYRO_ZERO 那一刻的模块读数（deg）；未钉下时为 0
+ *
+ * 调试口把它和"本拍路线系航向"一起打出来: pose.yaw − 本值 = 路线系航向。 */
+float mf_path_get_frame_base(const mf_path_ctx_t *p);
+
+/** @brief 基点被钉下的次数（从 1 起）：调试口靠它判"这一趟置零了没有" */
+uint32_t mf_path_get_ref_seq(const mf_path_ctx_t *p);
 
 #endif /* MF_PATH_H */

@@ -142,6 +142,9 @@ void Car_Debug_Stat_Print(void)
 	Tt_Info_t tti;
 	Trk_Info_t tri;
 	mf_rate_info_t ri;
+	mf_path_obs_t obs;
+	float    frame_base, hdg_route;
+	char     hdg_kind;
 
 	/* 快照四次取样的前三段(见函数头 D-1): ①② 的 GetInfo 自带临界区, 塞进下方关中断块
 	 * 会被它内部的 __enable_irq() 提前放行 TIM4; ③ 两次裸读单字节原子但无窗口保护。
@@ -184,6 +187,10 @@ void Car_Debug_Stat_Print(void)
 	mf_rate_get_info(m, &ri);  /* 速率内环快照: 与本行以上同处一个关中断窗口 */
 	reff_m = mf_get_reff(m, &reff_valid);   /* 实测弧半径: 同一窗口内取, 与 pose 同拍 */
 	arc_src = mf_get_odom_arc_src(m);       /* 里程计形状来源: "跑在哪个分支"必须看得见 */
+	mf_path_get_obs(&m->path, &obs);        /* 按拍航向观测(HDG 行): 与 pose 同窗口 */
+	frame_base = mf_path_get_frame_base(&m->path);
+	hdg_route = mf_wrap_deg(yaw_deg - frame_base);   /* 路线系航向: 置零那一刻 = 0 */
+	hdg_kind = (obs.kind <= 4u) ? "ALTRG"[obs.kind] : '?';
 	__enable_irq();
 
 	printf("CHASSIS:NAV=%c ID=%02u SEG=%u/%u TRK=%c E=%d F=%u AGE=%u HOLD=%u\r\n",
@@ -204,6 +211,17 @@ void Car_Debug_Stat_Print(void)
 	       (int)vxp_mm, (int)vxf_mm, (unsigned)ovl_flag);
 	printf("POSE:%d %d %d\r\n",
 	       (int)(x_m * 1000.0f), (int)(y_m * 1000.0f), (int)(yaw_deg * 10.0f));
+	/* 航向观测(路线系, 由 mf_path 的按拍观测给出): K=段类型 A弧/L直线/T绝对转/R相对转/G到点;
+	 * TGT=本段航向目标(路线系); YAW=本拍路线系航向(= POSE 的 yaw − BASE); ERR=环内误差;
+	 * EY=横向偏差(直线: 本段名义线左侧正 / ARC: 弧外正); BASE=本表重锚基点(= 置零那拍读数)。
+	 * 单位 0.1°, EY 是 mm。判读(长直线):
+	 *   ① ERR 稳在 0 而实物仍偏 = 基准/基点的问题(表里的角解释错了), 不是控制环;
+	 *   ② EY 沿行程基本不变 = 整段平行挪出去(进段偏移/弧半径); EY 线性增长 = 越走越斜 */
+	printf("HDG:ID=%02u SEG=%u K=%c TGT=%d YAW=%d ERR=%d EY=%d BASE=%d\r\n",
+	       (unsigned)nav_id, (unsigned)seg_idx, hdg_kind,
+	       (int)(obs.target_deg * 10.0f), (int)(hdg_route * 10.0f),
+	       (int)(obs.yaw_err_deg * 10.0f), (int)(obs.ey_m * 1000.0f),
+	       (int)(frame_base * 10.0f));
 	printf("WTBL:%d ARM=%u CODE=%u SET=%u/%u TICK=%u\r\n",   /* SET=已计时/本次目标 ms; TICK=最近下发脉冲数(标定当量) */
 	       (int)(tt_deg * 10.0f), (unsigned)tt_armed,
 	       (unsigned)tt_code, (unsigned)tt_ms, (unsigned)tt_settle,
@@ -380,7 +398,9 @@ void Car_SegChange_Log(void)
  *       R 与 EY 都是"位姿 vs 名义圆"的**自证量**(内环让 R≡R_cmd), 少转 0.7° 它们照样全 0;
  *       **DY 才是"弧转够了没有"的读数** —— 实测 891~896(名义 900), 每条弧少转 0.7°
  *       ⇒ 出口沿切线少走 11mm(到位余量已改为按实测步长运行期算, 见 mf_config.h)
- *   LN :<段> IE=<0.1°> YE=<0.1°> IE=进段航向误差(带进来多少); YE=出口残差(纠完剩多少)
+ *   LN :<段> IE=<0.1°> YE=<0.1°> EY=<mm> IE=进段航向误差(带进来多少); YE=出口残差(纠完剩多少);
+ *       EY=出口横向偏差(相对"进段点 + 本段目标航向"这条名义线, 正=左侧)。它把"直线走偏"
+ *       分成两种: EY 与进段时差不多 = 整段平行挪出去; EY 明显变大 = 本段越走越斜
  *       ⚠ **IE 非零 = 上一条弧没转够**(MOVE 在替它补角), 不是直线没走直 —— 这是弧到位
  *       余量错配的现场指纹, 与 ARC:DY 成对看
  * 判据: |EY| ≤ ±10mm; DY 收到 900±3; 直线 YE≈0 且 IE 不随路程增长(单基准航向架构
@@ -409,7 +429,38 @@ void Car_SegExit_Log(void)
 	}
 	else
 	{
-		printf("LN:%u IE=%d YE=%d\r\n", (unsigned)seg,
-		       (int)(ie * 10.0f), (int)(oe * 10.0f));
+		printf("LN:%u IE=%d YE=%d EY=%d\r\n", (unsigned)seg,
+		       (int)(ie * 10.0f), (int)(oe * 10.0f), (int)(ey * 1000.0f));
 	}
+}
+
+/* 整表重锚事件(每趟 GYRO_ZERO 打一行):
+ *   YAWZERO:N=<次数> BASE=<0.1°> FEN=<0/1> LOCK=<0/1>
+ *       BASE = 置零那一刻的模块读数 = 本趟的整表重锚基点。表里写死的绝对角(重锚角/返程角)
+ *       从此解释在"置零时刻车头 = 0"的路线系里, 所以 BASE 非 0 不再是问题;
+ *       它仍是"这趟比上趟转了多少"的读数 —— 两趟 BASE 差多少, 旧实现下地图就差多少。
+ *       FEN=MF_HEADING_FRAME_EN(1=整表重锚 / 0=A/B 旧行为: 绝对角钉在上电那一帧)
+ * 触发: mf_path 的 ref_seq 变化(置零才涨), 变化才打, 主循环上下文 */
+void Car_YawZero_Log(void)
+{
+	static uint32_t seq_last = 0u;
+	mf_path_ctx_t *p = &mf_app()->path;
+	uint32_t seq;
+	float base;
+	uint8_t locked;
+
+	__disable_irq();
+	seq    = mf_path_get_ref_seq(p);
+	base   = mf_path_get_frame_base(p);
+	locked = p->heading_ref_locked;
+	__enable_irq();
+
+	if ((seq == seq_last) || (seq == 0u))
+	{
+		return;
+	}
+	seq_last = seq;
+	printf("YAWZERO:N=%u BASE=%d FEN=%u LOCK=%u\r\n",
+	       (unsigned)seq, (int)(base * 10.0f),
+	       (unsigned)MF_HEADING_FRAME_EN, (unsigned)locked);
 }

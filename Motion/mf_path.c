@@ -37,6 +37,12 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->heading_ref_locked = 0u;
     p->line_in_yawerr_deg = 0.0f;
     p->frame_base_deg = 0.0f;
+    p->ref_seq = 0u;
+    p->line_hdg_deg = 0.0f;
+    p->obs_target_deg = 0.0f;
+    p->obs_yawerr_deg = 0.0f;
+    p->obs_ey_m = 0.0f;
+    p->obs_kind = 0u;
 }
 
 /* 整表重锚基点(不变量 P5, 见 mf_path.h): 表里声明的绝对角与 nom_yaw 都在路线系
@@ -52,6 +58,17 @@ static float seg_pose_yaw(const mf_path_ctx_t *p, const mf_pose_t *pose)
 #endif
 }
 
+/* 按拍观测: 各段分支把"环里真正用的那几个值"写进来, 调试口按拍取走。
+ * 纯只读量, 不参与任何控制判断 */
+static void seg_obs(mf_path_ctx_t *p, float target_deg, float yawerr_deg,
+                    float ey_m, uint8_t kind)
+{
+    p->obs_target_deg = mf_wrap_deg(target_deg);
+    p->obs_yawerr_deg = yawerr_deg;
+    p->obs_ey_m = ey_m;
+    p->obs_kind = kind;
+}
+
 /* 整表重锚: 基点是"置零那一刻的读数", 表里的绝对角从此解释在路线系(置零车头 = 0)。
  * 旧实现只记 nom_yaw, 表里的绝对角仍钉在上电那一帧上 —— 详见 mf_path.h 的 P5 说明 */
 void mf_path_set_heading_ref(mf_path_ctx_t *p, float yaw_deg)
@@ -65,6 +82,7 @@ void mf_path_set_heading_ref(mf_path_ctx_t *p, float yaw_deg)
 #endif
     p->nom_yaw_init = 1u;
     p->heading_ref_locked = 1u;
+    p->ref_seq++;
 }
 
 void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path, const mf_seg_t *next)
@@ -251,6 +269,17 @@ static float seg_move_hold_yaw(const mf_path_ctx_t *p, const mf_move_dist_t *m)
 #endif
 }
 
+/* 直线段横向偏差: 名义线 = 进段点 + 本段目标航向(读数域), 正 = 名义线左侧。
+ * 用途是把"长直线走偏"分成两种: 沿行程基本不变 = 整段平行挪出去; 线性增长 = 越走越斜 */
+static float seg_line_ey(const mf_path_ctx_t *p, const mf_pose_t *pose)
+{
+    float h = p->line_hdg_deg * (MF_PI_F / 180.0f);
+    float dx = pose->x_m - p->entry.x_m;
+    float dy = pose->y_m - p->entry.y_m;
+
+    return (dy * cosf(h)) - (dx * sinf(h));
+}
+
 /* 增量直线：航向保持 + 剩余行程判完成
  * 下一段要求停稳时按 v=sqrt(2·a·s) 抛物线减速, 段末速度≈0 平滑交棒 */
 static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
@@ -259,6 +288,7 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
 {
     const mf_move_dist_t *m = &s->p.move_dist;
     float dir, remain, acc, cruise, target, v_stop,v_next, err;
+    float ey;
 
     v_next = seg_next_entry_speed(p);
     dir = (m->dist_m >= 0.0f) ? 1.0f : -1.0f;
@@ -293,6 +323,8 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
 
     err = mf_wrap_deg(seg_cmd_yaw(seg_move_hold_yaw(p, m)) - seg_pose_yaw(p, pose));
     out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
+    ey = seg_line_ey(p, pose);
+    seg_obs(p, seg_cmd_yaw(seg_move_hold_yaw(p, m)), err, ey, 1u);
 
     /* 失控自保 (test/motion-tuning): 编码器/驱动符号矛盾时反馈为负, remain 沿
      * 正向滚出 3 倍目标距离 —— 强制结束本段, 防正反馈无限狂转(实测 BOR 死机工况) */
@@ -306,7 +338,7 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
         /* 直线段出口记录: IE=进段航向误差(带进来多少) / YE=出口残差(纠完剩多少)。
          * 单基准架构下 IE 才有非零值 —— 旧行为(MF_KEEP 取进段实测)IE 恒 0, 上游误差
          * 被锁死、现场看不见, 所以这一对数是"新旧架构有没有生效"的直接判据 */
-        p->seg_exit_ey_m = 0.0f;    /* 直线无名义线, 横向偏差不在此列(见 mf_path.h) */
+        p->seg_exit_ey_m = ey;      /* 直线: 相对本段名义线的横向偏差(本段自己的漂移量) */
         p->seg_exit_in_yawerr_deg = p->line_in_yawerr_deg;
         p->seg_exit_yawerr_deg = err;
         p->seg_exit_seg = p->idx;
@@ -393,6 +425,8 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
 
         p->arc_ey_m = rho - p->arc_r_abs;       /* 正=弧外 */
         p->seg_exit_yawerr_deg = e_psi;         /* 出口记录取段完成那一拍的实测值 */
+        /* 按拍观测(路线系): 弧的"目标航向"就是本拍的名义切线 */
+        seg_obs(p, seg_pose_yaw(p, pose) + e_psi, e_psi, p->arc_ey_m, 0u);
 
         /* 曲率前馈 wz_ff = v/R(带符号 radius, 左转+/右转-): 稳态角速度开环直给,
          * PID 不再靠误差积累(纯P需滞后~3.6°才出稳态差速=进弯晚的根因), 只修打滑
@@ -457,6 +491,7 @@ static uint8_t seg_turn(mf_path_ctx_t *p, const mf_seg_t *s,
     out->wz_dps = mf_clampf(out->wz_dps, (t->w_max_dps > 0.0f)
                                          ? t->w_max_dps : 1e9f);
     out->wz_dps = seg_wz_ramp(p, out->wz_dps, dt);
+    seg_obs(p, target, err, 0.0f, (uint8_t)((s->type == MF_SEG_TURN_TO) ? 2u : 3u));
 
     return seg_dwell_reached(p, err, seg_tol_yaw(s), dt);
 }
@@ -490,6 +525,7 @@ static uint8_t seg_goto(mf_path_ctx_t *p, const mf_seg_t *s,
         out->wz_dps = mf_clampf(mf_pid_calc(p->pid_yaw, bearing, dt),
                                 (g->w_max_dps > 0.0f) ? g->w_max_dps : 1e9f);
         out->wz_dps = seg_wz_ramp(p, out->wz_dps, dt);
+        seg_obs(p, seg_pose_yaw(p, pose) + bearing, bearing, 0.0f, 4u);
 
         vx = mf_pid_calc(p->pid_point_v, dist_err, dt);
         vx = mf_clampf(vx, (g->v_max_mps > 0.0f) ? g->v_max_mps : 1e9f);
@@ -524,6 +560,7 @@ static uint8_t seg_goto(mf_path_ctx_t *p, const mf_seg_t *s,
         out->wz_dps = mf_clampf(mf_pid_calc(p->pid_yaw, dyaw, dt),
                                 (g->w_max_dps > 0.0f) ? g->w_max_dps : 1e9f);
         out->wz_dps = seg_wz_ramp(p, out->wz_dps, dt);
+        seg_obs(p, seg_cmd_yaw(g->yaw_deg), dyaw, 0.0f, 4u);
         return seg_dwell_reached(p, dyaw, tol_y, dt);
     }
 }
@@ -577,9 +614,14 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
         p->carry_link = 1u;
 #endif
         /* 进段航向误差(带进来多少): 与出口残差同口径(都是在"下发角 - 实测角"上取的),
-         * 于是"纠完剩多少"可直接与它对比 —— 单基准架构的现场验收判据 */
-        p->line_in_yawerr_deg =
-            mf_wrap_deg(seg_cmd_yaw(seg_move_hold_yaw(p, &s->p.move_dist)) - seg_pose_yaw(p, pose));
+         * 于是"纠完剩多少"可直接与它对比 —— 单基准架构的现场验收读数。
+         * 同时把本段名义线的方向存下来(要换回读数域给里程计 x/y 用) */
+        {
+            float h = seg_cmd_yaw(seg_move_hold_yaw(p, &s->p.move_dist));
+
+            p->line_in_yawerr_deg = mf_wrap_deg(h - seg_pose_yaw(p, pose));
+            p->line_hdg_deg = mf_wrap_deg(h + p->frame_base_deg);
+        }
         break;
     case MF_SEG_ARC:
 #if MF_SEG_CARRY_EN
@@ -897,4 +939,27 @@ float mf_path_remain_m(const mf_path_ctx_t *p)
         }
     }
     return remain;
+}
+
+/* ---------- 调试口用的按拍观测（只读，不参与控制） ---------- */
+void mf_path_get_obs(const mf_path_ctx_t *p, mf_path_obs_t *obs)
+{
+    if ((p == 0) || (obs == 0))
+    {
+        return;
+    }
+    obs->target_deg  = p->obs_target_deg;
+    obs->yaw_err_deg = p->obs_yawerr_deg;
+    obs->ey_m        = p->obs_ey_m;
+    obs->kind        = p->obs_kind;
+}
+
+float mf_path_get_frame_base(const mf_path_ctx_t *p)
+{
+    return (p != 0) ? p->frame_base_deg : 0.0f;
+}
+
+uint32_t mf_path_get_ref_seq(const mf_path_ctx_t *p)
+{
+    return (p != 0) ? p->ref_seq : 0u;
 }
