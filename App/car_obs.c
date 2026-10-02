@@ -261,14 +261,17 @@ void Car_Debug_Stat_Print(void)
 	       (unsigned)ri.n_ok, (unsigned)ri.n_stale, (unsigned)ri.n_sign);
 	/* 弧的实时几何(纯观测): 三条独立尺子量同一条弧 —— RSP=设定半径 v/|wz_sp|(段表想要的);
 	 * RM=实测半径 v/|ω_meas|(IMU 说的); REF=库内同间隔实测半径(轮位移÷IMU 转角, mf_odom.c)。
-	 * RV=REF 是否新鲜(不转弯就没有新估计); KH=对象增益 ω_meas/ω_out(%); YF=0x53 帧÷控制拍(%),
-	 * YF<100 说明航向按拍是零阶保持, 凡"增量÷位移"类量都要按同间隔配对; YF 是 1s 窗口量,
-	 * 同一行里其余字段是当拍量(可差 1s)。OSRC=里程计形状来源(0=旧弧长反解/1=轮速均值)。
+	 * RV=REF 是否新鲜(不转弯就没有新估计); KH=对象增益 ω_meas/ω_out(%);
+	 * YF=**帧数/拍数** 原始比值(格式 dq/dtk, 如 200/200 = 1:1), 不是百分比。
+	 * ⚠ 2026-10 拍周期改200Hz 后帧拍比=1:1 ⇒ 健康的 YF 恒为 "N/N"; 曾用百分比
+	 * (dq*100/dtk) 时健康值恰好 100, **与"YF<100 = 零阶保持/退化"的判据边界重合**,
+	 * 丢一帧就变成 99 而被读成故障, 且与历史日志(200)不可比。改打印原始比值后
+	 * 丢帧表现为 "199/200", 一眼可辨。dq/dtk 的比值才是判据(帧率÷拍率), % 是它的有损压缩。
+	 * YF 是 1s 窗口量, 同一行里其余字段是当拍量(可差 1s)。OSRC=里程计形状来源。
 	 * ⚠ 判半径只认 RM/REF/R=(或卷尺): ARC:EY 与 odom 形状同源, 结构性看不见打滑(§8)。
 	 * 速率闸取 20dps(弧工作点的一半): 再小就是"接近静止的随机比值", 打出来只会误导 */
 	{
-		static uint32_t yf_seq, yf_tick, yf_ms;
-		static uint16_t yf = 0u;      /* 保持上一窗口值: 否则两次查询间隔 <1s 时会打 0(误导成"没帧") */
+		static uint32_t yf_seq, yf_tick, yf_ms, yf_dq, yf_dtk;
 		uint32_t tick_now = ri.n_ok + ri.n_stale + ri.n_sign;
 		uint32_t now = HAL_GetTick();
 		float v = (mf_absf(wl_spd) + mf_absf(wr_spd)) * 0.5f;
@@ -281,17 +284,18 @@ void Car_Debug_Stat_Print(void)
 
 		if ((uint32_t)(now - yf_ms) >= 1000u)   /* 1s 窗口; 首查给出上电以来均值 */
 		{
-			uint32_t dq  = YawSeq - yf_seq;
-			uint32_t dtk = tick_now - yf_tick;
-
-			yf = (uint16_t)((dtk != 0u) ? ((dq * 100u) / dtk) : 0u);
+			/* 存原始 dq/dtk 而非百分比: 百分比会把 1:1 的健康值压到 100, 正好落在
+			 * "丢帧/<100" 的判据边界上, 丢一帧读成 99=误判故障。原始比值里丢帧
+			 * 表现为 199/200, 一眼可辨(见上面注释) */
+			yf_dq   = YawSeq - yf_seq;
+			yf_dtk  = tick_now - yf_tick;
 			yf_seq  = YawSeq;
 			yf_tick = tick_now;
 			yf_ms   = now;
 		}
-		printf("RAD:RSP=%d RM=%d REF=%d RV=%u KH=%d YF=%u OSRC=%u TR=%u\r\n",
+		printf("RAD:RSP=%d RM=%d REF=%d RV=%u KH=%d YF=%lu/%lu OSRC=%u TR=%u\r\n",
 		       rsp, rmeas, (int)(reff_m * 1000.0f), (unsigned)reff_valid, kh,
-		       (unsigned)yf, (unsigned)arc_src,
+		       (unsigned long)yf_dq, (unsigned long)yf_dtk, (unsigned)arc_src,
 		       (unsigned)(MF_ARC_WZ_TRIM * 1000.0f));   /* TR=弧径向 trim ×1000 */
 	}
 }

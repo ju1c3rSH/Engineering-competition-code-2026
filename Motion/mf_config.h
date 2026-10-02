@@ -12,6 +12,10 @@
 #ifndef MF_CONFIG_H
 #define MF_CONFIG_H
 
+#include <stdint.h>   /* MF_WZ_RATE_FB_TICKS 用 uint32_t 做浮点→整数转换。本文件历史上
+                      * 全文无 include, 靠"包含者恰好先include 了 stdint"才编过 —— 宿主端
+                      * 回归(独立编译单元)换个包含顺序就会报unknown type name */
+
 /* ================= 底盘类型 ================= */
 #define MF_CHASSIS_DIFF     0   /* 双轮差速底盘 */
 #define MF_CHASSIS_TRACK    1   /* 履带底盘（运动学与差速同构，轨距/打滑参数独立标定） */
@@ -43,14 +47,23 @@
 #endif
 
 #ifndef MF_DT_S
-#define MF_DT_S             0.01f   /* 控制周期，panzer TIM4 为 10ms */
+/* 控制周期, panzer TIM4 为 5ms。换周期必须同步核对 4 处(完整清单见 §8.13):
+ *   ① panzer.ioc 的 TIM4.Period   ← CubeMX 重新生成代码的源头, 漏改静默回退
+ *   ② MF_WZ_RATE_FB_TICKS(分母已由本宏导出, 但仍受浮点截断影响)
+ *   ③ MF_REFF_STALE_TICKS(拍数, 需同步改才能保持 1.0s 语义)
+ *   ④ App/car_units.h 的 CAR_TICK_MS(拍毫秒数)
+ * ⚠ 注意 CARSENSE_WZ_DIFF_TICKS **不随本宏缩放**, 它受 Car_Sense.c 的固定两样本
+ *   实现约束, 见该文件注释 */
+#define MF_DT_S             0.005f
 #endif
 
 /* 航向差分窗口的**上限**(拍): 窗口 = 每拍帧数(化最简分数)的**分母** —— 零阶保持阶梯的
  * "整数帧数"交替周期; 差分跨满一个周期才在该谱线上放零点(不伤慢变真值)。
- *   250Hz÷100Hz = 5/2 → 2 拍(有交替, 必须跨)   200Hz÷100Hz = 2/1 → 无需跨   125÷100 → 4 拍
- * ⚠ 现场模块实际是 **200Hz**(`HWT:RRATE` 数的是突发不是帧, 不能当帧率用), 无交替 ⇒ 本项现在
- * 只是预留; 采样层也从未下发过 yaw_diff_win(mf_pid 的 d_win 恒为 1)。§8.6 / §8.11 */
+ *   250Hz÷100Hz = 5/2 → 2 拍(有交替, 必须跨)   200Hz÷200Hz = 1/1 → 无交替
+ * ⚠ 现场模块 **200Hz** ÷ 现拍 200Hz = 1:1、零交替。mf_pid 的 d_win 恒为 1(采样层从未
+ * 下发过 yaw_diff_win, mf_tick 也没拷进来) ⇒ 航向环微分项**实际一直是逐拍差分**, 现配置下正确。
+ * ⚠ 本宏只是**上限**, 不等于实际窗口: 实际由 Car_Sense.c 的 CARSENSE_WZ_DIFF_TICKS
+ *   决定, 而后者受该文件的固定两样本实现约束(改成 1 会让反馈翻倍 2 倍)。§8.6/ §8.11/ §8.13 */
 #ifndef MF_YAW_DIFF_WIN_MAX
 #define MF_YAW_DIFF_WIN_MAX   4
 #endif
@@ -188,10 +201,11 @@
 #endif
 
 /* ============ 弧实测半径 R_eff = Σ轮位移 / |ΣΔψ|（观测口径, 实车标定项） ============
- * 为什么必须"同间隔": 航向是 0x53 帧到达才步进的零阶保持值, 控制拍却是 100Hz(TIM4=84M/840/1000)。
- * 位移每拍累加、航向只在收到新帧时推进, 再累积到足够转角才结算一次 —— 与帧率无关。
- * 结算阈值 3° ⇒ 弧上(43dps)约 70ms 一次、整条 90° 弧约 30 次; 0.0055° 的航向量化误差
- * 摊到 3° 上是 0.18%。它的用途: ① 观测(调试口 RAD: 行) ② 供里程计形状与速率内环前馈 1/k̂ */
+ * 为什么必须"同间隔": 航向是 0x53 帧到达才步进的零阶保持值, 控制拍却是 200Hz(TIM4=84M/840/500,
+ * 5ms 一拍)。位移每拍累加、航向只在收到新帧时推进, 再累积到足够转角才结算一次。
+ * 结算阈值 3° ⇒ 弧上(43dps)约 70ms 一次(与拍周期无关, 由转角阈值定)、整条 90° 弧约 30 次;
+ * 0.0055° 的航向量化误差摊到 3° 上是 0.18%。它的用途: ① 观测(调试口 RAD: 行)
+ * ② 供里程计形状与速率内环前馈 1/k̂ */
 #ifndef MF_REFF_MIN_DYAW_DEG
 #define MF_REFF_MIN_DYAW_DEG   3.0f
 #endif
@@ -221,7 +235,7 @@
 #define MF_REFF_IMPLAUSIBLE_M  (MF_REFF_MAX_M * 1.5f)
 #endif
 #ifndef MF_REFF_STALE_TICKS
-#define MF_REFF_STALE_TICKS    100u     /* 这么久没**成功结算**即判"当前没有新鲜半径"(≈1.0s) */
+#define MF_REFF_STALE_TICKS    200u    /* 这么久没**成功结算**即判"当前没有新鲜半径"(≈1.0s @200Hz) */
 #endif
 
 /* ================= 段间残差结转（置 0 = 原行为；本项目不推荐开） ================= */
@@ -310,13 +324,16 @@
 #ifndef MF_WZ_RATE_FB_TIMEOUT_MS
 #define MF_WZ_RATE_FB_TIMEOUT_MS  350u
 #endif
-/* 换算成控制拍数(10 = MF_DT_S 的毫秒数) */
+/* 换算成控制拍数。分母由 MF_DT_S 导出而非写死 —— 写死过(10u), 改拍周期而漏改它
+ * 会让反馈超时窗口静默缩一半(350ms→175ms), 且不报错 */
 #ifndef MF_WZ_RATE_FB_TICKS
-#define MF_WZ_RATE_FB_TICKS       (MF_WZ_RATE_FB_TIMEOUT_MS / 10u)
+#define MF_WZ_RATE_FB_TICKS       (MF_WZ_RATE_FB_TIMEOUT_MS / (uint32_t)(MF_DT_S * 1000.0f))
 #endif
 #if (MF_WZ_RATE_FB_TIMEOUT_MS < 10u)
-#error "mf_config.h: MF_WZ_RATE_FB_TIMEOUT_MS 不能小于一个控制拍(MF_DT_S = 10ms)"
+#error "mf_config.h: MF_WZ_RATE_FB_TIMEOUT_MS 不能小于一个控制拍"
 #endif
+/* 浮点除数恒 ≥1 才安全(否则除零)。#if 里无法对浮点做 (uint32_t) 转换, 只能转成运行时断言;
+ * 当前 MF_DT_S = 0.005f 精确舍入为 5.0, 已由反汇编(CMP #0x45 = 70 拍)确认 */
 /* 一阶低通(Hz): 太狠会吃掉内环相位裕度。15Hz 对应差分噪声 0.5dps -> 约 0.2dps */
 #ifndef MF_WZ_RATE_LPF_HZ
 #define MF_WZ_RATE_LPF_HZ 15.0f

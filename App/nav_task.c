@@ -10,7 +10,10 @@
 #include "mf_path.h"
 
 #define NAV_STALL_MS           3000u
-#define NAV_STALL_DELTA_M      0.001f
+/* 堵转判据的**速度**下限(m/s), 不是每拍位移。判据量 d =两轮本拍位移绝对值之和, 直行
+ * 等效 v= d/(2·dt) ⇒ 用距离阈值会在拍周期变化时悄悄改判据(10ms 下 0.001mm⇒ 0.05m/s,
+ * 5ms 下同样 0.001⇒ **0.1m/s**, 门限翻倍)。现取 0.05m/s = 旧 10ms 形态的等效值 */
+#define NAV_STALL_V_MIN_MPS    0.05f
 
 /* nav_id 的"无"哨兵。必须 != 任何合法 nav_id(0~8): nav 是 static 零初始化,
  * 用 0 当哨兵会让上电后第一条 REQ_NAV(0) 被误判成"已跑完" */
@@ -207,7 +210,8 @@ void Car_Nav_Task(void)
 
 	{
 		/* 堵转判据=两轮位移绝对值之和: 原地转(重锚 TURN_TO)左右轮反向等大,
-		 * 取代数和恒 0 会误报, 逐轮取绝对值对直行/弧线/原地转统一成立 */
+		 * 取代数和恒 0 会误报, 逐轮取绝对值对直行/弧线/原地转统一成立。
+		 * 门限按**速度**算(d ≥ v_min·2·dt), 换拍周期不用动 */
 		float d0 = m->wheel[0].delta_m;
 		float d1 = m->wheel[1].delta_m;
 		float d = (d0 < 0.0f ? -d0 : d0) + (d1 < 0.0f ? -d1 : d1);
@@ -223,7 +227,7 @@ void Car_Nav_Task(void)
 			/* WAIT 段本就要求车体静止: 停等时长与 NAV_STALL_MS 同宽时不豁免必误报 */
 			nav.stall_ms = 0u;
 		}
-		else if (d > NAV_STALL_DELTA_M)
+		else if (d > (NAV_STALL_V_MIN_MPS * 2.0f * MF_DT_S))
 		{
 			nav.stall_ms = 0u;
 		}
