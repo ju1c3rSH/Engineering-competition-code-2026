@@ -81,11 +81,18 @@ typedef struct
      * 之后每过一条 ARC 加 d_yaw、每过一个 TURN 赋其目标角。MOVE 段的目标航向取它，
      * 于是上游残留的航向误差会被直线段主动纠回来，而不是被 MF_KEEP 锁定后按
      * "航向误差×直线长度"放大 */
-    float nom_yaw_deg;      /* 当前段起点处的标称航向 deg */
+    float nom_yaw_deg;      /* 当前段起点处的标称航向 deg（**路线系**，见 frame_base_deg） */
     uint8_t nom_yaw_init;   /* 0=还没定过基准（本段进段时补上） */
     uint8_t heading_ref_locked; /* 1=基准已由 mf_path_set_heading_ref() 显式钉下,
                                  * 全程只读(跨表也不再重定锚); 见 MF_HEADING_FRAME_EN */
     float line_in_yawerr_deg;   /* 直线段进段航向误差(带进来多少), 供出口记录对比 */
+
+    /* ---- 整表重锚基点（不变量 P5，见 Motion/README.md「单基准航向架构」）----
+     * 表里声明的绝对角(重锚角/返程角)与 nom_yaw 一律在**路线系**：置零那一刻车头朝向 = 0。
+     * pose.yaw 是模块读数域，两者只差这一个基点 —— 换算只许走 seg_pose_yaw() 一处。
+     * 2026-10 前的实现没有这个基点：表里的绝对角实际钉在"上电那一帧"上，只要上电到置零之间
+     * 车被转过 yaw0，第一个绝对段之后的所有段整体偏 yaw0(长直线上的表现就是走斜) */
+    float frame_base_deg;   /* = GYRO_ZERO 那一刻的模块读数 deg */
 
     /* 由运动层注入的控制器（所有权在 mf_motion） */
     mf_pid_t *pid_yaw;      /* 航向保持 / 原地转向 / 方位角 P */

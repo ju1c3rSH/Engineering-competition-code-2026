@@ -36,14 +36,33 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->nom_yaw_init = 0u;
     p->heading_ref_locked = 0u;
     p->line_in_yawerr_deg = 0.0f;
+    p->frame_base_deg = 0.0f;
 }
 
-/* 显式钉下全程唯一航向基准(单基准架构, MF_HEADING_FRAME_EN=1): 见 mf_path.h 的说明。
- * 与"旧行为按表重定锚"的唯一差别就是这个 locked 标志 —— mf_path_start() 只在未锁定时
- * 才清 nom_yaw_init */
+/* 整表重锚基点(不变量 P5, 见 mf_path.h): 表里声明的绝对角与 nom_yaw 都在路线系
+ * ("置零那一刻车头 = 0"), 而 pose.yaw 是模块读数域 —— 两者之差只有 frame_base_deg
+ * 这一个数, 换算只许走这里。MF_HEADING_FRAME_EN=0 时不平移(= 旧行为) */
+static float seg_pose_yaw(const mf_path_ctx_t *p, const mf_pose_t *pose)
+{
+#if MF_HEADING_FRAME_EN
+    return mf_wrap_deg(pose->yaw_deg - p->frame_base_deg);
+#else
+    (void)p;
+    return pose->yaw_deg;
+#endif
+}
+
+/* 整表重锚: 基点是"置零那一刻的读数", 表里的绝对角从此解释在路线系(置零车头 = 0)。
+ * 旧实现只记 nom_yaw, 表里的绝对角仍钉在上电那一帧上 —— 详见 mf_path.h 的 P5 说明 */
 void mf_path_set_heading_ref(mf_path_ctx_t *p, float yaw_deg)
 {
+#if MF_HEADING_FRAME_EN
+    p->frame_base_deg = mf_wrap_deg(yaw_deg);
+    p->nom_yaw_deg = 0.0f;          /* 路线系零点 = 此刻车头朝向 */
+#else
+    p->frame_base_deg = 0.0f;       /* A/B: 无基点, 表里的绝对角 = 读数域 */
     p->nom_yaw_deg = mf_wrap_deg(yaw_deg);
+#endif
     p->nom_yaw_init = 1u;
     p->heading_ref_locked = 1u;
 }
@@ -217,7 +236,8 @@ static float seg_cmd_yaw(float geom_deg)
     return geom_deg + MF_HEADING_BIAS_DEG;
 }
 
-/* MOVE 段的航向保持目标: 段表给了绝对航向就优先用; MF_KEEP 时按开关取标称航向或进段实测航向 */
+/* MOVE 段的航向保持目标（路线系）: 段表给了绝对角就优先用它; MF_KEEP 时按开关取标称航向
+ * 或进段实测航向(后者是读数域, 要换到路线系) */
 static float seg_move_hold_yaw(const mf_path_ctx_t *p, const mf_move_dist_t *m)
 {
     if (m->heading_deg != MF_KEEP)
@@ -227,7 +247,7 @@ static float seg_move_hold_yaw(const mf_path_ctx_t *p, const mf_move_dist_t *m)
 #if MF_SEG_NOM_HEADING_EN
     return p->nom_yaw_deg;
 #else
-    return p->entry.yaw_deg;
+    return seg_pose_yaw(p, &p->entry);
 #endif
 }
 
@@ -271,7 +291,7 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
     out->vx_mps = dir * seg_speed_ramp(p, target, acc, dt);
     out->vy_mps = 0.0f;
 
-    err = mf_wrap_deg(seg_cmd_yaw(seg_move_hold_yaw(p, m)) - pose->yaw_deg);
+    err = mf_wrap_deg(seg_cmd_yaw(seg_move_hold_yaw(p, m)) - seg_pose_yaw(p, pose));
     out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
 
     /* 失控自保 (test/motion-tuning): 编码器/驱动符号矛盾时反馈为负, remain 沿
@@ -425,10 +445,11 @@ static uint8_t seg_turn(mf_path_ctx_t *p, const mf_seg_t *s,
                         mf_body_cmd_t *out)
 {
     const mf_turn_t *t = &s->p.turn;
-    /* TURN_TO 是绝对角(基准系几何) -> 加基准偏差; TURN_REL 从当前位姿续起, 不加 */
+    /* TURN_TO 是路线系的绝对角(要加基准偏差); TURN_REL 从进段时刻的**路线系**航向续起,
+     * 与基点无关(它天然继承整表重锚) */
     float target = (s->type == MF_SEG_TURN_TO) ? seg_cmd_yaw(t->yaw_deg)
-                   : p->entry.yaw_deg + t->yaw_deg;
-    float err = mf_wrap_deg(target - pose->yaw_deg);
+                   : mf_wrap_deg(seg_pose_yaw(p, &p->entry) + t->yaw_deg);
+    float err = mf_wrap_deg(target - seg_pose_yaw(p, pose));
 
     out->vx_mps = seg_speed_ramp(p, 0.0f, MF_DEFAULT_ACC, dt);
     out->vy_mps = 0.0f;
@@ -497,7 +518,7 @@ static uint8_t seg_goto(mf_path_ctx_t *p, const mf_seg_t *s,
     }
     else
     {
-        dyaw = mf_wrap_deg(seg_cmd_yaw(g->yaw_deg) - pose->yaw_deg);   /* 收尾朝向: 绝对角 */
+        dyaw = mf_wrap_deg(seg_cmd_yaw(g->yaw_deg) - seg_pose_yaw(p, pose));  /* 收尾朝向: 路线系绝对角 */
         out->vx_mps = seg_speed_ramp(p, 0.0f, g->acc_mps2, dt);
         out->vy_mps = 0.0f;
         out->wz_dps = mf_clampf(mf_pid_calc(p->pid_yaw, dyaw, dt),
@@ -518,8 +539,8 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
 #if MF_SEG_NOM_HEADING_EN
     if (p->nom_yaw_init == 0u)
     {
-        /* 首段: 用实测航向给"路径标称航向"定基准, 之后纯几何累积 */
-        p->nom_yaw_deg = pose->yaw_deg;
+        /* 首段: 用实测航向给"路径标称航向"定基准(路线系), 之后纯几何累积 */
+        p->nom_yaw_deg = seg_pose_yaw(p, pose);
         p->nom_yaw_init = 1u;
     }
 #endif
@@ -558,7 +579,7 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
         /* 进段航向误差(带进来多少): 与出口残差同口径(都是在"下发角 - 实测角"上取的),
          * 于是"纠完剩多少"可直接与它对比 —— 单基准架构的现场验收判据 */
         p->line_in_yawerr_deg =
-            mf_wrap_deg(seg_cmd_yaw(seg_move_hold_yaw(p, &s->p.move_dist)) - pose->yaw_deg);
+            mf_wrap_deg(seg_cmd_yaw(seg_move_hold_yaw(p, &s->p.move_dist)) - seg_pose_yaw(p, pose));
         break;
     case MF_SEG_ARC:
 #if MF_SEG_CARRY_EN
