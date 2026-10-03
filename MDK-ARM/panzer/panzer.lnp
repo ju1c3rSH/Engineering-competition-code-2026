@@ -30,6 +30,7 @@
 "panzer\control_car.o"
 "panzer\protocol.o"
 "panzer\car_sense.o"
+"panzer\hwt101.o"
 "panzer\selftest.o"
 "panzer\motion_app.o"
 "panzer\nav_routes.o"

@@ -44,29 +44,20 @@ void Hwt101_RateTask(void)
 
 /* 发一帧并等它出去。
  *
- * ⚠ 用**轮询阻塞**而不是 DMA, 这是被 USART3 IDLE 中断逼出来的(代码评审 P0-3):
- *   stm32f4xx_it.c 的 USART3_IRQHandler 在每个 IDLE 突发里调 HAL_UART_DMAStop(),
- *   而 HAL_UART_DMAStop() 在 gState==BUSY_TX 时会 HAL_DMA_Abort(hdmatx) ——
- *   它**顺带把正在发出的配置帧从中间掐断**。模块 200Hz 持续出流 ⇒ IDLE 每 ~5ms 来一次;
- *   5 字节 @115200 的 TX 窗口是 0.43ms, 三帧序列(unlock/write/save)至少一帧被截的概率
- *   ≈ 23%。被腰斩的帧模块直接忽略 ⇒ 解锁失败 ⇒ RRATE 写不进去 ⇒ 停在出厂 10Hz。
- *   早先代码正是"缺解锁从未生效"的同一失败模式, 换了原因而已(且 DMA 路径连返回值
- *   都丢, gState 还会被完成回调置回 READY, 那个等待循环察觉不到任何异常)。
- *   轮询阻塞天然抗中断抢占: 5 字节含起始位约 0.48ms, 上电路径一次性开销可接受。
- * ⚠ 同时消掉了"DMA payload 不得是栈数组"的隐患(评审 P1-3): 轮询不引用 buffer。 */
+ * ⚠ 用**轮询阻塞**而非 DMA: USART3 IDLE 中断每突发都调 HAL_UART_DMAStop(),而它在
+ *   gState==BUSY_TX 时会 HAL_DMA_Abort(hdmatx) —— 顺带把配置帧从中间掐断。模块 200Hz
+ *   出流 ⇒ IDLE 每~5ms 一次,5 字节 TX 窗口仅 0.43ms,三帧序列至少一帧被截 ≈23%。
+ *   被腰斩的帧模块直接忽略 ⇒ 解锁失败 ⇒ RRATE 写不进去 ⇒ 停在出厂 10Hz(评审 P0-3)。
+ *   轮询天然抗抢占; 副作用是消掉了"DMA payload 不得是栈数组"的隐患。 */
 static HAL_StatusTypeDef Hwt101_Tx(const uint8_t *cmd)
 {
 	return HAL_UART_Transmit(&huart3, (uint8_t *)cmd, HWT101_WRITE_LEN, 50u);
 }
 
-/* 官方四步: 解锁(KEY 0x69 写 0xB588) → 延时 → 写目标寄存器 → 延时 → 保存(SAVE 0x00 写 0)。
- * 旧码只发了中间那条归零帧: 缺解锁模块静默拒写、缺保存掉电不保留 ⇒ 从未生效过。
- * ⚠ 官方明确**解锁后 10s 内必须完成写与保存**; 本函数三步远小于该窗口。
- * ⚠ 不得为省时间合并延时: 官方示例是 unlock→200ms→write→200~500ms→save。
- * ⚠ 发送失败必须计数而不是丢弃返回值: 写寄存器是单向的、没有 ACK, 失败时唯一的
- *   现象就是"配置没生效"。静默丢弃 = 下次排查时完全没有线索。
- * ⚠ unlock/save 用 static 是历史遗留(当初走 DMA 时的规则); 现在走轮询不引用
- *   buffer, 但留着无害且便于对照协议字节。 */
+/* 官方四步: 解锁(KEY 0x69 写 0xB588) → 延时 → 写寄存器 → 延时 → 保存(SAVE 0x00 写 0)。
+ * 旧码只发中间那条: 缺解锁被静默拒写、缺保存掉电不保留 ⇒ 从未生效过。
+ * ⚠ 官方要求解锁后 10s 内完成写与保存,本函数三步远小于该窗口; 延时不得合并。
+ * ⚠ 失败必须计数: 写寄存器单向无 ACK,静默丢弃 = 下次排查完全没有线索。 */
 static void Hwt101_WriteRegSaved(uint8_t reg, uint16_t val,
                                  uint16_t d1_ms, uint16_t d2_ms)
 {
@@ -101,10 +92,9 @@ static uint16_t Hwt101_MeasureYawHz(void)
 
 void Hwt101_Init(void)
 {
-	/* 清零必须关中断: main() 里 UART_Task_Init() 已开 IDLE 中断, 而 USART3 的
-	 * 优先级(0)高于 TIM4(1), 可以在下面两条赋值之间插进来写 ps/health。
-	 * 之前不关中断时最坏会得到 has_prev_yaw=1 而 yaw_seq=0 的组合(靠下一帧
-	 * 0x53 自愈, 属巧合而非设计), 评审 P1-4。工程里 Car_TxEnqueue 等已是这个模式 */
+	/* 清零必须关中断: main() 里 UART_Task_Init() 已开优先级 0 的 IDLE 中断,
+	 * 能在下面逐条赋值之间插进来写 ps/health, 最坏得到 has_prev_yaw=1 而 yaw_seq=0
+	 * 的组合(靠下一帧 0x53 自愈, 属巧合而非设计)。评审 P1-4 */
 	__disable_irq();
 	ps.cnt = 0u;
 	ps.has_wz = 0u;

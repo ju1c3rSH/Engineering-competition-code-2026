@@ -2,36 +2,16 @@
  * @file    hwt101.h
  * @brief   维特 HWT101 姿态传感器驱动（采样层）
  *
- * 本库收敛原先散在三处的 HWT101 代码：帧解析(原 Uart3_task 的扫描段)、
- * 寄存器读写与上电配置(原 Control_Car.c 的 ConfigHWT101/ResetHWT101)、帧计数与
- * 观测字段(原 interurp.c 的 YawSeq/GyroWz_Seq + Control_Car.c 的 RateHz)。
+ * 收敛原先散在三处的 HWT101 代码：帧解析(原 Uart3_task 扫描段)、寄存器读写与上电配置
+ * (原 Control_Car.c)、帧计数与观测字段(原 YawSeq/GyroWz_Seq + RateHz)。
  *
- * ---- 依赖层级（硬约束，改动前先读）----
- *   本库位于**采样层**，与 Car_Sense 同级。被依赖者，方向恒为
- *       hwt101  <-  Car_Sense.c / Control_Car.c / car_obs.c
- *   绝不允许本库反向 include Control_Car.h 或任何 App/ 头 —— App 层是采样层的
- *   使用者，反向包含会成环（同 AGENTS.md 对 App/ 各模块的约定）。
- *   本库只 include: main.h（HAL/GPIO 类型）、stdint.h。不含 mf_*、不含 protocol.h。
+ * 依赖方向恒为 hwt101 <- Car_Sense.c / Control_Car.c / car_obs.c（同级）。
+ * 绝不允许反向 include Control_Car.h 或任何 App/ 头 —— 会成环。
+ * 本库只 include: main.h（HAL 类型）、stdint.h；不含 mf_*、不含 protocol.h。
+ * 帧解析层为纯逻辑（无 HAL/Delay/printf）⇒ 可在 PC 单测，见 build_verify/hwt101_test/。
  *
- * ---- 分层（内部实现，外部只看到本文件）----
- *   1) 帧解析层  Hwt101_Feed*()  纯逻辑：只吃字节、不碰 UART/HAL/Delay。
- *      ⇒ 可以在 PC 上直接单测（见 build_verify/hwt101_test/）。
- *   2) 寄存器层  Hwt101_*Reg()   11 字节帧的编解码，同样是纯函数。
- *   3) 配置层    Hwt101_Init/ConfigRate/ZeroYaw/ReadVersion  **含 HAL_Delay，阻塞**。
- *
- * ---- 时序与中断约束（违反会出事）----
- *   - 本库所有函数都不在中断里做阻塞发送。帧解析无 printf、无 Delay。
- *   - Hwt101_Init() / ConfigRate() / ZeroYaw() / ManualBias() **含 HAL_Delay**，
- *     只能在 main() 上电阶段调用（与既有 ConfigHWT101/ResetHWT101 同约束）。
- *   - Hwt101_FeedBytes() 在 USART3 IDLE 中断里调用（优先级 0），只做纯解析，
- *     复杂度与字节数成正比、无循环搜索上界，最坏 O(n)。
- *
- * ---- 协议依据 ----
- *   维特官方协议 <https://wit-motion.yuque.com/wumwnr/ltst03/seuiba>：
- *   写帧 [FF AA ADDR DATAL DATAH]，读帧 [FF AA 27 ADDR 00]，
- *   回读应答头 0x55 0x5F；数据输出帧头 0x55 + TYPE(0x52 角速度 / 0x53 角度)。
- *   所有配置必须「解锁 KEY(0x69)=0xB588 → 延时 → 写 → 延时 → 保存 SAVE(0x00)=0x0000」，
- *   且官方明确**解锁后 10s 内必须完成写与保存**，否则不生效。
+ * 协议依据与寄存器表：<https://wit-motion.yuque.com/wumwnr/ltst03/seuiba>
+ * 含 HAL_Delay 的配置层函数只能在 main() 上电阶段调用，禁止进中断。
  */
 #ifndef __HWT101_H__
 #define __HWT101_H__
