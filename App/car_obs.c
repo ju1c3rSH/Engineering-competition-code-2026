@@ -242,7 +242,8 @@ void Car_Debug_Stat_Print(void)
 	 * VP=版本号产品段(17bit) / VH=硬件段(6bit) / VS=软件段(8bit)
 	 * 判"速率配置生效没有"看 RRATE: ≈200 已配到 200Hz / ≈10 仍出厂默认 / 0 模块没通。
 	 * ⚠ TXF 非 0 = 有配置帧没发出去(写寄存器单向无 ACK, 这是唯一线索)。
-	 * ⚠ 帧率是突发级下界, 不等于模块真实帧率(一个突发可含多帧) → 见 docs §8.11 */
+	 * ⚠ RRATE 是**真实帧率**(抽库后已无突发下界口径); 但旧固件日志的 RRATE/BOOT
+	 * 是突发下界, 与新日志不可直接比较(同物理帧率下新值更大) → 见 docs §8.11 */
 	printf("HWT:RRATE=%u BOOT=%u SEQ=%u BAD=%u XOK=%u XBAD=%u TXF=%u VER=%u.%u.%u\r\n",
 	       (unsigned)hw->rate_hz, (unsigned)hw->rate_boot, (unsigned)hw->yaw_seq,
 	       (unsigned)hw->bad_sum, (unsigned)hw->xchk_ok, (unsigned)hw->xchk_discard,
