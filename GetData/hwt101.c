@@ -44,11 +44,21 @@ void Hwt101_RateTask(void)
 
 /* 发一帧并等它出去。
  *
- * ⚠ 用**轮询阻塞**而非 DMA: USART3 IDLE 中断每突发都调 HAL_UART_DMAStop(),而它在
- *   gState==BUSY_TX 时会 HAL_DMA_Abort(hdmatx) —— 顺带把配置帧从中间掐断。模块 200Hz
- *   出流 ⇒ IDLE 每~5ms 一次,5 字节 TX 窗口仅 0.43ms,三帧序列至少一帧被截 ≈23%。
- *   被腰斩的帧模块直接忽略 ⇒ 解锁失败 ⇒ RRATE 写不进去 ⇒ 停在出厂 10Hz(评审 P0-3)。
- *   轮询天然抗抢占; 副作用是消掉了"DMA payload 不得是栈数组"的隐患。 */
+ * ⚠ 用**轮询阻塞**而非 DMA: USART3 IDLE 中断每突发都调 HAL_UART_DMAStop(), 而它
+ *   在 gState==BUSY_TX 且 CR3.DMAT==1 时会HAL_DMA_Abort(hdmatx) —— 顺带掐断配置帧。
+ *   模块 200Hz 出流 ⇒ IDLE 每~5ms 一次,5 字节 TX 窗口仅 0.43ms,三帧序列至少一帧被截
+ *   ≈23%。被腰斩的帧模块静默忽略 ⇒ 解锁失败 ⇒ RRATE 写不进去 ⇒ 停在出厂 10Hz(评审 P0-3)。
+ *
+ * ⚠ 为何**轮询与 DMAStop 天然共存**(评审曾疑此处有 HAL 锁冲突, 源码核实结论为否):
+ *   HAL_UART_DMAStop 的 TX 分支是**双重门** —— gState==BUSY_TX **且** CR3.DMAT==1,
+ *   而 DMAT 只有 HAL_UART_Transmit_DMA 才置。本库从不发 DMA(只用 Receive_DMA),
+ *   ⇒ DMAT 恒为 0 ⇒ TX 分支永不进入 ⇒ gState 不会被 UART_EndTxTransfer 清成 READY。
+ *   反之 DMA 也解决不了问题: 它只等 TXE/TC 并写 DR, 同样不碰 DMA 句柄。
+ *   真正残留的风险在 **RX 侧 Abort**(DMAStop 的 RX 分支会执行), 但那已被
+ *   HWT:BAD / XBAD / RRATE 覆盖, 可观测。权衡全文见 docs/坑-DMAStop与轮询发送的权衡.md
+ *
+ * ⚠ 超时 50ms 是**上限**不是保守: 实际耗时 0.43ms, 但 HAL_GetTick 只有 1ms 分辨率,
+ *   按 0.43ms 设超时必然误判。超时触发 → tx_fail++ → HWT:TXF 可见(故障可观测)。 */
 static HAL_StatusTypeDef Hwt101_Tx(const uint8_t *cmd)
 {
 	return HAL_UART_Transmit(&huart3, (uint8_t *)cmd, HWT101_WRITE_LEN, 50u);
