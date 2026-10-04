@@ -59,39 +59,31 @@ typedef struct
     float seg_exit_ey_m;        /* ARC: 出口横向偏差 m，正=弧外 */
     float seg_exit_yawerr_deg;  /* 出口航向偏差 deg（纠完剩多少） */
     float seg_exit_in_yawerr_deg; /* 进段航向偏差 deg（带进来多少），仅直线段填 */
-    float seg_exit_radius_m;    /* ARC 出口的 R = 本段编码器轮程 / |IMU 转角| (m)。
-                                 * ⚠ **它不是物理半径** —— 它与指令半径是自证的: 速率内环让
-                                 * ω_actual = ω_sp = v_wheel/R_cmd, 于是
-                                 * R = v_wheel/ω_actual ≡ R_cmd (恒等)。
-                                 * 物理半径 = R_cmd·(1−纵向打滑), 打滑在机上不可观测 ⇒
-                                 * **判真半径只能用卷尺**(见 mf_config.h 的 MF_ARC_WZ_TRIM)。
-                                 * 本值的用途是"内环有没有把 ω 关到位": 它明显偏离 R_cmd
-                                 * 就说明反解/限幅出问题了 */
-    float seg_exit_dyaw_deg;    /* ARC 出口的**实际转角** |Δyaw_imu|(deg, 恒正)。
-                                 * 这是"弧到底转够了没有"的直接读数 —— 名义 90,
-                                 * 旧到位余量(1.0°)下实测只有 89.1~89.6, 每条弧少转 0.7°
-                                 * ⇒ 出口沿切线少走 11mm。到位余量已改为**按实测步长运行期计算**
-                                 * (mf_config.h 的到位余量说明), 本条就是它的验收读数 */
+    float seg_exit_radius_m;    /* ARC 出口的 R = 本段轮程 / |IMU 转角| (m)。
+                                 * 自证量: 速率内环令 ω_actual=ω_sp=v_wheel/R_cmd,
+                                 * 故本值 ≡ R_cmd, **不是物理半径**(打滑机上不可观测,
+                                 * 真半径只能卷尺量, 见 mf_config.h 的 MF_ARC_WZ_TRIM)。
+                                 * 偏离 R_cmd ⇒ 反解/限幅出问题, 是内环健康判据 */
+    float seg_exit_dyaw_deg;    /* ARC 出口**实际转角** |Δyaw_imu|(deg, 恒正),
+                                 * "转够了没"的直接读数。到位余量已改为按实测步长
+                                 * 运行期计算(mf_config.h 的到位余量说明), 本条即验收读数 */
     uint16_t seg_exit_seg;      /* 出口所在的段下标 */
     uint8_t  seg_exit_kind;     /* 0=ARC / 1=直线 MOVE */
     uint8_t  seg_exit_new;      /* 1=有新记录待取 */
 
-    /* 路径标称航向（仅 MF_SEG_NOM_HEADING_EN=1 生效，见 mf_config.h）：
-     * 由路径几何累积 —— 起点用实测航向初始化(或由 mf_path_set_heading_ref 显式钉下),
-     * 之后每过一条 ARC 加 d_yaw、每过一个 TURN 赋其目标角。MOVE 段的目标航向取它，
-     * 于是上游残留的航向误差会被直线段主动纠回来，而不是被 MF_KEEP 锁定后按
-     * "航向误差×直线长度"放大 */
+    /* 路径标称航向（MF_SEG_NOM_HEADING_EN=1 生效, 见 mf_config.h）：
+     * 由路径几何累积(ARC 加 d_yaw、TURN 赋目标角), MOVE 段目标航向取它,
+     * 上游残留航向误差被直线段主动纠回, 而非被 MF_KEEP 锁死按"误差×长度"放大 */
     float nom_yaw_deg;      /* 当前段起点处的标称航向 deg（**路线系**，见 frame_base_deg） */
     uint8_t nom_yaw_init;   /* 0=还没定过基准（本段进段时补上） */
     uint8_t heading_ref_locked; /* 1=基准已由 mf_path_set_heading_ref() 显式钉下,
                                  * 全程只读(跨表也不再重定锚); 见 MF_HEADING_FRAME_EN */
     float line_in_yawerr_deg;   /* 直线段进段航向误差(带进来多少), 供出口记录对比 */
 
-    /* ---- 整表重锚基点（不变量 P5，见 Motion/README.md「单基准航向架构」）----
-     * 表里声明的绝对角(重锚角/返程角)与 nom_yaw 一律在**路线系**：置零那一刻车头朝向 = 0。
-     * pose.yaw 是模块读数域，两者只差这一个基点 —— 换算只许走 seg_pose_yaw() 一处。
-     * 2026-10 前的实现没有这个基点：表里的绝对角实际钉在"上电那一帧"上，只要上电到置零之间
-     * 车被转过 yaw0，第一个绝对段之后的所有段整体偏 yaw0(长直线上的表现就是走斜) */
+    /* ---- 整表重锚基点（不变量 P5, 见 Motion/README.md「单基准航向架构」）----
+     * 表里绝对角(重锚/返程)与 nom_yaw 一律在**路线系**(置零那一刻车头 = 0);
+     * pose.yaw 是模块读数域, 两者只差此基点, **换算只许走 seg_pose_yaw() 一处**。
+     * 缺它时: 上电到置零间车被转过 yaw0, 首绝对段后所有段整体偏 yaw0(走斜) */
     float frame_base_deg;   /* = GYRO_ZERO 那一刻的模块读数 deg */
     uint32_t ref_seq;       /* 基点被钉下的次数(1 起): 调试口靠它打 YAWZERO 事件行 */
     float line_hdg_deg;     /* 直线段名义线方向(读数域 deg): 进段由目标航向 + 基点解出,
@@ -112,13 +104,10 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v);
 
 /** @brief 显式钉下整表航向基准（MF_HEADING_FRAME_EN=1）
  *
- * 由上层在 GYRO_ZERO 那一刻调用一次（车静止、此刻车头朝向即路线几何的 0°）。
- * 调用后 heading_ref_locked=1：此后任何 mf_path_start()/跨表都**不再重定锚**，
- * 且**表里写死的绝对角也跟着这次置零走** —— 基点是"置零那一刻的读数"，
- * 声明角与 nom_yaw 一律解释在"置零时刻车头 = 0"的路线系里（见 frame_base_deg）。
- * 未调用时行为与旧版逐字相同（自测形态的兜底）。A/B: MF_HEADING_FRAME_EN=0。
- * @param yaw_deg 传**当前实测航向**(Car_GetYawDeg())。不要求模块物理归零:
- *                基准与真实几何之间的固定偏差走 MF_HEADING_BIAS_DEG, 不在这里加
+ * 上层在 GYRO_ZERO 那一刻调用一次（车静止, 此刻车头朝向 = 路线几何 0°）。调用后
+ * heading_ref_locked=1: 之后 mf_path_start()/跨表**不再重定锚**, 表里绝对角一律解释在
+ * "置零时刻车头=0"的路线系(见 frame_base_deg)。
+ * @param yaw_deg 传**当前实测航向**(Car_GetYawDeg()); 无需模块物理归零, 固定偏差走 MF_HEADING_BIAS_DEG
  */
 void mf_path_set_heading_ref(mf_path_ctx_t *p, float yaw_deg);
 
@@ -133,8 +122,8 @@ void mf_path_stop(mf_path_ctx_t *p);
 /**
  * @brief 取走"刚跨过表边界"标志（读后清）
  *
- * 段表链续时底盘已自行跑进下一条表，但上层仍要按旧 nav_id 上报 NAV_DONE、
- * 并把 nav_id 切到续表。用它把这两件事与几何边界对齐。
+ * 段表链续时底盘已自行跑进下一条表，但上层仍要按旧 nav_id 上报 NAV_DONE 并切 nav_id，
+ * 用它把这两件事与几何边界对齐。
  * @return 1=本次取到新边界；0=无
  */
 uint8_t mf_path_pop_chain(mf_path_ctx_t *p);
@@ -156,8 +145,8 @@ uint16_t mf_path_get_seg_index(const mf_path_ctx_t *p);
 /**
  * @brief 当前是否正处在 MF_SEG_WAIT（定时停等）段
  *
- * 上层（如底盘堵转看门狗）用它区分"段表主动要求的原地停等"与"真堵转":
- * WAIT 段内车体本就应静止，里程 3s 无变化不能判成故障。
+ * 上层（如底盘堵转看门狗）用它区分"段表主动要求的原地停等"与"真堵转": WAIT 段内车体
+ * 本就应静止，里程 3s 无变化不能判成故障。
  * @return 1=正在 WAIT 段；0=非运行态/其它段
  */
 uint8_t mf_path_is_waiting(const mf_path_ctx_t *p);
@@ -165,16 +154,13 @@ uint8_t mf_path_is_waiting(const mf_path_ctx_t *p);
 /**
  * @brief 取走最近一次"段出口质量记录"（读后清标志）
  *
- * ARC：ey_m = 出口横向偏差（反映本段跑没跑偏）；直线：ey_m 恒 0（直线段无名义线，
- * 横向偏差要名义轨迹才能算，本版不做 —— 见 Motion/README.md）。
- * 两者都填 out_yawerr_deg = 出口航向残差；直线另填 in_yawerr_deg = 进段航向误差，
- * 于是"带进来多少 / 纠完剩多少"可现场直接对比（单基准架构的验收判据）。
- * 上层在主循环调用并自行加中断保护即可打点。
- *
+ * ARC: ey_m=出口横向偏差(跑没跑偏); 直线: ey_m 恒 0(无名义线, 见 Motion/README.md)。
+ * 两者填 out_yawerr_deg=出口航向残差; 直线另填 in_yawerr_deg, "带进来多少/纠完剩多少"
+ * 可现场对比(单基准架构验收判据)。上层主循环调用加中断保护。
  * @param seg_index       出口所在段下标（可传 0）
  * @param kind            0=ARC / 1=直线 MOVE（可传 0）
- * @param ey_m            ARC: 出口横向偏差 m，正=落在名义弧外侧; 直线 MOVE: 相对
- *                        "进段点 + 本段目标航向"这条名义线的横向偏差, 正=左侧（可传 0）
+ * @param ey_m            ARC: 出口横向偏差 m，正=落在名义弧外侧; 直线: 相对"进段点+本段目标
+ *                        航向"这条名义线的横向偏差, 正=左侧（可传 0）
  * @param in_yawerr_deg   进段航向误差 deg，仅直线段有效（可传 0）
  * @param out_yawerr_deg  出口航向残差 deg（可传 0）
  * @return 1=本次取到新记录；0=无新记录（出参不变）
@@ -185,10 +171,9 @@ uint8_t mf_path_pop_seg_exit(mf_path_ctx_t *p, uint16_t *seg_index, uint8_t *kin
 /**
  * @brief 最近一次 ARC 出口的 R = 本段轮程 / |本段 IMU 转角|（m，恒正）
  *
- * 名义 TURN_RADIUS_M = 0.9425。**它不等于物理半径** —— 速率内环让 ω_actual = ω_sp =
- * v_wheel/R_cmd, 于是本值 ≡ v_wheel/ω_actual ≡ R_cmd(自证)。物理半径还要乘
- * (1−纵向打滑), 而打滑机上不可观测 ⇒ **判真半径只能用卷尺**(mf_config.h: MF_ARC_WZ_TRIM)。
- * 本值偏离名义 = "内环没把 ω 关到位/输出被限幅", 是内环健康的判据, 不是几何判据。
+ * 名义 TURN_RADIUS_M = 0.9425。**非物理半径**: 速率内环令本值 ≡ R_cmd(自证), 物理半径另乘
+ * (1−纵向打滑)且打滑机上不可观测 ⇒ 真半径只能卷尺量(mf_config.h: MF_ARC_WZ_TRIM)。
+ * 本值偏离名义 = 内环没关到位/限幅, 是健康判据非几何。
  * @return 名义上 >0; 尚无 ARC 出口记录时返回 0
  */
 float mf_path_exit_radius_m(const mf_path_ctx_t *p);
@@ -196,9 +181,8 @@ float mf_path_exit_radius_m(const mf_path_ctx_t *p);
 /**
  * @brief 最近一次 ARC 的**实际转角** |Δyaw_imu|（deg，恒正；名义 90）
  *
- * 判"弧转够了没有"的直接读数。少转 0.7° = 出口沿切线少走 11mm, 而 EY/YE/R 因为都是
- * "位姿 vs 名义圆"的自证量看不出它 —— 唯一旁证是下一段 MOVE 的 LN:IE(替弧补角)。
- * 到位余量按实测步长运行期算(见 mf_config.h 的到位余量说明), 本条就是它的验收读数
+ * "弧转够了没"的直接读数。EY/YE/R 都是"位姿 vs 名义圆"自证量看不出少转, 唯一旁证是下一段
+ * MOVE 的 LN:IE(替弧补角)。到位余量按实测步长运行期算(见 mf_config.h), 本条即验收读数
  */
 float mf_path_exit_dyaw_deg(const mf_path_ctx_t *p);
 
@@ -215,9 +199,8 @@ typedef struct
 
 /** @brief 本拍的目标航向/误差/横向偏差（只读, 不参与控制）
  *
- * 直线的横向偏差由"进段点 + 本段目标航向"这条名义线算出, 正=左侧。
- * 它是区分两种"长直线走偏"的现场读数: 沿行程基本不变 = 整段平行挪出去(弧半径/进段
- * 横向偏移); 随行程线性增长 = 航向基准被转了(越走越斜)。
+ * 直线横向偏差由"进段点+本段目标航向"名义线算出, 正=左侧。
+ * 区分两种"长直线走偏": 沿程不变=整段平行挪出(弧半径/进段偏移); 随程线性增长=航向基准被转(越走越斜)
  */
 void mf_path_get_obs(const mf_path_ctx_t *p, mf_path_obs_t *obs);
 

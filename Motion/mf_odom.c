@@ -169,7 +169,7 @@ void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw,
     if (o->arc_src == 0u)
     {
         /* 旧律弧长反解 ds_enc×(dyaw_imu/dtheta_enc)：只在**真转弯**时可信，门限见 MF_ODOM_RATIO_MIN_*。
-         * ⚠ 它使 R_odom ≡ ds_enc/dtheta_enc 只含轮子量 ⇒ 弧半径恒等于指令半径，ARC 的 e_y/e_psi
+         * 它使 R_odom ≡ ds_enc/dtheta_enc 只含轮子量 ⇒ 弧半径恒等于指令半径，ARC 的 e_y/e_psi
          * 结构性失效（推导与两趟实测：docs/坑-编码器与里程.md §8） */
         if ((fabsf(dyaw_deg) >= MF_ODOM_RATIO_MIN_DYAW_DEG)
             && (fabsf(dtheta_enc_rad) >= MF_ODOM_RATIO_MIN_DTHETA_RAD))

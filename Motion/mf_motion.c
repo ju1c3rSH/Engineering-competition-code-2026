@@ -136,7 +136,7 @@ uint8_t mf_is_waiting(const mf_ctx_t *m)
 }
 
 /* 最近一次 ARC 出口的 R(m) = 本段轮程 / |IMU 转角|, 见 mf_path.c。
- * ⚠ 它不是物理半径: 内环让 ω=v_wheel/R_cmd ⇒ 本值 ≡ R_cmd(自证), 判真半径只能用卷尺 */
+ * 它不是物理半径: 内环让 ω=v_wheel/R_cmd ⇒ 本值 ≡ R_cmd(自证), 判真半径只能用卷尺 */
 float mf_exit_radius_m(const mf_ctx_t *m)
 {
     return mf_path_exit_radius_m(&m->path);
@@ -194,7 +194,7 @@ const mf_pose_t *mf_get_pose(const mf_ctx_t *m)
 }
 
 /* ---------- 单步便捷指令：单段路径（段 + 哨兵） ----------
- * ⚠ 每个函数用**函数内 static** 存段表, 而 mf_start_path 保存的是它的指针 ⇒ 正在跑某条单段路径时
+ * 每个函数用**函数内 static** 存段表, 而 mf_start_path 保存的是它的指针 ⇒ 正在跑某条单段路径时
  * 再调任何一个单步指令, 会把在跑的段表**就地覆盖**(静默)。所以单步指令只用于台架/调试,
  * 正式路线一律走 nav_routes 的 flash 段表; 要支持嵌套得把 seg 提到调用方(下一轮) */
 

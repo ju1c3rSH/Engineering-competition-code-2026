@@ -3,17 +3,8 @@
  * @brief   运动框架顶层 API
  *
  * 结构：应用层 sense(采样/存储) -> mf_tick(里程计->段执行器/手动->逆解->轮速环) -> 应用层执行
- * 输入使用采样snapshot mf_state_in_t，输出留在 mf_ctx_t.wheel[].out
- *
- * 用法（panzer底盘）：
- *   mf_cfg_t cfg = { ... };
- *   mf_init(&mf, &cfg);
- *   mf_start_path(&mf, panzer_route);    // 或 mf_set_velocity() 手动模式
- *
- *   // 10ms 定时中断里：先采样新快照，再喂给库，最后把 wheel[].out 写到电机
- *   sense_sample();                      // 应用层: 更新快照(seq+1)
- *   mf_tick(&mf, sense_get());           // 无新样时本拍自动跳过
- *   drive_apply(&mf);                    // 应用层: DIR+PWM
+ * 输入用采样 snapshot mf_state_in_t，输出留在 mf_ctx_t.wheel[].out。用法：mf_init ->
+ * mf_start_path(或 mf_set_velocity)；固定周期中断里 sense_sample() -> mf_tick() -> drive_apply()
  */
 #ifndef MF_MOTION_H
 #define MF_MOTION_H
@@ -114,7 +105,7 @@ uint8_t mf_is_waiting(const mf_ctx_t *m);   /* 当前段是否为 WAIT(主动停
  */
 uint8_t mf_pop_seg_exit(mf_ctx_t *m, uint16_t *seg_index, uint8_t *kind,
                         float *ey_m, float *in_yawerr_deg, float *out_yawerr_deg);
-/* 最近一次 ARC 出口的 R(m), 见 mf_path.h:mf_path_exit_radius_m。⚠ 它是自证量(R≡R_cmd),
+/* 最近一次 ARC 出口的 R(m), 见 mf_path.h:mf_path_exit_radius_m。它是自证量(R≡R_cmd),
  * 判物理半径要用卷尺 */
 float mf_exit_radius_m(const mf_ctx_t *m);
 /* 最近一次 ARC 的实际转角(deg, 恒正; 名义 90), 见 mf_path.h:mf_path_exit_dyaw_deg */

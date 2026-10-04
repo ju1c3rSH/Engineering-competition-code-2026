@@ -70,7 +70,7 @@ static void seg_obs(mf_path_ctx_t *p, float target_deg, float yawerr_deg,
 }
 
 /* 整表重锚: 基点是"置零那一刻的读数", 表里的绝对角从此解释在路线系(置零车头 = 0)。
- * 旧实现只记 nom_yaw, 表里的绝对角仍钉在上电那一帧上 —— 详见 mf_path.h 的 P5 说明 */
+ * 缺这一步时表里的绝对角会钉在上电那一帧, yaw0≠0 就让首个绝对段之后全偏 */
 void mf_path_set_heading_ref(mf_path_ctx_t *p, float yaw_deg)
 {
 #if MF_HEADING_FRAME_EN
