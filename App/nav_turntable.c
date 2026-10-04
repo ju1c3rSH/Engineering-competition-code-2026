@@ -137,12 +137,9 @@ void Turntable_Request(uint8_t turn_code)
 	Car_Dbg2_TtRecord(1u, turn_code, angle);
 }
 
-/* 急停: 冻结 TIM5 重发 + 作废未决 TURN_DONE + 停电机 + 登记(原 Nav_DoStop 的转台段 /
- * 原 Car_Turntable_BenchStop 共用此序列, 逐字保留)。
- * 弃用在途位置帧(DMA 中途可被共享 rxb 的 memset 撕裂, 且 Emm_V5 内部
- * HAL_UART_Transmit_DMA 遇 BUSY 会静默吞掉停止帧), 改用局部缓冲阻塞直发
- * (5B@115200≈0.43ms, 仅 STOP 时一次)。残窗: TIM5 恰在"tt_arm 检查后、发送前"
- * 被抢占时, 恢复后会多发一帧旧位置——之后无重发, 电机走完该目标即停, 与旧行为相当 */
+/* 急停: 冻结 TIM5 重发 + 作废未决 TURN_DONE + 停电机 + 登记。
+ * 改用局部缓冲阻塞直发(5B@115200≈0.43ms): DMA 在途帧可被共享 rxb 的 memset 撕裂, 且
+ * Emm_V5 的 HAL_UART_Transmit_DMA 遇 BUSY 会静默吞掉停止帧; 阻塞直发仅 STOP 时一次。 */
 void Turntable_Stop(void)
 {
 	uint8_t stop_cmd[5] = {EMM_MOTOR_ADDR, 0xFEu, 0x98u, 0x00u, 0x6Bu};
@@ -221,13 +218,10 @@ void Car_Turntable_BenchStop(void)
 	Turntable_Stop();
 }
 
-/* TIM5 100ms 转台下发(经 interurp.c 调用)。
- * tt_arm 门控: 上电后首条 TURNTABLE 命令前/急停后不下发——旧版上电即向
- * 绝对 0°(=驱动器上电零点)发位置, 仅 MCU 复位时转台会自行大行程甩动。
+/* TIM5 100ms 转台下发(interurp.c 调用)。
+ * tt_arm 门控: 上电后首条命令前/急停后不下发——上电即向绝对 0° 发位置, MCU 复位时转台大行程甩动。
  * 方向+角度关中断成对快照, 防 TIM4 更新中途读到混合对挥向另一侧。
- * 目标去重(见 tt_sent_key 注释): (方向,目标)没变就不发——重发会重启 Emm
- * 梯形规划, 10Hz 锯齿起步 = 转台剧烈抖动; 发送失败不记账, 下拍重试。
- * acc=20: 旧值 0 为直接启动, 带载 180RPM 零斜坡起转冲击/失步 */
+ * 目标去重(见 tt_sent_key): 方向+目标没变就不发——重发会重启 Emm 梯形规划、10Hz 锯齿抖动; 失败不记账下拍重试。 */
 void Emm_Pos_Control(void)
 {
 	uint8_t  dir;

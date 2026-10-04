@@ -32,7 +32,7 @@ HWT101_LOCAL struct
 } ps;
 
 /* 诊断计数。ISR 写、主循环读。
- * ⚠ **刻意不加 volatile**: 那样 Hwt101_Health() 就无法返回 const 指针(丢掉
+ * **刻意不加 volatile**: 那样 Hwt101_Health() 就无法返回 const 指针(丢掉
  * 限定符会告警), 而观测层只该**读**这些量、不该有写路径。
  * 正确性不依赖 volatile: 单字/双字的读写在 Cortex-M4 上是单条 LDR/STR, 天然原子;
  * 多字快照(xchk_ok/xchk_discard 与帧计数一起读)只用于人看的统计量, 撕裂一两次
@@ -146,9 +146,9 @@ void Hwt101_FeedBytes(const uint8_t *buf, uint16_t len)
 				if (ps.buf[k] == HWT101_HEAD)
 				{
 					/* 把 buf[k..10] 前移到 buf[0..], cnt 置成"已持有字节数"= 11-k。
-					 * ⚠ 搬移只前移、**不清零尾部**: 清零会把已收到的真实后续字节抹成
+					 * 搬移只前移、**不清零尾部**: 清零会把已收到的真实后续字节抹成
 					 *   0x00, 下一轮凑满必然 sum8 失败, 白丢一帧(实测只救回 1/3)。
-					 * ⚠ cnt 写成"还差几个"会让它越过帧长, 下一拍越界写 ps.buf(实测 bad_sum 13)。 */
+					 * cnt 写成"还差几个"会让它越过帧长, 下一拍越界写 ps.buf(实测 bad_sum 13)。 */
 					uint8_t keep = (uint8_t)(HWT101_FRAME_LEN - k);
 					uint8_t m;
 
@@ -210,7 +210,7 @@ void Hwt101_FeedBytes(const uint8_t *buf, uint16_t len)
 				if (err > HWT101_XCHK_TOL_DPS)
 				{
 					/* 两路对不上: 记丢弃, 且**真正不采纳**本帧 Wz。
-					 * ⚠ 这里必须 continue —— 早先版本只清 has_wz, 而紧随其后的
+					 * 这里必须 continue —— 早先版本只清 has_wz, 而紧随其后的
 					 *   "wz_seq++ / last_wz_dps=wz / has_wz=1" 无条件执行、把它盖回去,
 					 *   校验对输出零作用(评审 P0-1)。帧计数也必须一起跳:
 					 *   Car_Sense 靠 WzSeq() 变化判"新帧"。航向侧照常更新。 */
@@ -234,9 +234,9 @@ void Hwt101_FeedBytes(const uint8_t *buf, uint16_t len)
 			 * VERSION(0x2E) 占 d0..d3, 按官方:
 			 *   VERSION = (VHH<<24)|(VHL<<16)|(VLH<<8)|VLL
 			 * 示例 55 5F 01 41 EF 89 → 0x89EF4101 = 10173.1.1
-			 * ⚠ 早期版本把结果截成 uint16 存(0x4101), 那个数字与官方版本号语义
+			 * 早期版本把结果截成 uint16 存(0x4101), 那个数字与官方版本号语义
 			 *   无关、无法用于判版本, 现存完整 32 位(评审 P1-6)。
-			 * ⚠ 0x5F 是**所有**寄存器回读的通用应答头。0x2E 恰�� d0..d3, 所以本分支
+			 * 0x5F 是**所有**寄存器回读的通用应答头。0x2E 恰占 d0..d3, 所以本分支
 			 *   只有在"当前回读的就是 0x2E"时才解释; 否则忽略(否则将来加 RRATE
 			 *   回读, 版本号会被 RRATE 数据静默覆盖)。 */
 			if (ps.reg_pending == (uint8_t)HWT101_REG_VERSION)

@@ -31,10 +31,10 @@
 #define CAR_SUB_REQ_STOP          0x02u   /* 急停安全停车, 清执行状态 */
 #define CAR_SUB_REQ_TURNTABLE     0x03u   /* arg0=转台码 0~7: 1~3对坑(123/90/57°) 4~6对桶(270/270/90°CW反向) 7回正90°, 0=不动作; arg1=保留恒0 */
 #define CAR_SUB_GYRO_ZERO         0x04u   /* 陀螺仪置零(须车静止) */
-/* 打靶段内跟瞄 v3.0(刹停/续跑): 位移唯一来源是段表, 视觉只回答"是否已到靶位"。
+/* 打靶段内跟瞄(刹停/续跑): 位移唯一来源是段表, 视觉只回答"是否已到靶位"。
  * 不变量: 跟瞄态一个字节的 vx/wz 都不写(零标定); 恢复后终点仍是"进段位置 + 段表里程" */
-#define CAR_SUB_TRACKING_START    0x05u   /* arg0=保留(旧 speed_level, v3.0 不再生效),
-                                             arg1=aim_axis(仅范围校验, v3.0 不再分轴) */
+#define CAR_SUB_TRACKING_START    0x05u   /* arg0=保留(不再生效, 进近低速由咬靶区自动决定),
+                                             arg1=aim_axis(仅入参范围校验, 不再分轴) */
 #define CAR_SUB_TRACKING_ERROR    0x06u   /* [error_low_byte,error_high_byte,target_found_flag], 定点=误差归一化*10000 小端 */
 #define CAR_SUB_TRACKING_STOP     0x07u   /* arg0=tracking_stop_mode(0=就地刹停/1=放行段表走完当前段), arg1=0保留 */
 
@@ -52,7 +52,7 @@
 #define CAR_FAULT_WATCHDOG      0x04u   /* 进度看门狗: 里程 3s 无变化 */
 
 /* ================== 跟瞄入参 / reason ================== */
-/* 收敛轴码表: v3.0 不再分轴(一律不写 vx/wz), 两个宏仅用于入参范围校验 */
+/* 收敛轴码表: 一律不写 vx/wz, 两个宏仅用于入参范围校验 */
 #define TRK_AXIS_ROTATE           0x00u
 #define TRK_AXIS_TRANSLATE        0x01u
 

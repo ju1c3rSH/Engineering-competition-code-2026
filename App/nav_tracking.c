@@ -13,7 +13,7 @@ static struct
 	float    horizontal_error_normalized;  /* 最新归一化横向误差, 约 -1~+1 */
 	uint8_t  target_found_flag;            /* 最新有效标志 */
 	uint16_t frame_age_ms;                 /* 距上次有效误差帧时长 */
-	uint16_t hold_ms;                      /* J1 提前点火: |e|≤阈 的连续累计 */
+	uint16_t hold_ms;                      /* 进阈即刹: |e|≤阈 的连续累计 */
 	int8_t   zero_sign;                    /* 已确认误差符号(+1/-1/0=未确认), 过零判据的基准 */
 	int8_t   sign_cand;                    /* 去抖候选符号 */
 	uint8_t  confirm_cnt;                  /* 去抖: 候选符号连续同号帧数 */
@@ -84,7 +84,7 @@ void Car_Tracking_ErrorPush(int16_t error_fixed, uint8_t target_found_flag)
 	__enable_irq();
 }
 
-/* ---- 段内跟瞄(v3.0): 段表不断; 视觉只当"该刹停"的判据, 不写 vx/wz ---- */
+/* ---- 段内跟瞄: 段表不断; 视觉只当"该刹停"的判据, 不写 vx/wz ---- */
 static void Tracking_HoldStill(mf_ctx_t *motion)
 {
 	motion->cmd.vx_mps = 0.0f;
@@ -102,15 +102,15 @@ static void Tracking_HoldStill(mf_ctx_t *motion)
 static void Tracking_RaiseFault(uint8_t reason);   /* 前置声明: Tracking_Start 无段表时调 */
 
 /* 收到 TRACKING_START: 武装跟瞄(段表全权, 底盘只评估刹停判据)。
- * v3.0 下 START 是**无状态标志** —— 重发不改变段表状态、不清测量、不换态, 天然幂等;
+ * START 是**无状态标志** —— 重发不改变段表状态、不清测量、不换态, 天然幂等;
  * 从 FAULT 重收 START = 主控要求重开一轮(清未收敛闩锁, 好让容错计数能再累计)。
- * a0 旧 speed_level / a1 aim_axis 都不再参与逻辑; aim_axis 仅做入参范围校验 */
+ * speed_level 不参与逻辑(进近低速由咬靶区自动决定); aim_axis 仅做入参范围校验 */
 void Tracking_Start(uint8_t tracking_speed_level, uint8_t aim_axis)
 {
 	mf_ctx_t *motion = mf_app();
 	mf_path_state_t path_state = mf_path_get_state(&motion->path);
 
-	(void)tracking_speed_level;   /* v3.0: 进近低速由咬靶区自动决定, 该档位不再生效 */
+	(void)tracking_speed_level;   /* 进近低速由咬靶区自动决定, 该档位不再生效 */
 
 	if ((aim_axis != TRK_AXIS_ROTATE) && (aim_axis != TRK_AXIS_TRANSLATE))
 	{
@@ -340,10 +340,9 @@ uint8_t Tracking_ApplyOverlay(void)
 	}
 	tracking.lost_ms = 0u;
 
-	/* ---- J2 过零(兜底): 符号翻转那一拍 = 车刚从靶心旁经过 ----
-	 * 2026-09-29 起它退为兜底 —— 正常时下面 J1 已经提前点火, 走不到这里;
-	 * 留着是为了"整帧漏过阈值窗"(如某帧 |e| 恰好跳过去)时仍能刹住。
-	 * 去抖: 连续 TRACKING_ZERO_CONFIRM_N 帧同号才认; 死区挡小噪声 */
+	/* ---- 过零兜底: 符号翻转那一拍 = 车刚从靶心旁经过 ----
+	 * 正常时下面"进阈即刹"已先触发, 走不到这里; 留着是为了"整帧漏过阈值窗"
+	 * (如某帧 |e| 恰好跳过去)时仍能刹住。去抖: 连续 TRACKING_ZERO_CONFIRM_N 帧同号才认 */
 	{
 		int8_t s = (e > TRACKING_ZERO_DEADBAND) ? 1 : ((e < -TRACKING_ZERO_DEADBAND) ? -1 : 0);
 
@@ -373,10 +372,10 @@ uint8_t Tracking_ApplyOverlay(void)
 		}
 	}
 
-	/* ---- J1 提前点火(主判据, 2026-09-29): |e| 一进 ±阈 就刹, 不等符号翻转 ----
+	/* ---- 进阈即刹(主判据): |e| 一进 ±阈 就刹, 不等符号翻转 ----
 	 * 提前量 = 停止距离(v·链路滞后 + v²/(2·BRAKE))折算到 e 域; 用 |e| 直接比, 不引入
 	 * 第二个几何标定。去抖按帧读(见 TRACKING_HOLD_TIME_MS 注释)。
-	 * 与 J2 同门槛: 只在咬靶区内计数 —— 否则段起点的误检(锁错目标 ⇒ e≈0)会把车从起步刹死 */
+	 * 只在咬靶区内计数 —— 否则段起点的误检(锁错目标 ⇒ e≈0)会把车从起步刹死 */
 	if ((abs_e <= TRACKING_ERROR_THRESHOLD) && (Tracking_InSlowZone(motion) != 0u))
 	{
 		tracking.hold_ms = (uint16_t)(tracking.hold_ms + CAR_TICK_MS);

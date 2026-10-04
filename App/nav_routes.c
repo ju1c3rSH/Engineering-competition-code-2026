@@ -28,7 +28,7 @@ static const mf_seg_t tbl_qr[] =          /* NAV_TO_QR: flag0 出发首段(台�
 	SEG_END
 };
 static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: 排爆区去程(末段转弯+末段直线已移入重锚表) */
-/* ⚠ 2026-09-30: 五条 MOVE 已按 0.96 缩(47/19/49/37/50 → 45.1/18.2/47.0/35.5/48.0)。
+/* 2026-09-30: 五条 MOVE 已按 0.96 缩(47/19/49/37/50 → 45.1/18.2/47.0/35.5/48.0)。
  * 直线物理长度 = (单位/15)×π×**真实**轮径, 而真实有效轮径 ≈156.3mm(固件假设 150)——
  * 同一比例也让弧半径变成 982(卷尺), 见 mf_config.h: MF_ARC_WZ_TRIM。两处同源, 要改一起改。 */
 {
@@ -49,7 +49,7 @@ static const mf_seg_t tbl_bucket[] =      /* NAV_TO_BUCKET: 桶与排爆作业�
 	SEG_END
 };
 /* 打靶段停点标定(2026-09-27): 175 → 213 单位, 多出 38 单位(1.19m)让车能走到靶心(不延长则
- * 刹停判据永不成立)。⚠ 与 tbl_hostage 首段**成对改**: 加多少减多少, 净和 223.5 不变, 否则
+ * 刹停判据永不成立)。与 tbl_hostage 首段**成对改**: 加多少减多少, 净和 223.5 不变, 否则
  * 90° 弧起点整体前移、落点横向偏同样距离。
  * 推导(E≈2300 反解/窗口公式)与验证法: docs/坑-运动与导航.md §6 */
 static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 */
@@ -71,12 +71,10 @@ static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口
 	SEG_MOVE_HD(MF_M_SPEED(Middle_speed), MF_M_DIST(75.0f), NAV_REBASE_HOSTAGE_YAW_DEG),
 	SEG_END
 };
-/* ---- 返程段 / 终点的绝对航向: 任务终点 YAW 严格 -180° ----
- * -180° 是几何真值: 扫码 GYRO_ZERO 定义出发朝向 0°、首段沿它走 ⇒ -180° = 严格反向。
- * ⚠ **段表里只允许出现几何量**。基准系与真实几何之间的固定偏差(以前塞在这里的
- * NAV_RETURN_TRIM_DEG=1.8)已收口到 MF_HEADING_BIAS_DEG 一个旋钮上(mf_config.h):
- * 三个散落的静态补偿混在几何常量里分不出"几何错"还是"补偿", 且实测证明不能互推。
- * 推导/±180° 卷绕/完赛区要求: docs/坑-运动与导航.md §6 + Motion/README.md「返程与终点航向」 */
+/* 返程段/终点的绝对航向: 任务终点 YAW 严格 -180° —— 几何真值(GYRO_ZERO 定出发 0°, 反向即 -180°)。
+ * 约束: 段表里**只允许出现几何量**; 基准系与真实几何的固定偏差已收口到 MF_HEADING_BIAS_DEG 一个旋钮
+ * (旧 NAV_RETURN_TRIM_DEG=1.8 等散落补偿混在几何常量里分不出几何错还是补偿, 且不能互推)。详见
+ * docs/坑-运动与导航.md §6 + Motion/README.md「返程与终点航向」。 */
 #define NAV_RETURN_LEG_YAW_DEG     (-180.0f)
 #define NAV_RETURN_FINAL_REBASE_EN 1u
 

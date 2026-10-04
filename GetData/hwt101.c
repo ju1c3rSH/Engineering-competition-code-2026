@@ -1,20 +1,13 @@
 /**
  * @file    hwt101.c
- * @brief   维特 HWT101 驱动实现
- *
- * 依赖层级见 hwt101.h 顶部。
+ * @brief   维特 HWT101 驱动实现（依赖层级见 hwt101.h 顶部）
  *
  * ---- 为什么拆成 .inc ----
- * 帧解析层必须是**无 HAL 依赖**的纯逻辑, 否则它无法在 PC 上单测（本工程的
- * mf_path/maixcam 都用这个办法）。因此把 [1][2] 两段放进 hwt101_testable.inc:
- *   - 固件: 本文件 include 它 → 同一份代码编进目标
- *   - 单测: test_hwt101.c 直接 include 它 → 不需要 stm32f4xx_hal.h
- * 若在 .inc 里 include HAL 头, 单测就编不过了 —— 保持它的 include 只有 hwt101.h。
- *
- * 分工:
- *   [1] 帧解析层（.inc）纯逻辑, O(n), 无 printf/无 Delay, 跑在 USART3 IDLE 中断
- *   [2] 寄存器层（.inc）11 字节帧编解码, 纯函数
- *   [3] 配置层（本文件）上电阻塞序列, **含 HAL_Delay, 禁进中断**
+ * 帧解析层必须**无 HAL 依赖**的纯逻辑, 否则无法在 PC 上单测(本工程 mf_path/maixcam
+ * 同此办法)。故 [1][2] 放进 hwt101_testable.inc: 固件由本文件 include 它, 单测由
+ * test_hwt101.c 直接 include —— .inc 的 include 只能有 hwt101.h, 加 HAL 头单测就编不过。
+ * 分工: [1] 帧解析层(USART3 IDLE 中断, O(n), 无 printf/Delay) [2] 寄存器层(11 字节帧
+ * 编解码纯函数) [3] 配置层(本文件, 上电阻塞序列, **含 HAL_Delay 禁进中断**)
  */
 #include "hwt101.h"
 #include "hwt101_testable.inc"   /* [1] 帧解析层 + [2] 寄存器层（纯逻辑, PC 可单测） */
@@ -42,12 +35,8 @@ void Hwt101_RateTask(void)
 	}
 }
 
-/* 发一帧并等它出去。
- * 用轮询而非 DMA: IDLE 中断每突发调 HAL_UART_DMAStop(), 它在 gState==BUSY_TX 且
- * DMAT==1 时 Abort TX DMA ⇒ 掐断配置帧(模块 200Hz 出流, 5 字节窗口仅 0.43ms)。
- * 本库从不发 DMA ⇒ DMAT 恒 0 ⇒ 该分支永不进入, 轮询与 DMAStop 可共存。
- * 超时 50ms 是上限: 实际 0.43ms, 但 HAL_GetTick 只 1ms 分辨率, 按 0.43ms 设必误判。
- * 权衡全文见 docs/坑-DMAStop与轮询发送的权衡.md */
+/* 发一帧并等它出去。用轮询而非 DMA: IDLE 中断突发会调 HAL_UART_DMAStop(), 在 BUSY_TX 且 DMAT=1 时 Abort TX DMA ⇒ 掐断配置帧(模块 200Hz, 5字节窗口仅 0.43ms);
+ * 本库从不发 DMA ⇒ DMAT 恒 0 ⇒ 该分支永不进, 轮询与 DMAStop 共存。超时 50ms(实际 0.43ms, 但 HAL_GetTick 仅 1ms 分辨率, 按 0.43ms 设必误判)。权衡见 docs/坑-DMAStop与轮询发送的权衡.md */
 static HAL_StatusTypeDef Hwt101_Tx(const uint8_t *cmd)
 {
 	return HAL_UART_Transmit(&huart3, (uint8_t *)cmd, HWT101_WRITE_LEN, 50u);
@@ -92,7 +81,7 @@ void Hwt101_Init(void)
 {
 	/* 清零必须关中断: main() 里 UART_Task_Init() 已开优先级 0 的 IDLE 中断,
 	 * 能在下面逐条赋值之间插进来写 ps/health, 最坏得到 has_prev_yaw=1 而 yaw_seq=0
-	 * 的组合(靠下一帧 0x53 自愈, 属巧合而非设计)。评审 P1-4 */
+	 * 的组合(靠下一帧 0x53 自愈, 属巧合而非设计)。 */
 	__disable_irq();
 	ps.cnt = 0u;
 	ps.has_wz = 0u;
@@ -123,26 +112,22 @@ void Hwt101_Init(void)
 void Hwt101_ConfigRate(uint8_t rrate)
 {
 	/* 官方 RRATE 示例的延时是 100/100ms; 这里取 200/200 更保守。
-	 * ⚠ RRATE 写模块 Flash, 只在上电测得未达标时才走这里 */
+	 * RRATE 写模块 Flash, 只在上电测得未达标时才走这里 */
 	Hwt101_WriteRegSaved(HWT101_REG_RRATE, (uint16_t)rrate, 200u, 200u);
 }
 
 void Hwt101_ZeroYaw(void)
 {
 	/* 官方 CALIYAW 示例: unlock → 200ms → 0x76 写 0 → 500ms → save。
-	 * 整段阻塞约 1.2s。⚠ 它与 GYROBAIS(0x4C 零偏) 是**两个独立寄存器**:
+	 * 整段阻塞约 1.2s。它与 GYROBAIS(0x4C 零偏) 是**两个独立寄存器**:
 	 * CALIYAW 只改"角度读数从哪起", 不动陀螺零偏, 所以不会破坏自动零偏成果 */
 	Hwt101_WriteRegSaved(HWT101_REG_CALIYAW, 0x0000u, 200u, 500u);
 }
 
 void Hwt101_ReadVersion(void)
 {
-	/* 读命令: [FF AA 27 2E 00], 官方注明读寄存器**不需要解锁**。
-	 * 模块回 [55 5F d0..d7 SUM](11B), 由解析层 0x5F 分支填进 health。
-	 * 这里只等应答到达, 不阻塞等结果 —— 结果由 Hwt101_Health() 读。
-	 * ⚠ 必须先 Hwt101_ExpectReg(0x2E): 0x5F 是通用应答头, 不声明上下文的话
-	 *   解析层无法判断这条应答是不是版本号(评审 P1-6)。
-	 * ⚠ tx_fail 会被累加: 回读属"配置面"操作, 失败同样没有 ACK 可查。 */
+	/* 读命令 [FF AA 27 2E 00], 官方注明读寄存器**不需要解锁**; 模块回 [55 5F d0..d7 SUM](11B) 由解析层 0x5F 分支填 health, 这里只等到达不阻塞等结果。
+	 * 必须先 Hwt101_ExpectReg(0x2E): 0x5F 是通用应答头, 不声明上下文解析层无法判断这条应答是不是版本号。tx_fail 累加: 回读属"配置面", 失败无 ACK 可查。 */
 	uint8_t rd[HWT101_WRITE_LEN];
 
 	Hwt101_MakeWrite(HWT101_REG_READADDR, (uint16_t)HWT101_REG_VERSION, rd);

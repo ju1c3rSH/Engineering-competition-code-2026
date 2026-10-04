@@ -19,13 +19,9 @@ void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg);
 void Car_Dbg2_BenchDrop(void);
 
 /* ---- HWT101(采样层驱动 GetData/hwt101.c)----
- * 这一层刻意保留"壳函数"而不是让 App 直接调驱动: 依赖方向单一, 换驱动/改协议
- * 版本不动 App 的读数调用点。
- * ⚠ HWT101_Cfg/Hwt101_ZeroYaw 类配置函数**不上这里** —— 它们阻塞(HAL_Delay),
- *   只许 main() 上电阶段调用, 不该出现在 App 的可见面上。
- * 诊断字段走 hwt101.h 的 Hwt101_Health(): 该头是**叶子头**(只含 stdint.h,
- * 不反向 include 任何东西), 所以观测层 car_obs.c 可以直接 include 它取类型,
- * 不构成环。 */
+ * 这一层只留"壳函数"而非让 App 直接调驱动, 使依赖方向单一(换驱动/协议不动 App 调用点)。
+ * HWT101_Cfg/Hwt101_ZeroYaw 等配置函数**不上这里**: 它们阻塞(HAL_Delay), 只许 main() 上电阶段调用。
+ * 诊断字段走 hwt101.h 的 Hwt101_Health(): 该头是叶子头(只含 stdint.h), 观测层可直接 include 取类型, 不构环。 */
 float Car_GetYawDeg(void);      /* 航向角(deg, ±180), GYRO_ZERO 钉基准用 */
 float Car_GetGyroWzDps(void);   /* 0x52 直给角速度(deg/s), 调试口 TRC 的 GZ= 列 */
 

@@ -284,7 +284,7 @@ static void Uart4_OnFrame(void *callback_context, uint8_t type, const uint8_t *p
 		break;
 
 	case CAR_SUB_TRACKING_START:
-		/* v3.0: payload 4B [data_id, sub, speed_level, aim_axis]; 两参仅做范围校验
+		/* payload 4B [data_id, sub, speed_level, aim_axis]; 两参仅做范围校验
 		 * (底盘不再分轴/不设低速档), 越界 → PARAM */
 		if (payload_length >= 4u && payload[2] <= 1u && payload[3] <= 1u)
 		{
@@ -349,13 +349,9 @@ void UART_Task_Init(void)
 }
 void Uart3_task()
 {
-	/* HWT101 帧解析已收敛到独立库(GetData/hwt101.c): 字节流状态机 + 0x52/0x53/0x5F
-	 * 三种帧 + 0x52/0x53 交叉校验。旧实现在这里"在突发里枚举起点试 sum8", 遇到
-	 * 坏帧会把攒下的字节全丢 ⇒ 真实帧头落在中间时就永久错位(单测 T4/T12 复现过)。
-	 *
-	 * 这里只负责: 按本次 IDLE 突发的**实际长度**把字节喂进去。
-	 * 必须传实际长度而不是常量 22 —— 模块出流是连续流, 一个突发里帧数不固定。
-	 * 解析本身 O(n) 无循环上界, 跑在优先级 0 的 USART3 中断里, 无 printf/无 Delay。 */
+	/* HWT101 帧解析已收敛到独立库(GetData/hwt101.c): 状态机 + 0x52/0x53/0x5F 三帧 + 交叉校验。
+	 * 这里只按本次 IDLE 突发的**实际长度**喂字节: 必须传实际长度而非常量 22(连续流, 一个突发帧数不固定)。
+	 * 解析 O(n) 无循环上界, 跑在优先级 0 的 USART3 中断里, 无 printf/无 Delay。 */
 	uint8_t sta = (uint8_t)UART3_RX_STA;
 
 	if (sta > RXbuffer3_size)
@@ -515,13 +511,9 @@ void Car_DebugTask(void)
 	}
 	if (query_f != 0u)
 	{
-		/* 回读 HWT101 版本号(0x27 读 0x2E): 官方 AGV 零偏流程是「版本号 1003X.1.8
-		 * 开始的参考」, 换模块/换批次时用它确认能不能依赖那套流程。
-		 * 只在 '?' 时读, 不进上电路径 —— 读命令虽免解锁, 但应答要占一条 USART3
-		 * 收发, 上电静置期没必要花这个时间。应答由 Hwt101_FeedBytes 解析,
-		 * 结果进 health.version, **下一拍**的 HWT: 行才带上(回读有 ~30ms 延迟)。
-		 * ⚠ 唯一代价: 这条 11 字节应答会占掉一帧的窗口, 交叉校验可能因此丢一个
-		 *   Wz —— 只在人工敲 '?' 时发生, 不影响行驶。 */
+		/* 回读 HWT101 版本号(0x27 读 0x2E): 换模块/批次时确认能否依赖官方零偏流程; 只在 '?' 时读, 不进上电静置路径。
+		 * 应答由 Hwt101_FeedBytes 解析进 health.version, **下一拍** HWT: 行才带上(~30ms 延迟)。
+		 * 唯一代价: 这条 11B 应答占一帧窗口, 交叉校验可能丢一个 Wz —— 仅人工敲 '?' 时发生, 不影响行驶。 */
 		Hwt101_ReadVersion();
 		Car_Debug_Stat_Print();
 	}

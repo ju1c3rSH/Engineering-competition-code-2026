@@ -2,18 +2,15 @@
  * @file    Control_Car.c
  * @brief   底盘运行入口与总装层
  *
- * 它唯一拥有 TIM4 10ms 拍的调用顺序; 它是底盘对外(协议层 / 自测层 / main)唯一可见的
- * 接口面; 它把 Motion 库、IMU、转台、NAV 各子模块装配成一个可运行系统。
- * **除装配与拍序之外, 本文件不包含任何业务逻辑。**
+ * 它唯一拥有 TIM4 10ms 拍的调用顺序, 是底盘对外(协议层/自测层/main)唯一可见的接口面,
+ * 并把 Motion 库、IMU、转台、NAV 装配成可运行系统。**除装配与拍序外不含业务逻辑。**
  *
  * 新函数该放哪 —— 三条判据, 全不满足就属于某个子模块:
- *   1. 它是拍序本身吗?          -> 留(只有 Car_Control 是)
- *   2. 它是底盘外部要调的吗?     -> 原型进 Control_Car.h 契约面, 实现放对应子模块
- *   3. 它在跨 >=3 个子模块装配?  -> 留
+ *   1. 它是拍序本身吗? -> 留(只有 Car_Control 是)2. 底盘外部要调吗? -> 原型进
+ *      Control_Car.h 契约面, 实现放对应子模块 3. 跨 >=3 个子模块装配? -> 留
  *
- * HWT101 原是本文件里的"已知杂质"(ConfigHWT101/ResetHWT101 既非拍序也非装配,
- * 属采样层), 已连同帧解析一起收敛到 GetData/hwt101.c 独立驱动库。本文件只留
- * 供 App 层调用的转发壳(Car_GetYawDeg/Car_GetGyroWzDps), 原型见 App/car_link.h。
+ * 已知杂质 HWT101 的配置/归零已收敛到 GetData/hwt101.c(既非拍序也非装配, 属采样层);
+ * 本文件只留供 App 调的转发壳 Car_GetYawDeg/Car_GetGyroWzDps, 原型见 App/car_link.h。
  */
 #include "Control_Car.h"
 #include "Car_Sense.h"
@@ -26,12 +23,8 @@ float Car_GetYawDeg(void)
 	return Hwt101_GetYawDeg();
 }
 
-/* 当前 HWT101 Z 轴角速度(deg/s, 0x52 帧直接给出, 不是差分)
- * 用途: ① 观测口径 —— 与"航向差分"并排打出来, 才能判后者里有多少是
- * 零阶保持造成的采样伪影(docs/坑-编码器与里程.md §8.6/§8.11);
- * ② 备选的速率反馈源(mf_config.h 的 MF_WZ_RATE_GYRO_FRAME_EN), 但**必须先台架
- * 确认符号** —— 官方协议没给方向, 反了就是正反馈。库内的交叉校验已把它当
- * "符号裁判", 但反号自检(mf_rate.h)不足以替代一次台架确认。 */
+/* 当前 HWT101 Z 轴角速度(deg/s, 0x52 帧直给, 非差分)。用途: ① 观测口径 —— 与"航向差分"并排打, 判后者零阶保持采样伪影(§8.6/§8.11);
+ * ② 备选速率反馈源(MF_WZ_RATE_GYRO_FRAME_EN), 但**必须先台架确认符号**(官方没给方向, 反了即正反馈, 反号自检不足替代)。 */
 float Car_GetGyroWzDps(void)
 {
 	return Hwt101_GetWzDps();

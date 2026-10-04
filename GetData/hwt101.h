@@ -2,16 +2,11 @@
  * @file    hwt101.h
  * @brief   维特 HWT101 姿态传感器驱动（采样层）
  *
- * 收敛原先散在三处的 HWT101 代码：帧解析(原 Uart3_task 扫描段)、寄存器读写与上电配置
- * (原 Control_Car.c)、帧计数与观测字段(原 YawSeq/GyroWz_Seq + RateHz)。
- *
- * 依赖方向恒为 hwt101 <- Car_Sense.c / Control_Car.c / car_obs.c（同级）。
- * 绝不允许反向 include Control_Car.h 或任何 App/ 头 —— 会成环。
- * 本库只 include: main.h（HAL 类型）、stdint.h；不含 mf_*、不含 protocol.h。
- * 帧解析层为纯逻辑（无 HAL/Delay/printf）⇒ 可在 PC 单测，见 build_verify/hwt101_test/。
- *
+ * 依赖方向恒为 hwt101 <- Car_Sense.c / Control_Car.c / car_obs.c（同级）；绝不允许反向
+ * include Control_Car.h 或任何 App/ 头（会成环）。本库只 include main.h（HAL 类型）与
+ * stdint.h，不含 mf_*.h 与 protocol.h。帧解析层为纯逻辑(无 HAL/Delay/printf)⇒ 可 PC 单测,
+ * 见 build_verify/hwt101_test/。含 HAL_Delay 的配置层函数只能在 main() 上电阶段调, 禁止进中断。
  * 协议依据与寄存器表：<https://wit-motion.yuque.com/wumwnr/ltst03/seuiba>
- * 含 HAL_Delay 的配置层函数只能在 main() 上电阶段调用，禁止进中断。
  */
 #ifndef __HWT101_H__
 #define __HWT101_H__
@@ -70,8 +65,8 @@
 #define HWT101_YAW_FULLSCALE  180.0f  /* 航向角 ±180° */
 
 /* ================= 观测/诊断结构 ================= */
-/* rate_hz 是真实帧率(旧版有 yaw_got 守卫, 抽库时已删)⇒ 跨固件版本比较 BOOT/RRATE 前
- * 须先对齐口径: 旧固件日志的值是突发下界, 同物理帧率下新值更大。见 docs §8.11 */
+/* rate_hz 是真实帧率 ⇒ 跨固件版本比较 BOOT/RRATE 前须先对齐口径: 旧固件日志的值是
+ * 突发下界, 同物理帧率下新值更大。见 docs/坑-编码器与里程.md §8.11 */
 typedef struct
 {
 	uint32_t yaw_seq;        /* 0x53 帧计数（新鲜度判据：与「车是否在转」解耦） */
@@ -108,7 +103,7 @@ uint32_t Hwt101_WzSeq(void);
 
 /* 声明"下一条 0x5F 应答是要解释哪个寄存器"。Hwt101_ReadVersion() 内部已调;
  * 单独暴露是为将来加 RRATE/BAUD 回读时不必改解析层。0x5F 是通用应答头,
- * 不设这个上下文就会把任意回读当成版本号(评审 P1-6) */
+ * 不设这个上下文就会把任意回读当成版本号 */
 void Hwt101_ExpectReg(uint8_t reg);
 
 /* ---- 诊断 ---- */
@@ -130,9 +125,9 @@ void Hwt101_ManualBias(uint8_t start); /* MANUALCALI=0xA6：1 进/0 退零偏采
 #endif
 /* 帧率判定阈值：远高于出厂 10Hz 即认为 RRATE 已生效, 从而不写模块 Flash
  * (官方模块 Flash 有擦写寿命)。已达标就跳过写入。
- * ⚠ 该值同时**必须保证 HWT101_FRAME_DT_S 成立**: 交叉校验的分母按 200Hz 折算,
+ * 该值同时**必须保证 HWT101_FRAME_DT_S 成立**: 交叉校验的分母按 200Hz 折算,
  *   若放行 100Hz, 真实 Δt=10ms 而分母按 5ms ⇒ yaw_rate 是真值的 2 倍 ⇒ 弧段
- *   每帧都被判不一致(代码评审 P1-1)。取 180: 只有真正接近 200Hz 才放行。 */
+ *   每帧都被判不一致。取 180: 只有真正接近 200Hz 才放行。 */
 #ifndef HWT101_RATE_TARGET_HZ
 #define HWT101_RATE_TARGET_HZ       180u
 #endif
@@ -142,7 +137,7 @@ void Hwt101_ManualBias(uint8_t start); /* MANUALCALI=0xA6：1 进/0 退零偏采
 #endif
 /* 交叉校验：|ψ̇_0x52 − Δψ/Δt| 超过此值即判该 Wz 不可信(deg/s)。0 = 关闭。
  * 取 12 而非更大: WzL 单字节全翻转的最大偏差 = 255×(2000/32768) ≈ 15.6dps,
- * 容差必须显著小于它才有意义(评审 P1-2); 同时远大于两路正常时的量化噪声
+ * 容差必须显著小于它才有意义; 同时远大于两路正常时的量化噪声
  * (航向 1LSB ≈ 0.0055°, /5ms ≈ 1.1dps), 不会误报。 */
 #ifndef HWT101_XCHK_EN
 #define HWT101_XCHK_EN              1
@@ -153,12 +148,12 @@ void Hwt101_ManualBias(uint8_t start); /* MANUALCALI=0xA6：1 进/0 退零偏采
 /* 交叉校验的**死区**: |Wz| 与 |上一帧 Wz| 都低于它就不判。
  * 理由: 静止/过零时航向差分只剩量化噪声(±0.5~1.4dps), 与 Wz 的零偏同量级,
  * 此时比值全是误报。取 40dps: 远低于实车工作点(弧段 ~43dps)、高于噪声。
- * ⚠ 必须与 TOL 解耦(早期版本两者都取 40, 恰好使保护在刚起步处最弱)。 */
+ * 必须与 TOL 解耦(早期版本两者都取 40, 恰好使保护在刚起步处最弱)。 */
 #ifndef HWT101_XCHK_MIN_DPS
 #define HWT101_XCHK_MIN_DPS         40.0f
 #endif
 /* 0x52/0x53 的帧间隔(s): 模块每周期各发一帧, RRATE=200Hz ⇒ 5ms。
- * ⚠ 必须与 HWT101_RATE_TARGET_HZ 一致(那个阈值的作用之一就是保证这点):
+ * 必须与 HWT101_RATE_TARGET_HZ 一致(那个阈值的作用之一就是保证这点):
  *   改速率时同步改这里, 否则交叉校验的 Δψ/Δt 分母错, 表现为"好好的链路被
  *   大量丢弃"。HWT: 行可核对实际 RRATE。 */
 #ifndef HWT101_FRAME_DT_S

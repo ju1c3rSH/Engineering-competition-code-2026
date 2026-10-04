@@ -14,19 +14,11 @@
 /* RAD: 行"算半径"的最小角速度(dps): 低于它 v/ω 只是"接近静止的随机比值", 打了反而误导 */
 #define CAR_OBS_RAD_MIN_DPS   20.0f
 
-/* ---- 段内瞬时跟踪('t' 命令) -------------------------------------------------
- * 为什么需要它: ARC:/LN: 两行是**出口统计量**(只给段尾的 EY/YE), 段内的振荡/卡顿在它们身上
- * 完全看不见。判"转向一卡一卡"卡在哪一环只能看时序, 一行同时给出三层:
- *   SP/W/O/I  = 外环设定 / IMU 实测(航向差分) / 内环输出 / 积分贡献  -> 速率内环
- *   CL/SL/CR/SR = 左右轮速环的指令/实测                  -> 轮速环与履带接触
- *   RS        = 段内剩余里程(mm)                          -> 定位在段的哪个位置
- *   GZ        = 0x52 陀螺帧直接给出的角速度(dps)           -> **判 W 的真伪**
- * 读法: ① GZ 平滑而 W 以 2 个采样为周期反相摆动 = W 的摆动是采样伪影, 不是车体真在抖
- *         (机理: 250Hz 航向帧 ÷ 100Hz 控制拍 = 每拍 2/3 帧交替, 见 mf_pid.h);
- *      ② GZ 与 W 同幅同相 = 振荡是真的, 再往下列找;
- *      ③ W≈SP 而 SL/SR 一阵一阵掉到 0 = 轮速环 stick-slip(机械/摩擦), 控制环无罪;
- *      ④ SP 自己就在摆 = 外环航向环欠阻尼(kp/kd 未按内环重校, 见 docs/坑-编码器与里程.md §5)
- * 触发: 't' 武装, 首次出现 |SP| >= CAR_OBS_TRACE_TRIG_DPS(只有弧/转向段才会到)即开窗 4s */
+/* 't' 命令: 段内瞬时跟踪(20Hz 开窗 4s), 判"转向一卡一卡"卡在哪一环。
+ * 列: SP/W/O/I=速率内环(设定/IMU实测/下发/积分); CL/SL/CR/SR=轮速环(指令/实测);
+ *     RS=段内剩余里程; GZ=0x52 陀螺直给角速度(**判 W 真伪**)。
+ * 读法: GZ 平滑而 W 反相摆=采样伪影(250Hz帧÷拍率交替, 见 mf_pid.h); GZ≡W=真振荡;
+ *     W≈SP 而 SL/SR 阵掉 0=轮速环 stick-slip; SP 自摆=外环欠阻尼(见 docs/坑-编码器与里程.md §5)。 */
 #define CAR_OBS_TRACE_MS          4000u
 #define CAR_OBS_TRACE_PERIOD_MS   50u     /* 20Hz: 能分辨 5Hz 级的振荡 */
 #define CAR_OBS_TRACE_TRIG_DPS    30.0f
@@ -111,11 +103,9 @@ void Car_Obs_SetVx(int16_t path_mm, int16_t final_mm, uint8_t overlay)
 	dbg_ovl         = overlay;
 }
 
-/* USART2 调试口状态块/打印('?'/p 周期): main 上下文, 原 9 参 Car_Debug_Snapshot
- * 一并内聚于此(printf 本身仍在 main 上下文)。仅调试显示, 不进控制路径。
- * 【已知偏离 D-1, 已裁决记账不修】本函数分四次取样(2 个 GetInfo + nav 2 次裸读 +
- * 下方 wheel 窗口), 不像基线那样共用一个关中断窗口 → 各字段可能跨 TIM4 拍,
- * 偶发"新 NAV 配旧 SEG"式自相矛盾读数。量级与修复方案: 施工说明 §8 D-1 */
+/* USART2 调试口状态块('?'/p 周期, main 上下文, 仅调试不进控制路径): 原 9 参 Snapshot 内聚于此。
+ * 【已知偏离 D-1, 已裁决不修】本函数分四次取样(2 GetInfo + nav 2 裸读 + wheel 窗口),
+ * 不共用一个关中断窗口 → 各字段可能跨 TIM4 拍, 偶发"新 NAV 配旧 SEG"式矛盾读数。见 施工说明 §8 D-1。 */
 void Car_Debug_Stat_Print(void)
 {
 	extern volatile uint32_t Dbg2_TxFail_Cnt;   /* stm32f4xx_it.c: 调试口链路健康计数 */
@@ -213,12 +203,9 @@ void Car_Debug_Stat_Print(void)
 	       (int)vxp_mm, (int)vxf_mm, (unsigned)ovl_flag);
 	printf("POSE:%d %d %d\r\n",
 	       (int)(x_m * 1000.0f), (int)(y_m * 1000.0f), (int)(yaw_deg * 10.0f));
-	/* 航向观测(路线系, 由 mf_path 的按拍观测给出): K=段类型 A弧/L直线/T绝对转/R相对转/G到点;
-	 * TGT=本段航向目标(路线系); YAW=本拍路线系航向(= POSE 的 yaw − BASE); ERR=环内误差;
-	 * EY=横向偏差(直线: 本段名义线左侧正 / ARC: 弧外正); BASE=本表重锚基点(= 置零那拍读数)。
-	 * 单位 0.1°, EY 是 mm。判读(长直线):
-	 *   ① ERR 稳在 0 而实物仍偏 = 基准/基点的问题(表里的角解释错了), 不是控制环;
-	 *   ② EY 沿行程基本不变 = 整段平行挪出去(进段偏移/弧半径); EY 线性增长 = 越走越斜 */
+	/* 航向观测(HDG, 路线系): K=段型 A弧/L直/T绝对转/R相对转/G到点; TGT=航向目标; YAW=本拍路线系航向;
+	 * ERR=环内误差; EY=横向偏差(直线: 名义线左侧正 / ARC: 弧外正); BASE=本表重锚基点。单位 0.1°, EY 为 mm。
+	 * 判读: ERR 稳 0 仍偏=基准/基点问题; EY 不变=整段平移; EY 线性增=越走越斜。 */
 	printf("HDG:ID=%02u SEG=%u K=%c TGT=%d YAW=%d ERR=%d EY=%d BASE=%d\r\n",
 	       (unsigned)nav_id, (unsigned)seg_idx, hdg_kind,
 	       (int)(obs.target_deg * 10.0f), (int)(hdg_route * 10.0f),
@@ -236,13 +223,10 @@ void Car_Debug_Stat_Print(void)
 	printf("LINK:MS=%u TF=%u RXE=%u\r\n",
 	       (unsigned)HAL_GetTick(),
 	       (unsigned)Dbg2_TxFail_Cnt, (unsigned)Dbg2_RxErr_Cnt);
-	/* HWT101 链路健康(诊断字段现由驱动库 hwt101_health_t 统一持有):
-	 * RRATE=当前滚动 0x53 帧率 / BOOT=上电那次采样 / SEQ=0x53 帧计数(不涨即断流)
-	 * BAD=sum8 校验失败帧数 / XOK/XBAD=交叉校验通过/丢弃 / TXF=配置帧发送失败
-	 * VP=版本号产品段(17bit) / VH=硬件段(6bit) / VS=软件段(8bit)
-	 * 判"速率配置生效没有"看 RRATE: ≈200 已配到 200Hz / ≈10 仍出厂默认 / 0 模块没通。
-	 * TXF 非 0 = 有配置帧没发出去(写寄存器单向无 ACK, 这是唯一线索)。
-	 * RRATE 是真实帧率, 但旧固件日志是突发下界 ⇒ 跨版本比较前先对齐口径(docs §8.11)。 */
+	/* HWT101 链路健康(hwt101_health_t): RRATE=当前 0x53 帧率 / BOOT=上电采样 / SEQ=帧计数(不涨即断流)
+	 * / BAD=校验失败 / XOK/XBAD=交叉校验通过/丢弃 / TXF=配置帧发送失败 / VER=版本。
+	 * 判"速率配置生效": RRATE≈200 已配 / ≈10 出厂默认 / 0 没通; TXF≠0=配置帧没发出(写寄存器单向无 ACK)。
+	 * 跨版本比较先对齐口径(RRATE 真实帧率 vs 旧日志突发下界): docs §8.11。 */
 	printf("HWT:RRATE=%u BOOT=%u SEQ=%u BAD=%u XOK=%u XBAD=%u TXF=%u VER=%u.%u.%u\r\n",
 	       (unsigned)hw->rate_hz, (unsigned)hw->rate_boot, (unsigned)hw->yaw_seq,
 	       (unsigned)hw->bad_sum, (unsigned)hw->xchk_ok, (unsigned)hw->xchk_discard,
@@ -261,29 +245,18 @@ void Car_Debug_Stat_Print(void)
 		printf("HWT:WARN NOFRAME BOOT=%u SEQ=%u -> check BAUD=115200(reg 0x04)/wiring\r\n",
 		       (unsigned)hw->rate_boot, (unsigned)hw->yaw_seq);
 	}
-	/* 角速度内环健康度: SP=外环设定(它"想要"的 deg/s) W=IMU 实测 O=实际下发(含开环基线
-	 * +PI), B=开环基线贡献(=SP×基线增益), I=积分贡献(ki·∫e; O−B−I 就是 P 项)。
-	 * 基线与积分是**同一份补偿的两半**(基线越准 I 越接近 0), 不是两套补偿。
-	 * OK/ST/SN = 闭环/反馈停更/反馈反号 的累计拍数。
-	 * 读法: ① ST 或 SN 在涨 = 反馈链断了, 补偿只剩开环基线 ⇒ 先查 HWT: SEQ 涨不涨;
-	 *      ② OK 在涨且 W≈SP = 内环真在闭环(半径由它保证, 可把基线往 1.0 收);
-	 *      ③ OK 在涨但 W 只有 SP 的 0.6 倍 = 环在、对象跟不上(轮速环饱和/堵转/基线偏小),
-	 *         看 O 是否已顶到 150 上限。W/O 就是对象增益 k, 直接用来复标 MF_ARC_SLIP_GAIN */
+	/* 速率内环健康(RATE): SP=外环设定; W=IMU 实测; O=下发(基线+PI); B=开环基线; I=积分(=ki·∫e)。
+	 * 基线与积分是**同一补偿的两半**(基线越准 I 越≈0)。OK/ST/SN=闭环/停更/反号累计拍。
+	 * 读法: ST/SN 涨=反馈断(先查 HWT SEQ); W≈SP=真闭环(可把基线往 1.0 收);
+	 *     W 仅 SP 的 0.6 倍=环在但对象跟不上(看 O 是否顶 150 上限), W/O 即对象增益 k, 复标 MF_ARC_SLIP_GAIN 用。 */
 	printf("RATE:SP=%d W=%d O=%d B=%d I=%d OK=%u ST=%u SN=%u\r\n",
 	       (int)ri.sp_dps, (int)ri.meas_dps, (int)ri.out_dps,
 	       (int)ri.base_dps, (int)ri.i_term_dps,
 	       (unsigned)ri.n_ok, (unsigned)ri.n_stale, (unsigned)ri.n_sign);
-	/* 弧的实时几何(纯观测): 三条独立尺子量同一条弧 —— RSP=设定半径 v/|wz_sp|(段表想要的);
-	 * RM=实测半径 v/|ω_meas|(IMU 说的); REF=库内同间隔实测半径(轮位移÷IMU 转角, mf_odom.c)。
-	 * RV=REF 是否新鲜(不转弯就没有新估计); KH=对象增益 ω_meas/ω_out(%);
-	 * YF=**帧数/拍数** 原始比值(格式 dq/dtk, 如 200/200 = 1:1), 不是百分比。
-	 * ⚠ 2026-10 拍周期改200Hz 后帧拍比=1:1 ⇒ 健康的 YF 恒为 "N/N"; 曾用百分比
-	 * (dq*100/dtk) 时健康值恰好 100, **与"YF<100 = 零阶保持/退化"的判据边界重合**,
-	 * 丢一帧就变成 99 而被读成故障, 且与历史日志(200)不可比。改打印原始比值后
-	 * 丢帧表现为 "199/200", 一眼可辨。dq/dtk 的比值才是判据(帧率÷拍率), % 是它的有损压缩。
-	 * YF 是 1s 窗口量, 同一行里其余字段是当拍量(可差 1s)。OSRC=里程计形状来源。
-	 * ⚠ 判半径只认 RM/REF/R=(或卷尺): ARC:EY 与 odom 形状同源, 结构性看不见打滑(§8)。
-	 * 速率闸取 20dps(弧工作点的一半): 再小就是"接近静止的随机比值", 打出来只会误导 */
+	/* 弧几何观测(RAD): RSP=设定半径 v/|wz_sp|; RM=实测 v/|ω_meas|; REF=库内同间隔实测半径(mf_odom.c);
+	 * RV=REF 新鲜; KH=对象增益 ω_meas/ω_out; YF=**帧数/拍数原始比值 dq/dtk**(如 200/200), 不是百分比。
+	 * 务必打原始比值: 百分比把 1:1 健康值压成 100, 正落在"丢帧/<100=故障"边界, 丢帧变 99 误判;
+	 * 原始比值里丢帧显为 199/200 一眼可辨(200Hz 改拍后 YF 恒 N/N)。判半径只认 RM/REF/R 或卷尺(§8)。 */
 	{
 		static uint32_t yf_seq, yf_tick, yf_ms, yf_dq, yf_dtk;
 		uint32_t tick_now = ri.n_ok + ri.n_stale + ri.n_sign;
@@ -410,19 +383,11 @@ void Car_SegChange_Log(void)
 	       (int)x_mm, (int)y_mm, (int)yaw_d10);
 }
 
-/* 段出口质量(每跑完一条 ARC / 直线 MOVE 打一行):
- *   ARC:<段> EY=<mm> YE=<0.1°> R=<mm> DY=<0.1°>
- *       EY=出口横向偏差(正=弧外侧); YE=出口航向偏差; DY=**本段实际转角**(名义 900)。
- *       R 与 EY 都是"位姿 vs 名义圆"的**自证量**(内环让 R≡R_cmd), 少转 0.7° 它们照样全 0;
- *       **DY 才是"弧转够了没有"的读数** —— 实测 891~896(名义 900), 每条弧少转 0.7°
- *       ⇒ 出口沿切线少走 11mm(到位余量已改为按实测步长运行期算, 见 mf_config.h)
- *   LN :<段> IE=<0.1°> YE=<0.1°> EY=<mm> IE=进段航向误差(带进来多少); YE=出口残差(纠完剩多少);
- *       EY=出口横向偏差(相对"进段点 + 本段目标航向"这条名义线, 正=左侧)。它把"直线走偏"
- *       分成两种: EY 与进段时差不多 = 整段平行挪出去; EY 明显变大 = 本段越走越斜
- *       ⚠ **IE 非零 = 上一条弧没转够**(MOVE 在替它补角), 不是直线没走直 —— 这是弧到位
- *       余量错配的现场指纹, 与 ARC:DY 成对看
- * 判据: |EY| ≤ ±10mm; DY 收到 900±3; 直线 YE≈0 且 IE 不随路程增长(单基准航向架构
- * 的验收点: 旧行为下 IE 恒 0, 上游误差被锁死看不见) */
+/* 段出口质量(每跑完一段打一行): ARC: EY=出口横向偏差(正=弧外); YE=出口航向残差;
+ *   R/EY 是"位姿vs名义圆"自证量(内环让 R≡R_cmd, 少转 0.7° 仍全 0); **DY=本段实际转角**才是"转够了没"
+ *   (实测 891~896, 名义 900 ⇒ 出口少走 11mm, 到位余量已改按实测步长运行期算, 见 mf_config.h)。
+ * LN : IE=进段航向误差(非零=上一条弧没转够, MOVE 在替补); YE=出口残差; EY=相对名义线横向偏差。
+ * 判据: |EY|≤±10mm; DY≈900±3; 直线 YE≈0 且 IE 不随路程增长。 */
 void Car_SegExit_Log(void)
 {
 	uint16_t seg;
@@ -452,13 +417,9 @@ void Car_SegExit_Log(void)
 	}
 }
 
-/* 整表重锚事件(每趟 GYRO_ZERO 打一行):
- *   YAWZERO:N=<次数> BASE=<0.1°> FEN=<0/1> LOCK=<0/1>
- *       BASE = 置零那一刻的模块读数 = 本趟的整表重锚基点。表里写死的绝对角(重锚角/返程角)
- *       从此解释在"置零时刻车头 = 0"的路线系里, 所以 BASE 非 0 不再是问题;
- *       它仍是"这趟比上趟转了多少"的读数 —— 两趟 BASE 差多少, 旧实现下地图就差多少。
- *       FEN=MF_HEADING_FRAME_EN(1=整表重锚 / 0=A/B 旧行为: 绝对角钉在上电那一帧)
- * 触发: mf_path 的 ref_seq 变化(置零才涨), 变化才打, 主循环上下文 */
+/* 整表重锚事件(YAWZERO, 每趟 GYRO_ZERO 打一行): BASE=置零时刻模块读数=本趟重锚基点;
+ * 表里绝对角从此解释在"置零时刻车头=0"路线系, BASE 非 0 不再是问题(仍是"两趟差多少"读数)。
+ * FEN=MF_HEADING_FRAME_EN(1=整表重锚 / 0=A/B 旧行为)。触发: mf_path 的 ref_seq 变化才打。 */
 void Car_YawZero_Log(void)
 {
 	static uint32_t seq_last = 0u;
