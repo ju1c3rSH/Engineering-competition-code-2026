@@ -417,6 +417,150 @@ void Car_SegExit_Log(void)
 	}
 }
 
+/* ---- 'i' 陀螺仪观测窗口(3s, 5Hz) ----
+ * 起因: 固件对 HWT101 零偏零动作(无 CALIYAW、无 0x4C 读写), 零偏 100% 由模块
+ * 出厂自动校准负责。现有观测够不到它: TRC: 的 GZ 是**转速触发**(30dps), 静止时
+ * 一个数都打不出来 ⇒ 只能加一条静止可打的观测线。
+ * 纯只读: 官方明确读寄存器不需要解锁、不写 Flash、不进校准模式, 零副作用。
+ * 字段判读见文件末尾注释与 docs/坑-IMU零偏与长期漂移.md。 */
+/* IMU: 行怎么读 —— 车放平完全不动, 敲 i 看这四条组合:
+ *   BIAS≈0  且 GZ 明显非零 => 自动校准从未成功补偿 ⇒ "跑久了偏移"是纯零偏积累
+ *   BIAS≠0  但 GZ 仍非零    => 补偿与实际脱节(官方描述的失效形态) ⇒ 该重校零偏
+ *   BIAS≠0  且 GZ≈0         => 补偿与实际一致, 链路健康
+ * 字段为 "-" = 该槽还没回读成功(窗口开头几拍正常)。GZ 是 ×1000 定点(0.1°/s 精度)。
+ * ★BIAS 是模块存下来的**账面值**, 不等于此刻的物理零偏(官方明说二者会脱节);
+ *   真要拿"此刻物理零偏"只能看 GZ。WSEQ 不涨 = 0x52 断流 ⇒ GZ 是陈旧值, 先查 BAUD。
+ *   TP(0x4A 静止峰峰值)偏大 = 履带振动被模块当成转动; MODE≠0 = 不在普通态。 */
+#define CAR_OBS_IMU_WIN_MS    3000u   /* 敲一次连打 3s: 够看出静止时 GZ 的斜率 */
+#define CAR_OBS_IMU_PERIOD_MS 200u     /* 5Hz。四个槽位轮读一圈 800ms, 窗口内每槽 3~4 次 */
+
+static uint32_t imu_end_ms;
+static uint32_t imu_last_ms;
+static uint8_t  imu_slot;      /* 本拍要发读命令的槽位 */
+static uint8_t  imu_win;       /* 0=空闲 1=窗口开 */
+
+/* 把回读槽位格式化成定点串: 未回读过给 "-"(与"值真的是 0"必须能区分)。
+ * BIAS/TP 按官方 /1000 定点(0x4C 的单位是 °/s×1000); 开关/模式类原值直出。
+ * **手写而非 sprintf**: 本工程 printf 是逐字符轮询忙等, 再引一个 stdio 格式化
+ * 会拖慢主循环; 且 buf 是栈上数组, sprintf 的变参调用在 microlib 下有踩栈风险。
+ * 小数部分必须**左补零到三位**(0.005 印成 "0.005" 而不是 "0.5"), 否则同一个
+ * 零偏值会随大小印出不同位数、读数对不上 —— 见 build_verify/hwt101_test 单测。 */
+static const char *Imu_FmtRaw(char *buf, uint8_t fresh, int16_t raw, uint8_t fixed3)
+{
+	uint32_t mag, ip, fp;
+	int8_t  n = 0, i, p = 0;
+	char     tmp[8];
+
+	if (fresh == 0u)
+	{
+		buf[0] = '-';
+		buf[1] = '\0';
+		return buf;
+	}
+	mag = (raw < 0) ? (uint32_t)(-(int32_t)raw) : (uint32_t)raw;
+	if (raw < 0)
+	{
+		buf[p++] = '-';
+	}
+	if (fixed3 != 0u)
+	{
+		ip = mag / 1000u;
+		fp = mag % 1000u;
+		/* 整数部分**按需吐位**(值域 ±32.767 ⇒ 最多两位)。固定只吐一位会把
+		 * 32.767 印成 2.767 —— 正好落在"大零偏"这个最需要看清的区间上 */
+		if (ip >= 10u)
+		{
+			buf[p++] = (char)('0' + ((ip / 10u) % 10u));
+		}
+		buf[p++] = (char)('0' + (ip % 10u));
+		buf[p++] = '.';
+		buf[p++] = (char)('0' + ((fp / 100u) % 10u));
+		buf[p++] = (char)('0' + ((fp / 10u) % 10u));
+		buf[p++] = (char)('0' + (fp % 10u));
+		buf[p] = '\0';
+		return buf;
+	}
+	do   /* 0 也要出 "0", 故用 do-while */
+	{
+		tmp[n++] = (char)('0' + (mag % 10u));
+		mag /= 10u;
+	} while (mag != 0u);
+	for (i = (int8_t)(n - 1); i >= 0; i--)
+	{
+		buf[p++] = tmp[i];
+	}
+	buf[p] = '\0';
+	return buf;
+}
+
+void Car_ImuProbe_Arm(void)
+{
+	imu_win  = 1u;
+	imu_slot = (uint8_t)HWT101_RB_BIAS;
+	/* 末拍阈值比窗口短一个周期: 让 imu_last_ms 天然落在"一个周期前" ⇒ 首拍立即发第一条,
+	 * 3s 窗口打满 15 行而不是 14 行 */
+	imu_last_ms = HAL_GetTick() - CAR_OBS_IMU_PERIOD_MS;
+	imu_end_ms  = HAL_GetTick() + CAR_OBS_IMU_WIN_MS;
+	/* 清掉有效位: 窗口内若某槽一直没回读成功, 显示 "-" 而不是上一次的陈旧值。
+	 * 代价是刚敲下键的前几拍可能全是 "-", 那正是"还没读到"的诚实表达 */
+	Hwt101_ClearRegFresh();
+	printf("IMU:WIN %ums (BIAS=%s NOCAL=%s TP=%s MODE=%s)\r\n",
+	       (unsigned)CAR_OBS_IMU_WIN_MS, "0x4C", "0xA7", "0x4A", "0x48");
+}
+
+void Car_ImuProbe_Task(void)
+{
+	const hwt101_health_t *hw = Hwt101_Health();
+	char b_bias[16], b_nocal[16], b_tp[16], b_mode[16];
+	float   yaw, gz;
+	uint32_t wseq, tick;
+	int32_t  ims;
+
+	if (imu_win == 0u)
+	{
+		return;
+	}
+	tick = HAL_GetTick();
+	if ((uint32_t)(tick - imu_last_ms) < CAR_OBS_IMU_PERIOD_MS)
+	{
+		return;   /* 节流到 5Hz */
+	}
+	imu_last_ms = tick;
+
+	/* 轮读: 本拍只发一条, 打的是**上一轮**回填的值(Hwt101_ReadReg 不等应答)。
+	 * 快照与发命令之间刻意不关中断 —— 打印的量都是单字/双字, 撕裂一两次无害 */
+	switch (imu_slot)
+	{
+	case HWT101_RB_BIAS:  Hwt101_ReadReg(HWT101_REG_GYROBAIS);   break;
+	case HWT101_RB_NOCAL: Hwt101_ReadReg(HWT101_REG_NOAUTOCALI); break;
+	case HWT101_RB_OPTPE: Hwt101_ReadReg(HWT101_REG_OPTPE);      break;
+	default:              Hwt101_ReadReg(HWT101_REG_WORKMODE);   break;
+	}
+	imu_slot = (uint8_t)((imu_slot + 1u) % HWT101_RB_COUNT);
+
+	yaw  = Hwt101_GetYawDeg();
+	wseq = Hwt101_WzSeq();
+	gz   = Hwt101_GetWzDps();
+
+	Imu_FmtRaw(b_bias,  Hwt101_RegFresh(HWT101_RB_BIAS),  Hwt101_RegRaw(HWT101_RB_BIAS),  1u);
+	Imu_FmtRaw(b_nocal, Hwt101_RegFresh(HWT101_RB_NOCAL), Hwt101_RegRaw(HWT101_RB_NOCAL), 0u);
+	Imu_FmtRaw(b_tp,    Hwt101_RegFresh(HWT101_RB_OPTPE), Hwt101_RegRaw(HWT101_RB_OPTPE), 1u);
+	Imu_FmtRaw(b_mode,  Hwt101_RegFresh(HWT101_RB_MODE),  Hwt101_RegRaw(HWT101_RB_MODE),  0u);
+
+	/* GZ 乘 1000 输出(定点, 不依赖 printf 的浮点支持): 它是静止零偏的直接观测点。
+	 * WSEQ 不涨 = 0x52 断流, 此时 GZ 是陈旧值, 判读前先看它 */
+	ims = (int32_t)(gz * 1000.0f);
+	printf("IMU:YAW=%d GZ=%d WSEQ=%lu BIAS=%s NOCAL=%s TP=%s MODE=%s TXF=%lu\r\n",
+	       (int)(yaw * 10.0f), (int)ims, (unsigned long)wseq,
+	       b_bias, b_nocal, b_tp, b_mode, (unsigned long)hw->tx_fail);
+
+	if ((uint32_t)(tick - imu_end_ms) >= 0x80000000u)   /* 模块化比较: tick 已过窗口末 */
+	{
+		imu_win = 0u;
+		printf("IMU:END\r\n");
+	}
+}
+
 /* 整表重锚事件(YAWZERO, 每趟 GYRO_ZERO 打一行): BASE=置零时刻模块读数=本趟重锚基点;
  * 表里绝对角从此解释在"置零时刻车头=0"路线系, BASE 非 0 不再是问题(仍是"两趟差多少"读数)。
  * FEN=MF_HEADING_FRAME_EN(1=整表重锚 / 0=A/B 旧行为)。触发: mf_path 的 ref_seq 变化才打。 */

@@ -103,6 +103,30 @@ HWT101_LOCAL float Hwt101_AbsF(float x)
 	return (x < 0.0f) ? -x : x;
 }
 
+/* 待解释寄存器地址 → health.reg_val[] 槽号。未登记的返回 HWT101_RB_COUNT
+ * (= 非法值, 调用方须显式判)。刻意做成查表而不是算术: 槽号与寄存器地址的
+ * 关系是**人为定的**(BIAS/NOCAL/OPTPE/MODE 各一个), 写成公式会让人误以为
+ * 有对应关系, 将来加寄存器时错得很隐蔽 */
+HWT101_LOCAL uint8_t Hwt101_RbSlotOf(uint8_t reg)
+{
+	static const uint8_t map[HWT101_RB_COUNT] = {
+		(uint8_t)HWT101_REG_GYROBAIS,    /* BIAS  */
+		(uint8_t)HWT101_REG_NOAUTOCALI,  /* NOCAL */
+		(uint8_t)HWT101_REG_OPTPE,       /* OPTPE */
+		(uint8_t)HWT101_REG_WORKMODE     /* MODE  */
+	};
+	uint8_t i;
+
+	for (i = 0u; i < HWT101_RB_COUNT; i++)
+	{
+		if (map[i] == reg)
+		{
+			return i;
+		}
+	}
+	return (uint8_t)HWT101_RB_COUNT;
+}
+
 void Hwt101_FeedBytes(const uint8_t *buf, uint16_t len)
 {
 	uint16_t i;
@@ -231,14 +255,18 @@ void Hwt101_FeedBytes(const uint8_t *buf, uint16_t len)
 		else if (type == HWT101_TYPE_REG)
 		{
 			/* 回读应答 [55 5F d0 d1 d2 d3 d4 d5 d6 d7 SUM] (11B)。
-			 * VERSION(0x2E) 占 d0..d3, 按官方:
-			 *   VERSION = (VHH<<24)|(VHL<<16)|(VLH<<8)|VLL
-			 * 示例 55 5F 01 41 EF 89 → 0x89EF4101 = 10173.1.1
-			 * 早期版本把结果截成 uint16 存(0x4101), 那个数字与官方版本号语义
-			 *   无关、无法用于判版本, 现存完整 32 位(评审 P1-6)。
-			 * 0x5F 是**所有**寄存器回读的通用应答头。0x2E 恰占 d0..d3, 所以本分支
-			 *   只有在"当前回读的就是 0x2E"时才解释; 否则忽略(否则将来加 RRATE
-			 *   回读, 版本号会被 RRATE 数据静默覆盖)。 */
+			 * 0x5F 是**所有**寄存器回读的通用应答头, 按 ps.reg_pending 声明的
+			 * 寄存器决定怎么解释 d0..d7:
+			 *   - 0x2E(VERSION) 占 d0..d3, 按官方:
+			 *       VERSION = (VHH<<24)|(VHL<<16)|(VLH<<8)|VLL
+			 *     示例 55 5F 01 41 EF 89 → 0x89EF4101 = 10173.1.1
+			 *     早期版本把结果截成 uint16 存(0x4101), 那个数字与官方版本号
+			 *       语义无关、无法用于判版本, 现存完整 32 位(评审 P1-6)。
+			 *   - 其余(0x4C/0xA7/0x4A/0x48 等)取 d0/d1 作 16 位值。
+			 * **必须按有符号合成**: 官方"读格式"是全局约定(每个数据分低字节与
+			 * 高字节依次传送, 二者合成一个**有符号 short**), 负零偏就编码在
+			 * d0/d1(-100 → 9C FF)。按 uint16 解读会把负偏读成 65036, 结论完全反。
+			 * 无 reg_pending 上下文 ⇒ 忽略(否则版本号会被别的寄存器静默覆盖)。 */
 			if (ps.reg_pending == (uint8_t)HWT101_REG_VERSION)
 			{
 				uint32_t ver = ((uint32_t)ps.buf[2])
@@ -247,8 +275,20 @@ void Hwt101_FeedBytes(const uint8_t *buf, uint16_t len)
 				             | ((uint32_t)ps.buf[5] << 24);
 				health.version = ver;
 				health.has_version = 1u;
-				ps.reg_pending = 0u;   /* 消费掉, 避免重复应答被当成新的一次 */
 			}
+			else
+			{
+				/* 按待解释寄存器找对应槽位。找不到(未登记的寄存器)⇒ 忽略 */
+				uint8_t slot = Hwt101_RbSlotOf(ps.reg_pending);
+
+				if (slot < HWT101_RB_COUNT)
+				{
+					health.reg_val[slot] = Hwt101_GetInt16(ps.buf[2], ps.buf[3]);
+					health.reg_fresh = (uint16_t)(health.reg_fresh | (uint16_t)(1u << slot));
+					health.reg_seq++;
+				}
+			}
+			ps.reg_pending = 0u;   /* 消费掉, 避免重复应答被当成新的一次 */
 		}
 		else
 		{
@@ -288,6 +328,25 @@ const hwt101_health_t *Hwt101_Health(void)
 void Hwt101_ExpectReg(uint8_t reg)
 {
 	ps.reg_pending = reg;
+}
+
+int16_t Hwt101_RegRaw(uint8_t slot)
+{
+	return (slot < HWT101_RB_COUNT) ? health.reg_val[slot] : (int16_t)0;
+}
+
+uint8_t Hwt101_RegFresh(uint8_t slot)
+{
+	return ((slot < HWT101_RB_COUNT)
+	        && ((health.reg_fresh & (uint16_t)(1u << slot)) != 0u)) ? 1u : 0u;
+}
+
+/* 清回读有效位。观测窗口开始时调: 让槽位显示回到"未知"而不是沿用上一次窗口的
+ * 陈旧值(差几秒的零偏值仍可能有效, 但混在"刚敲键"这一眼里会误导判读)。
+ * 放纯逻辑段而非配置层: 无 HAL 依赖, PC 单测可直接验(见 test_hwt101.c T18c) */
+void Hwt101_ClearRegFresh(void)
+{
+	health.reg_fresh = 0u;
 }
 
 /* ---- 寄存器层: 写帧编解码（纯函数） ---- */

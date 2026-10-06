@@ -121,6 +121,7 @@ static volatile struct
 	volatile uint8_t query_fresh;
 	volatile uint8_t periodic_fresh;   /* 调试口 'p': 翻转周期状态输出 */
 	volatile uint8_t trace_fresh;      /* 调试口 't': 武装"段内瞬时跟踪"(见 car_obs.c) */
+	volatile uint8_t imu_fresh;        /* 调试口 'i': 陀螺仪观测窗口(见 car_obs.c) */
 	/* 转台事件登记 + 台架命令寄存 */
 	uint8_t  tt_kind;                  /* 登记 kind: 0=停止 1=打码 2=微调 3=上电零点对齐 */
 	uint8_t  tt_code;                  /* 本次登记的码 */
@@ -370,6 +371,7 @@ void Uart2_task()
 
 	/* 消费 0x8000 完成位约定: 突发内扫命令, 命中的置标志供 Car_DebugTask 处理。
 	 * '?'=状态块 / 'p'=翻 1Hz 周期块 / 't'=武装段内瞬时跟踪(20Hz×4s, 见 car_obs.c)
+	 * 'i'=陀螺仪观测窗口(3s×5Hz 轮读 HWT101 配置寄存器, 见 car_obs.c)
 	 * 'x''w''e''1'~'7'=台架直转转台 (ISR 只置标志, 打印与执行全在主循环) */
 	if (sta == 0u)
 	{
@@ -392,6 +394,10 @@ void Uart2_task()
 		else if (Rxbuffer2[i] == 't')
 		{
 			dbg2.trace_fresh = 1u;      /* 武装段内瞬时跟踪(20Hz×4s, 命中弧段自动开窗) */
+		}
+		else if (Rxbuffer2[i] == 'i')
+		{
+			dbg2.imu_fresh = 1u;        /* 陀螺仪观测窗口(3s×5Hz, 轮读零偏/校准开关/峰峰/模式) */
 		}
 		/* 台架直转命令: ISR 只置标志, 命令执行/打印全在 Car_DebugTask 主循环 */
 		else if (Rxbuffer2[i] == 'x')
@@ -432,7 +438,7 @@ void Car_DebugTask(void)
 	uint8_t  tt_kind, tt_code, bench_kind, bench_arg;
 	float    tt_ang;
 	uint8_t  ack_f = 0u, nack_f = 0u, evt_f = 0u, query_f = 0u, periodic_f = 0u;
-	uint8_t  tt_f = 0u, bench_f = 0u, trace_f = 0u;
+	uint8_t  tt_f = 0u, bench_f = 0u, trace_f = 0u, imu_f = 0u;
 
 	Hwt101_RateTask();   /* 0x53 帧率滚动统计: 每圈刷新, 与有没有敲 '?' 无关 */
 	__disable_irq();
@@ -454,6 +460,7 @@ void Car_DebugTask(void)
 	if (dbg2.query_fresh != 0u)    { dbg2.query_fresh = 0u;    query_f = 1u; }
 	if (dbg2.periodic_fresh != 0u) { dbg2.periodic_fresh = 0u; periodic_f = 1u; }
 	if (dbg2.trace_fresh != 0u)    { dbg2.trace_fresh = 0u;    trace_f = 1u; }
+	if (dbg2.imu_fresh != 0u)      { dbg2.imu_fresh = 0u;      imu_f = 1u; }
 	if (dbg2.tt_fresh != 0u)       { dbg2.tt_fresh = 0u;       tt_f = 1u; }
 	if (dbg2.bench_fresh != 0u)    { dbg2.bench_fresh = 0u;    bench_f = 1u; }
 	__enable_irq();
@@ -542,6 +549,11 @@ void Car_DebugTask(void)
 		Car_Obs_TraceArm();   /* 't': 武装段内跟踪, 命中弧段自动开窗(见 car_obs.c) */
 	}
 	Car_Obs_TraceTask();      /* 段内瞬时跟踪: 未武装/未命中时立即返回 */
+	if (imu_f != 0u)
+	{
+		Car_ImuProbe_Arm();     /* 'i': 开 3s 陀螺仪观测窗口(纯只读回读, 无副作用) */
+	}
+	Car_ImuProbe_Task();      /* 窗口期内 5Hz 打一行 IMU: 非窗口期立即返回 */
 
 	/* RT:FINISH / PD: 漂移行; 推进本身在 10ms 定时里, 打印只能在主循环 */
 	SELFTEST_DEBUG_POLL();

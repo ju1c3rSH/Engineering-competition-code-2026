@@ -33,7 +33,9 @@
 #define HWT101_REG_LEDOFF     0x1Bu   /* 关闭 LED */
 #define HWT101_REG_READADDR   0x27u   /* 读寄存器 */
 #define HWT101_REG_VERSION    0x2Eu   /* 版本号（0x2E~0x2F，R） */
-#define HWT101_REG_GYROBAIS   0x4Cu   /* Z 轴零偏值（R/W，/1000 得 °/s） */
+#define HWT101_REG_WORKMODE   0x48u   /* 工作模式（R，0x00=普通；非 0 说明在校准态） */
+#define HWT101_REG_OPTPE      0x4Au   /* Z 轴静止峰峰值（R）：判履带振动是否被当成转动 */
+#define HWT101_REG_GYROBAIS   0x4Cu   /* Z 轴零偏值（R/W，/1000 得 °/s）。**本工程零偏观测的核心** */
 #define HWT101_REG_GYROCALITHR 0x61u  /* 陀螺仪静止阈值（配合 0x63） */
 #define HWT101_REG_GYROCALTIME 0x63u  /* 陀螺仪自动校准时间 */
 #define HWT101_REG_WERROR     0x6Au   /* 陀螺仪变化值（R） */
@@ -65,6 +67,16 @@
 #define HWT101_YAW_FULLSCALE  180.0f  /* 航向角 ±180° */
 
 /* ================= 观测/诊断结构 ================= */
+/* 通用寄存器回读的槽位。**按寄存器分开存, 不做"单槽 + 上次读的是谁"**:
+ * 应答是异步回来的, 单槽会让"某次回读没应答"表现为"另一个寄存器的旧值
+ * 被当成本次结果" —— 对一个用来判断零偏的观测行, 这种误判不可接受。
+ * 槽位顺序即 IMU: 行的打印顺序, 改这里要同步改 car_obs.c 的 rb 掩码位序。 */
+#define HWT101_RB_BIAS   0u   /* 0x4C GYROBAIS  零偏账面值, raw/1000 = °/s */
+#define HWT101_RB_NOCAL  1u   /* 0xA7 NOAUTOCALI 自动零偏开关, 0=开着(出厂) */
+#define HWT101_RB_OPTPE  2u   /* 0x4A OPTPE     静止峰峰值 */
+#define HWT101_RB_MODE   3u   /* 0x48 WORKMODE  工作模式, 0x00=普通 */
+#define HWT101_RB_COUNT  4u
+
 /* rate_hz 是真实帧率 ⇒ 跨固件版本比较 BOOT/RRATE 前须先对齐口径: 旧固件日志的值是
  * 突发下界, 同物理帧率下新值更大。见 docs/坑-编码器与里程.md §8.11 */
 typedef struct
@@ -77,6 +89,12 @@ typedef struct
 	                            失败唯一可见现象就是这个计数 */
 	uint32_t version;        /* 回读版本号原始 32 位（未回读时为 0）。
 	                            官方: (VHH<<24)|(VHL<<16)|(VLH<<8)|VLL */
+	int16_t  reg_val[HWT101_RB_COUNT]; /* 各槽最近一次回读的原始 16 位值。
+	                             **BIAS 槽必须按有符号读**(官方读格式全局约定),
+	                             负偏编码在 d0/d1: -100 → 9C FF */
+	uint16_t reg_fresh;      /* 槽位有效位掩码(1<<槽号)。0 = 该槽还没回读成功过,
+	                             观测层靠它区分"值是 0"与"根本没读到" */
+	uint32_t reg_seq;        /* 每解释掉一条 0x5F 应答 +1（判"这次回读有更新"） */
 	uint16_t rate_hz;        /* 最近一个窗口的 0x53 帧率（主循环刷新） */
 	uint16_t rate_boot;      /* 上电那一次采样：判「要不要写模块 Flash」的依据 */
 	uint8_t  has_version;    /* 1 = 版本号已成功回读 */
@@ -105,6 +123,15 @@ uint32_t Hwt101_WzSeq(void);
  * 单独暴露是为将来加 RRATE/BAUD 回读时不必改解析层。0x5F 是通用应答头,
  * 不设这个上下文就会把任意回读当成版本号 */
 void Hwt101_ExpectReg(uint8_t reg);
+
+/* ---- 配置寄存器回读（纯只读：官方明确读寄存器**不需要解锁**、不写 Flash） ----
+ * 发一条 FF AA 27 <reg> 00 并登记待解释寄存器；**不等应答**，结果由解析层
+ * 异步填入 health.reg_val[槽] 并置 reg_fresh 位。主循环按几拍轮读即可。 */
+void Hwt101_ReadReg(uint8_t reg);
+/* 槽位 → 值的换算: 0x4C/0x4A 按 /1000 得 °/s, 0xA7/0x48 原值。返回 0 表示该槽未回读过 */
+int16_t Hwt101_RegRaw(uint8_t slot);
+uint8_t Hwt101_RegFresh(uint8_t slot);   /* 该槽是否已成功回读过 */
+void Hwt101_ClearRegFresh(void);          /* 清有效位（观测窗口开始时调） */
 
 /* ---- 诊断 ---- */
 const hwt101_health_t *Hwt101_Health(void);

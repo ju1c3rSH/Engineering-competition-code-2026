@@ -79,6 +79,8 @@ static uint16_t Hwt101_MeasureYawHz(void)
 
 void Hwt101_Init(void)
 {
+	uint8_t i;
+
 	/* 清零必须关中断: main() 里 UART_Task_Init() 已开优先级 0 的 IDLE 中断,
 	 * 能在下面逐条赋值之间插进来写 ps/health, 最坏得到 has_prev_yaw=1 而 yaw_seq=0
 	 * 的组合(靠下一帧 0x53 自愈, 属巧合而非设计)。 */
@@ -96,6 +98,14 @@ void Hwt101_Init(void)
 	health.tx_fail = 0u;
 	health.xchk_ok = 0u;
 	health.xchk_discard = 0u;
+	/* 回读槽位必须显式清: reg_fresh 靠它区分"值真的是 0"和"还没回读过"。
+	 * 留着残值会让上电第一眼的 BIAS=0 被误读成"已回读, 零偏真的是 0" */
+	health.reg_fresh = 0u;
+	health.reg_seq = 0u;
+	for (i = 0u; i < HWT101_RB_COUNT; i++)
+	{
+		health.reg_val[i] = (int16_t)0;
+	}
 	__enable_irq();
 
 	health.rate_boot = Hwt101_MeasureYawHz();
@@ -140,6 +150,25 @@ void Hwt101_ReadVersion(void)
 	}
 	Hwt101_ExpectReg((uint8_t)HWT101_REG_VERSION);
 	HAL_Delay(30u);   /* 等应答; 结果由解析层填, 这里不阻塞等结果 */
+}
+
+/* 通用配置寄存器回读: FF AA 27 <reg> 00。官方明确**读寄存器不需要解锁**、
+ * 不写 Flash、不进校准模式 ⇒ 零副作用, 不像 ConfigRate 那样有擦写寿命代价。
+ * 刻意**不等应答**: 结果由解析层异步填 health.reg_val[], 主循环按拍轮读。
+ * 等应答会在主循环里塞 3×30ms 阻塞, 而这些回读只是人工敲键时的诊断需求。
+ * 代价: 调用后本拍打印看到的是**上一轮**的回读值 —— 这正是想要的语义
+ * (轮读一圈 4 个寄存器, 每拍打印自己那份槽位, 天然对齐)。 */
+void Hwt101_ReadReg(uint8_t reg)
+{
+	uint8_t rd[HWT101_WRITE_LEN];
+
+	Hwt101_MakeWrite(HWT101_REG_READADDR, (uint16_t)reg, rd);
+	if (Hwt101_Tx(rd) != HAL_OK)
+	{
+		health.tx_fail++;   /* 写寄存器单向无 ACK, 这是唯一可见症状 */
+		return;
+	}
+	Hwt101_ExpectReg(reg);   /* 必须在发之后: 先声明会让本拍内的旧应答被误解释 */
 }
 
 /* NOAUTOCALI(0xA7) / MANUALCALI(0xA6): 官方注明**不需要解锁也不需要保存**,
