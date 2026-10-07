@@ -116,22 +116,37 @@ void Fault_Capture_Auto(void)
 
 void HardFault_Handler(void);   /* 定义在 file 主体(接 Fault_Capture), 见下 */
 
-/* ---- RX DMA 重装修复: IDLE/Error 路径在 HAL 锁竞争(HAL_BUSY)下的失败必须可恢复 ----
- * UART4 IDLE(flash 优先级0)抢占 TIM4 发送(DMA Tx 持 huart4 锁)时,
- * HAL_UART_Receive_DMA 返回 HAL_BUSY; 旧代码丢掉返回值 → RX DMA 已被 DMAStop
- * 裸停而不再装回 → IDLE 从此不产生, 控制链路永久哑掉。
- * 现改: 失败置标志,Car_Control 的 TIM4 拍调用 Uart_RxRearm_Task 重试(堵住死口)。 */
+/* ---- RX DMA 重装修复: IDLE/Error 路径重装失败必须可恢复 ----
+ * IDLE/Error 路径先 HAL_UART_DMAStop() 裸停 RX, 随后的 HAL_UART_Receive_DMA 若返回
+ * 非 HAL_OK 则 RX 永远装不回来 → IDLE 不再产生 → 该链路永久哑掉。
+ * 失败返回的成因(判据是 huart->RxState, 见 stm32f4xx_hal_uart.c:1449):
+ *   - RxState 未回 READY(DMAStop 只在 CR3.DMAR 仍置位时才走 UART_EndRxTransfer);
+ *   - UART_Start_Receive_DMA 内 HAL_DMA_Start_IT 因 hdma->State != READY 返回非 OK。
+ * 注意 gState(Tx) 与 RxState(Rx) 是独立字段, "在途 Tx 抢占"**不是**这条路径的成因。
+ * 现改: 失败置标志, Car_Control 的 TIM4 拍调用 Uart_RxRearm_Task 重试(堵住死口)。 */
 static volatile uint8_t rx_rearm_req = 0u;
 
 static void RxRearm(UART_HandleTypeDef *hu, uint8_t *buf, uint16_t size, uint8_t bit)
 {
+  /* 读改写必须整体关中断: 本函数在 USARTx/UART4 的 IDLE 与 Error 两类 ISR 里被调,
+   * Uart_RxRearm_Task() 在 TIM4 拍里也改同一变量, 而本工程 UART 优先级(0)高于
+   * TIM4(1) ⇒ UART4/USART3/USART6 能抢占 TIM4, |= 与 &= 之间被打断就会丢更新,
+   * 重试请求随之丢失(等于又回到"永久哑掉")。关中断区间只有几条指令且无阻塞调用 */
+  uint32_t primask;
+
+  primask = __get_PRIMASK();
+  __disable_irq();
   if (HAL_UART_Receive_DMA(hu, buf, size) != HAL_OK)
   {
-    rx_rearm_req |= bit;     /* HAL 持锁中: 下一 TIM4 拍重试 */
+    rx_rearm_req |= bit;     /* 重装未成功: 下一 TIM4 拍重试 */
   }
   else
   {
     rx_rearm_req &= (uint8_t)(~bit);
+  }
+  if (primask == 0u)
+  {
+    __enable_irq();
   }
 }
 

@@ -46,7 +46,13 @@ static uint8_t txq_len[CAR_TXQ_DEPTH];
 static volatile uint8_t txq_head = 0u;   /* 写位置(仅生产者, 关中断内更新) */
 static volatile uint8_t txq_tail = 0u;   /* 读位置(仅 Pump 更新) */
 
-static void Car_Dbg2_EvtRecord(uint8_t event, uint8_t echo);   /* 定义在 dbg2 区, 前置声明 */
+/* TX 队列满丢弃计数: Car_TxEnqueue 失败(队列满 或 EncodeFrame 返回 0)时累加。
+ * 为什么必须可见: Car_Event_Send 原来丢弃入队返回值, 队列满时事件帧被静默丢掉,
+ * 而 EVT: 调试行照打 ⇒ 日志里"上报过"不等于"帧真的发出去了"。
+ * 2026-10-07 打靶段就是这样丢掉了 TRACKING_DONE, 主控据此误判。观测口见 EVT: 行的 DROP= */
+volatile uint16_t Car_TxqDrop_Cnt = 0u;
+
+static void Car_Dbg2_EvtRecord(uint8_t event, uint8_t echo, uint8_t queued);   /* 定义在 dbg2 区, 前置声明 */
 
 /* 入队: 两个 ISR 上下文都会调, 关中断保护头指针与缓冲拷贝 */
 static uint8_t Car_TxEnqueue(uint8_t type, const uint8_t *payload, uint8_t plen)
@@ -65,8 +71,16 @@ static uint8_t Car_TxEnqueue(uint8_t type, const uint8_t *payload, uint8_t plen)
 			ok = 1u;
 		}
 	}
+	/* 队列满时丢最新一帧(保持入队者不被阻塞); 上行均为通知类, 由上层超时兜底。
+	 * 丢帧计数必须与队列操作同处一个临界区: 本函数有两个 ISR 生产者(TIM4 事件帧 /
+	 * UART4 的 ACK/NACK), 而 UART4 优先级(0)高于 TIM4(1), UART4 能抢占 TIM4 ——
+	 * 若把 ++ 放在临界区外, LDRH/ADD/STRH 之间被插一次就会丢计数, 而这个计数
+	 * 恰恰是"事件帧有没有真发出去"的唯一证据, 丢不得 */
+	if (ok == 0u)
+	{
+		Car_TxqDrop_Cnt++;
+	}
 	__enable_irq();
-	/* 队列满时丢最新一帧(保持入队者不被阻塞); 上行均为通知类, 由上层超时兜底 */
 	return ok;
 }
 
@@ -99,8 +113,10 @@ void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason)
 	{
 		p[i] = 0u;
 	}
-	(void)Car_TxEnqueue(FRAME_TYPE_DATA, p, 10u);
-	Car_Dbg2_EvtRecord(event, echo);
+	/* 入队结果必须接住: 队列满时帧被静默丢掉, 但 EVT: 调试行照打
+	 * ⇒ 日志里"上报过"不等于"帧真发出去了"(2026-10-07 打靶段丢 TRACKING_DONE 即此)。
+	 * queued 作废本次记录, 丢帧数由 Car_TxqDrop_Cnt 累计(EVT: 行的 DROP=) */
+	Car_Dbg2_EvtRecord(event, echo, Car_TxEnqueue(FRAME_TYPE_DATA, p, 10u));
 }
 
 /* ---- 调试口观测记录 (USART2, 详 interurp.h) -------------------------------
@@ -115,6 +131,7 @@ static volatile struct
 	uint8_t  last_code;    /* ACK=status / NACK=reason */
 	uint8_t  last_evt;     /* EVT=事件码 */
 	uint8_t  last_evt_echo;
+	uint8_t  last_evt_q;    /* 本次 EVT 是否真的入队成功(=1) / 被队列满丢弃(=0) */
 	volatile uint8_t ack_fresh;
 	volatile uint8_t nack_fresh;
 	volatile uint8_t evt_fresh;
@@ -151,12 +168,13 @@ static void Car_Dbg2_Record(uint8_t ack, uint8_t sub, uint8_t code)
 	__enable_irq();
 }
 
-/* EVT 上行回显登记: 生产者 TIM4 ISR(Car_Event_Send), 消费者主循环 Car_DebugTask */
-static void Car_Dbg2_EvtRecord(uint8_t event, uint8_t echo)
+/* EVT 上行回显登记: 生产者 TIM4 ISR(Car_Event_Send), 消费者主循环Car_DebugTask */
+static void Car_Dbg2_EvtRecord(uint8_t event, uint8_t echo, uint8_t queued)
 {
 	__disable_irq();
 	dbg2.last_evt = event;
 	dbg2.last_evt_echo = echo;
+	dbg2.last_evt_q = (queued != 0u) ? 1u : 0u;
 	dbg2.evt_cnt++;
 	dbg2.evt_fresh = 1u;
 	__enable_irq();
@@ -434,7 +452,8 @@ void Car_DebugTask(void)
 	static uint8_t  periodic_en = (uint8_t)DBG_PERIODIC_DEFAULT_EN;
 	uint32_t now;
 	uint16_t ack_n, nack_n, evt_n;
-	uint8_t  sub, code, evt, evt_echo;
+	uint8_t  sub, code, evt, evt_echo, evt_q;
+	uint16_t txq_drop;
 	uint8_t  tt_kind, tt_code, bench_kind, bench_arg;
 	float    tt_ang;
 	uint8_t  ack_f = 0u, nack_f = 0u, evt_f = 0u, query_f = 0u, periodic_f = 0u;
@@ -449,6 +468,8 @@ void Car_DebugTask(void)
 	code   = dbg2.last_code;
 	evt    = dbg2.last_evt;
 	evt_echo = dbg2.last_evt_echo;
+	evt_q  = dbg2.last_evt_q;
+	txq_drop = Car_TxqDrop_Cnt;
 	tt_kind  = dbg2.tt_kind;
 	tt_code  = dbg2.tt_code;
 	bench_kind  = dbg2.bench_kind;
@@ -475,7 +496,13 @@ void Car_DebugTask(void)
 	}
 	if (evt_f != 0u)   /* NAV_DONE/NAV_FAULT/TURN_DONE/TRACKING_DONE 上行回显 */
 	{
-		printf("EVT:%02X:%02X #%u\r\n", evt, evt_echo, (unsigned)evt_n);
+		/* 字段顺序有约束: #%u 必须紧跟冒号后, build_verify/analyze_idle_tracking_log.py 与
+		 * analyze_nav_log.py 的 EVT 正则以 "EVT:XX:XX #(\\d+)" 锚定行首匹配, 新增字段只能追加在行尾,
+		 * 插在 # 之前会让这两个脚本整行失配(前者还会IndexError 崩)。
+		 * Q= 本次是否真入队成功(=1) / 被队列满丢弃(=0); DROP= TX 队列累计丢帧数。
+		 * Q=0 或 DROP 增长 ⇒ 主控必然收不到这一帧, 别再把本行当成"已上报"读 */
+		printf("EVT:%02X:%02X #%u Q=%u DROP=%u\r\n",
+		       evt, evt_echo, (unsigned)evt_n, (unsigned)evt_q, (unsigned)txq_drop);
 	}
 	if (tt_f != 0u)   /* 转台事件: 0=停止 1=收到协议码 2=台架微调 */
 	{
