@@ -8,13 +8,15 @@
  * 直行/弧线统一降到 5转/s²(≈2.36m/s², 0.4s 拉满 0.94m/s), 削起步浪涌 */
 #define SEG_ACC_MPS2  MF_M_ACC(5.0f)
 
-/* 档位(2026-10-07)。mf_config.h 的 MF_WZ_RATE_OUT_HEADROOM 已从 1.8 抬到 3.0(=450dps),
+/* 档位(2026-10-07 实车复测后)。mf_config.h 的 MF_WZ_RATE_OUT_HEADROOM 已从 1.8 抬到 3.0(=450dps),
  * 弯道角速度指令发得出去, 但**弯道速度不能给满**: 外侧轮需求 = v×(1+TRIM·轨距/(2R·k))
  * = v×1.3455, 给满 High(1.414) ⇒ 外轮要1.90m/s 远超v_free⇒ duty 顶格、实际车速被钳在
  * ~1.05, 而 wz 前馈仍按指令1.414 算 ⇒ 车速没上去角速度给多 ⇒ 半径偏小、转过头超调。
- * 故弯道取 Middle; 直线无差速需求, 可给到 High。前提与数据见 docs/全程高速实现指引.md §2 */
-#define V_STRAIGHT   MF_M_SPEED(High_speed)   /* 直道: 无差速需求, 外轮需求=v 本身 */
-#define V_ARC        MF_M_SPEED(Middle_speed) /* 弯道: 外轮需求1.27 < v_free, 不顶格 */
+ * 实测两趟印证: 六个弧 R=937~959 均值943(名义942.5), 提速后无超调。
+ * 直道无差速需求、外轮需求=v 本身, 可高于弯道。
+ * 扫描依据(两种 v_free 口径都 PASS, 判据终点<=120mm): diag_speed_ceiling.py */
+#define V_STRAIGHT   MF_M_SPEED(3.10f)        /* 直道1.461: 前段有弧, 出弧车速不足会带偏下一弧 */
+#define V_ARC        MF_M_SPEED(2.20f)        /* 弯道1.036: 贴外轮饱和临界(v_free/1.3455)之下 */
 #define V_KEEP_MID   MF_M_SPEED(Middle_speed) /* 保持原速: 打靶直线/人质末段(见各表注) */
 #define V_SLOW_ENTRY MF_M_SPEED(Middle_speed) /* 首段过减速带 */
 #define V_SLOW_DOCK  MF_M_SPEED(Low_speed)    /* 末段低速进作业点, 横向精度靠它 */
