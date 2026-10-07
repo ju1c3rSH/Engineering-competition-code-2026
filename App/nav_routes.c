@@ -8,6 +8,13 @@
  * 直行/弧线统一降到 5转/s²(≈2.36m/s², 0.4s 拉满 0.94m/s), 削起步浪涌 */
 #define SEG_ACC_MPS2  MF_M_ACC(5.0f)
 
+/* 全程高速档位(2026-10-07)。前提: mf_config.h 的 MF_WZ_RATE_OUT_HEADROOM 已从 1.8 抬到 3.0
+ * —— 弯道给满 High 只在限幅抬起来之后才安全(见 docs/全程高速实现指引.md §2) */
+#define V_STRAIGHT   MF_M_SPEED(2.85f)        /* 直道: duty 峰 0.948, 留 5% 余量 */
+#define V_ARC        MF_M_SPEED(High_speed)   /* 弯道: 给满, 不许取中间值(1.2 会转过头) */
+#define V_SLOW_ENTRY MF_M_SPEED(Middle_speed) /* 首段过减速带 */
+#define V_SLOW_DOCK  MF_M_SPEED(Low_speed)    /* 作业点进近对坑, 横向精度靠它 */
+
 /* nav_id 段表: 原 flags 路线逐段复刻(基线 git 4f3ceb2 true_BOOM_Finish) */
 #define SEG_MOVE(v, d)  { .type = MF_SEG_MOVE_DIST, .reset_pid = 1, \
                           .p.move_dist = { (v), (d), MF_KEEP, SEG_ACC_MPS2 } }
@@ -32,15 +39,15 @@ static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: 排爆区去程(末段
  * 直线物理长度 = (单位/15)×π×**真实**轮径, 而真实有效轮径 ≈156.3mm(固件假设 150)——
  * 同一比例也让弧半径变成 982(卷尺), 见 mf_config.h: MF_ARC_WZ_TRIM。两处同源, 要改一起改。 */
 {
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(45.1f)),
-	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),   /* 左 90 (flag1) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(18.2f)),
-	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag2) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(47.0f)),
-	SEG_ARC(MF_M_SPEED(Low_speed),  TURN_RADIUS_M),   /* 左 90 (flag4) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(34.5f)),
-	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag6) */
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(47.0f)),
+	SEG_MOVE(V_SLOW_ENTRY, MF_M_DIST(45.1f)),
+	SEG_ARC(V_ARC,  TURN_RADIUS_M),   /* 左 90 (flag1) */
+	SEG_MOVE(V_STRAIGHT, MF_M_DIST(18.2f)),
+	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag2) */
+	SEG_MOVE(V_STRAIGHT, MF_M_DIST(47.0f)),
+	SEG_ARC(V_ARC,  TURN_RADIUS_M),   /* 左 90 (flag4) */
+	SEG_MOVE(V_STRAIGHT, MF_M_DIST(34.5f)),
+	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag6) */
+	SEG_MOVE(V_STRAIGHT, MF_M_DIST(47.0f)),
 	SEG_END
 };
 static const mf_seg_t tbl_bucket[] =      /* NAV_TO_BUCKET: 桶与排爆作业点在车道两侧同一点位,
@@ -59,8 +66,8 @@ static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 
 };
 static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区(末段直线+重锚移入 rebase 表) */
 {
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(7.5f)),   /* 48.5 − 38: 与 tbl_target 成对, 见上 */
-	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),   /* 右 90 (flag14) */
+	SEG_MOVE(V_STRAIGHT, MF_M_DIST(7.5f)),   /* 48.5 − 38: 与 tbl_target 成对, 见上 */
+	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag14) */
 	SEG_END
 };
 /* 人质对坑前重锚 = 弧线出口先转绝对角、再按绝对航向走末段直线(标定项, 同 NAV_REBASE_BOMB_YAW_DEG) */
@@ -68,7 +75,7 @@ static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区
 static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口重锚+末段直线进停点 */
 {
 	SEG_TURN_TO(NAV_REBASE_HOSTAGE_YAW_DEG),
-	SEG_MOVE_HD(MF_M_SPEED(Middle_speed), MF_M_DIST(78.0f), NAV_REBASE_HOSTAGE_YAW_DEG),
+	SEG_MOVE_HD(V_STRAIGHT, MF_M_DIST(78.0f), NAV_REBASE_HOSTAGE_YAW_DEG),
 	SEG_END
 };
 /* 返程段/终点的绝对航向: 任务终点 YAW 严格 -180° —— 几何真值(GYRO_ZERO 定出发 0°, 反向即 -180°)。
@@ -80,7 +87,7 @@ static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口
 
 static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 */
 {
-	SEG_MOVE_HD(MF_M_SPEED(Middle_speed), MF_M_DIST(175.0f), NAV_RETURN_LEG_YAW_DEG),
+	SEG_MOVE_HD(V_STRAIGHT, MF_M_DIST(175.0f), NAV_RETURN_LEG_YAW_DEG),
 #if NAV_RETURN_FINAL_REBASE_EN
 	SEG_TURN_TO(NAV_RETURN_LEG_YAW_DEG),   /* 终点姿态收尾: 注入 -180° 绝对真值 */
 #endif
@@ -100,8 +107,8 @@ static const mf_seg_t tbl_rebase_bomb[] =   /* NAV_REBASE_BOMB: 排爆区末段(
                                              * (原工程 flag9 时点); 臂为收起位无干涉。若碍事把
                                              * nav_entry_turn[6] 置 0 = 主控 NAV_DONE 后再发(=串行) */
 {
-	SEG_ARC(MF_M_SPEED(Low_speed), -TURN_RADIUS_M),      /* 右 90: 原 tbl_bomb 表尾转弯 */
-	SEG_MOVE(MF_M_SPEED(Low_speed),    MF_M_DIST(49.0f)),/* 末段低速进作业点 */
+	SEG_ARC(V_ARC, -TURN_RADIUS_M),      /* 右 90: 原 tbl_bomb 表尾转弯 */
+	SEG_MOVE(V_SLOW_DOCK, MF_M_DIST(49.0f)),/* 末段低速进作业点 —— 不许提速 */
 	SEG_TURN_TO(NAV_REBASE_BOMB_YAW_DEG),                /* 对坑前重锚: 五个闭环 90° 弧的终点。
 	                                                      * 几何真值, 不掺补偿 —— 基准偏差统一走
 	                                                      * MF_HEADING_BIAS_DEG(见其定义处注释) */

@@ -25,7 +25,9 @@ void mf_app_init(void)
 		.odom_arc_src  = (uint8_t)MF_ODOM_ARC_SRC,
 		.max_vx_mps    = 1.5f,           /* 覆盖 High_speed 1.41m/s */
 		.max_vy_mps    = 0.0f,
-		.max_wz_dps    = 150.0f,         /* Middle 弧线稳态 57dps + 修正余量 */
+		.max_wz_dps    = 150.0f,         /* 航向环(外环)自己的物理边界, 与速率内环的输出余量
+					                       * (MF_WZ_RATE_OUT_HEADROOM)是两件事, 别拿它当内环上限。
+					                       * 内环稳态需求见 docs/全程高速实现指引.md §2 */
 		.yaw_kp        = 16.0f,    /* 走直线蛇形修复: 外环降带宽匹配轮速内环(原32.4欠阻尼~1s极限环) */
 		.yaw_ki        = 0.0f,     /* 2026-09-21: 2.0 未做 A/B 且实车反而更差, 回退到 09-20 可跑值 */
 		.yaw_kd        = 0.8f,     /* 航向环加阻尼项, 抑制匀速直行左右摆。
