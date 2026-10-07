@@ -8,12 +8,16 @@
  * 直行/弧线统一降到 5转/s²(≈2.36m/s², 0.4s 拉满 0.94m/s), 削起步浪涌 */
 #define SEG_ACC_MPS2  MF_M_ACC(5.0f)
 
-/* 全程高速档位(2026-10-07)。前提: mf_config.h 的 MF_WZ_RATE_OUT_HEADROOM 已从 1.8 抬到 3.0
- * —— 弯道给满 High 只在限幅抬起来之后才安全(见 docs/全程高速实现指引.md §2) */
-#define V_STRAIGHT   MF_M_SPEED(2.85f)        /* 直道: duty 峰 0.948, 留 5% 余量 */
-#define V_ARC        MF_M_SPEED(High_speed)   /* 弯道: 给满, 不许取中间值(1.2 会转过头) */
+/* 档位(2026-10-07)。mf_config.h 的 MF_WZ_RATE_OUT_HEADROOM 已从 1.8 抬到 3.0(=450dps),
+ * 弯道角速度指令发得出去, 但**弯道速度不能给满**: 外侧轮需求 = v×(1+TRIM·轨距/(2R·k))
+ * = v×1.3455, 给满 High(1.414) ⇒ 外轮要1.90m/s 远超v_free⇒ duty 顶格、实际车速被钳在
+ * ~1.05, 而 wz 前馈仍按指令1.414 算 ⇒ 车速没上去角速度给多 ⇒ 半径偏小、转过头超调。
+ * 故弯道取 Middle; 直线无差速需求, 可给到 High。前提与数据见 docs/全程高速实现指引.md §2 */
+#define V_STRAIGHT   MF_M_SPEED(High_speed)   /* 直道: 无差速需求, 外轮需求=v 本身 */
+#define V_ARC        MF_M_SPEED(Middle_speed) /* 弯道: 外轮需求1.27 < v_free, 不顶格 */
+#define V_KEEP_MID   MF_M_SPEED(Middle_speed) /* 保持原速: 打靶直线/人质末段(见各表注) */
 #define V_SLOW_ENTRY MF_M_SPEED(Middle_speed) /* 首段过减速带 */
-#define V_SLOW_DOCK  MF_M_SPEED(Low_speed)    /* 作业点进近对坑, 横向精度靠它 */
+#define V_SLOW_DOCK  MF_M_SPEED(Low_speed)    /* 末段低速进作业点, 横向精度靠它 */
 
 /* nav_id 段表: 原 flags 路线逐段复刻(基线 git 4f3ceb2 true_BOOM_Finish) */
 #define SEG_MOVE(v, d)  { .type = MF_SEG_MOVE_DIST, .reset_pid = 1, \
@@ -58,10 +62,11 @@ static const mf_seg_t tbl_bucket[] =      /* NAV_TO_BUCKET: 桶与排爆作业�
 /* 打靶段停点标定(2026-09-27): 175 → 213 单位, 多出 38 单位(1.19m)让车能走到靶心(不延长则
  * 刹停判据永不成立)。与 tbl_hostage 首段**成对改**: 加多少减多少, 净和 223.5 不变, 否则
  * 90° 弧起点整体前移、落点横向偏同样距离。
- * 推导(E≈2300 反解/窗口公式)与验证法: docs/坑-运动与导航.md §6 */
+ * 推导(E≈2300 反解/窗口公式)与验证法: docs/坑-运动与导航.md §6
+ * 2026-10-07: 保持 Middle 不提速 —— 要给 nav_tracking 视觉跟瞄留够收敛窗口与制动距离 */
 static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 */
 {
-	SEG_MOVE(MF_M_SPEED(Middle_speed), MF_M_DIST(216.0f)),
+	SEG_MOVE(V_KEEP_MID, MF_M_DIST(216.0f)),
 	SEG_END
 };
 static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区(末段直线+重锚移入 rebase 表) */
@@ -70,12 +75,13 @@ static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag14) */
 	SEG_END
 };
-/* 人质对坑前重锚 = 弧线出口先转绝对角、再按绝对航向走末段直线(标定项, 同 NAV_REBASE_BOMB_YAW_DEG) */
+/* 人质对坑前重锚 = 弧线出口先转绝对角、再按绝对航向走末段直线(标定项, 同 NAV_REBASE_BOMB_YAW_DEG)
+ * 2026-10-07: 末段直线保持 Middle 不提速 —— 与 tbl_target 成对提速会一起破坏对坑落点 */
 #define NAV_REBASE_HOSTAGE_YAW_DEG  (-180.0f)
 static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口重锚+末段直线进停点 */
 {
 	SEG_TURN_TO(NAV_REBASE_HOSTAGE_YAW_DEG),
-	SEG_MOVE_HD(V_STRAIGHT, MF_M_DIST(78.0f), NAV_REBASE_HOSTAGE_YAW_DEG),
+	SEG_MOVE_HD(V_KEEP_MID, MF_M_DIST(78.0f), NAV_REBASE_HOSTAGE_YAW_DEG),
 	SEG_END
 };
 /* 返程段/终点的绝对航向: 任务终点 YAW 严格 -180° —— 几何真值(GYRO_ZERO 定出发 0°, 反向即 -180°)。
