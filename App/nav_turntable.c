@@ -63,13 +63,22 @@ static uint32_t tt_last_tick = 0u;
  * 标定: 上电敲 '7'(目标 90°)量实际转角 θ —— θ≠90° 说明上电姿态不是 0°, 该机械摆正, 不要改这个宏 */
 #define TURNTABLE_BOOT_DEG  0.0f
 
-/* 转台 DONE 计时: 开环静置, 按本次行程 |本次目标−上次目标| × TURNTABLE_MS_PER_DEG 算, 只增不减。
- * TURNTABLE_MS_PER_DEG 标定: 上机敲桶位码 4/5(270°), 录像量"发令→实际停稳" t, 置 t/270 */
-#define TURNTABLE_MS_PER_DEG   1.9f    /* 额定 180RPM ⇒ 0.93ms/°; 旧值 ×2 计"100ms 重发重启
-                                        * 梯形规划"欠速——2026-09 目标去重后单发不再重启, 1.9 纯作
-                                        * 偏长裕量(报早=伸臂干涉), 可按下行标定法回收时间 */
+/* 转台 DONE 计时: 开环静置, 按本次行程 |本次目标−上次目标| × 每度耗时 算, 只增不减。
+ *
+ * 每度耗时必须与 TURNTABLE_VEL_RPM 同源推算, 不许写死 —— 旧值 1.9ms/° 是按"额定 180RPM"
+ * (转台轴口径)推的, 而实际下发的 vel=200 是**电机轴**口径, 中间少乘了减速比:
+ *   正确值 = 60000 ×减速比 / (360 ×vel) = 60000×8.5/(360×200) = 7.08 ms/°
+ * 于是 180° 扫掠物理时间 = 180/7.08 ≈ 1275ms, 而 1.9 算出来只有 342ms, 被
+ * TURNTABLE_SETTLE_MIN 钳到 1000ms 仍然报早 —— TURN_DONE 在转盘还差约 35° 时就上报。
+ * 打靶链上这直接导致"转台还在扫掠就被订阅靶标": 相机装在转盘侧, 会锁到假目标。
+ * 标定法: 上机敲桶位码 4/5(270°), 录像量"发令→实际停稳" t, 置 t/270。
+ * 换 vel 必须重算本式(宏已同源), 台架实测偏长时可在此直接覆盖。 */
+#define TURNTABLE_GEAR_RATIO   8.5f    /* 转盘减速比, 与 WTBL_TICK_PER_DEG 同源 */
+#define TURNTABLE_VEL_RPM      200u    /* 电机轴 RPM; 改它下面每度耗时自动跟随 */
+#define TURNTABLE_ACC           150u    /* 加速度档(0~255, 0=直接启动) */
+#define TURNTABLE_MS_PER_DEG   (60000.0f * TURNTABLE_GEAR_RATIO / (360.0f * (float)TURNTABLE_VEL_RPM))
 #define TURNTABLE_RAMP_MARGIN  300u    /* 加减速 + 机械/传动裕量 */
-#define TURNTABLE_SETTLE_MIN   1000u   /* 只增不减: 旧固定值, 相对旧行为零回退 */
+#define TURNTABLE_SETTLE_MIN   1000u   /* 下限: 只增不减, 防短行程被算成瞬时到位 */
 #define TURNTABLE_SETTLE_MAX   3000u   /* 上限: 旧基线值, 防异常行程把流程拖死 */
 
 /* 本次转台 DONE 计时(ms): 按行程动态算, 只增不减(下限=旧固定值 1000ms)。
@@ -248,9 +257,10 @@ void Emm_Pos_Control(void)
 	{
 		return;   /* 目标未变且已成功下发: 不再重发, 让驱动器独立跑完梯形规划 */
 	}
-	/* vel=200/ acc=120 都是**电机轴 RPM 口径**, 与 MStep 无关:
-	 * 改驱动器细分时只改 WTBL_TICK_PER_DEG, 这两个不用动(行程耗时只取决于 RPM 与角度) */
-	if (Emm_V5_Pos_Control(EMM_MOTOR_ADDR, dir, 180, 120, tick, true, false) != HAL_OK)
+	/* vel/acc 都是**电机轴 RPM 口径**, 与 MStep 无关: 改驱动器细分时只改 WTBL_TICK_PER_DEG,
+	 * 这两个不用动(行程耗时只取决于 RPM 与角度)。它们与 TURNTABLE_MS_PER_DEG 同源 ——
+	 * 改 vel 会同时改变物理转速与 settle 计时, 不会只改一半 */
+	if (Emm_V5_Pos_Control(EMM_MOTOR_ADDR, dir, TURNTABLE_VEL_RPM, TURNTABLE_ACC, tick, true, false) != HAL_OK)
 	{
 		return;   /* 帧没进 DMA(如 TX 在途 HAL_BUSY): 不记账, 下个 100ms 拍重试 */
 	}
