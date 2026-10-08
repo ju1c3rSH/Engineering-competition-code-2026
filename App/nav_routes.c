@@ -51,11 +51,11 @@ static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: 排爆区去程(末段
  * 直线物理长度 = (单位/15)×π×**真实**轮径, 而真实有效轮径 ≈156.3mm(固件假设 150)——
  * 同一比例也让弧半径变成 982(卷尺), 见 mf_config.h: MF_ARC_WZ_TRIM。两处同源, 要改一起改。 */
 {
-	SEG_MOVE(V_SLOW_ENTRY, MF_M_DIST(45.1f)),
+	SEG_MOVE(V_SLOW_ENTRY, MF_M_DIST(46.1f)),
 	SEG_ARC(V_ARC,  TURN_RADIUS_M),   /* 左 90 (flag1) */
 	SEG_MOVE(V_STRAIGHT, MF_M_DIST(18.2f)),
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag2) */
-	SEG_MOVE(V_STRAIGHT, MF_M_DIST(47.0f)),
+	SEG_MOVE(V_STRAIGHT, MF_M_DIST(50.0f)),
 	SEG_ARC(V_ARC,  TURN_RADIUS_M),   /* 左 90 (flag4) */
 	SEG_MOVE(V_STRAIGHT, MF_M_DIST(34.5f)),
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag6) */
@@ -80,7 +80,7 @@ static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 
 };
 static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区(末段直线+重锚移入 rebase 表) */
 {
-	SEG_MOVE(V_STRAIGHT, MF_M_DIST(7.5f)),   /* 48.5 − 38: 与 tbl_target 成对, 见上 */
+	SEG_MOVE(V_STRAIGHT, MF_M_DIST(6.0f)),   /* 48.5 − 38: 与 tbl_target 成对, 见上 */
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag14) */
 	SEG_END
 };
