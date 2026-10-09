@@ -52,10 +52,31 @@ typedef enum
 #define TRACKING_NOCONV_MS              500u    /* 段表已完 + |e|>阈 持续这么久 → FAULT(01) */
 #define TRACKING_LOST_DONE_MS           1500u   /* 段表已完 + 无测量 持续这么久 → FAULT(02) */
 
+/* ---- 预测式提前制动(斜率外推) ----
+ * 车还要走 v·L + v²/(2a) 才停; 用误差帧的 |de/dt| 把这距离折算到 e 域(不必标相机几何 S,
+ * v 与 S 同时消掉): 触发阈 = |de/dt|·(L + v/(2a))。该阈与固定阈**取大者** ⇒ 斜率不可用、
+ * 没在接近、或没进咬靶区时, 行为与固定阈完全一致(只会更早刹, 不会更晚, 回退即现状)。
+ * 标定 L: 跑一趟读停车那拍的 |E|(定点), 停点冲过靶心就加大、没到靶心就减小, 一次即定。
+ * 实测口径与反解见 docs/打靶段架构-刹停与续跑.md §10.15 */
+#define TRACKING_PRED_EN                1u      /* 0 = 关(回退现状) */
+#define TRACKING_LAG_MS                 80u     /* L: 视觉取像推理+转发+拍对齐(不含制动段); build_verify/calibrate_lag_ms.py 标定 */
+#define TRACKING_ERR_WIN                4u      /* 斜率窗口(帧)。两点差分噪声达均值 ±40%, 必须最小二乘 */
+#define TRACKING_ERR_MIN_DT_MS          12u     /* 相邻样本最小间隔: 更密的重复帧不喂进窗口 */
+#define TRACKING_ERR_MIN_SPAN_MS        40u     /* 窗口最小跨度: 不足则判据不可用, 走固定阈 */
+#define TRACKING_ERR_MIN_SLOPE          0.02f   /* e/s: 接近速度低于它不预测(没在收敛, 提前量无意义) */
+#define TRACKING_ERR_MAX_SLOPE          0.80f   /* e/s: 斜率限幅, 挡噪声把提前量放大成欠冲 */
+#define TRACKING_ERR_SAT_LEVEL          0.95f   /* |e| 到此=量程饱和。实测 found=1 也会长时间给 ±0.96 的
+                                                 * 常值(2026-10-09 现场 2.5s), 它既不是"接近速度"、也不是
+                                                 * 重捕后的可信起点 ⇒ 与 found=0 同处理: 清窗 */
+#if (TRACKING_ERR_WIN < 3u)
+#error "TRACKING_ERR_WIN 必须 >= 3"
+#endif
+
 /* 跟瞄观测快照(仅调试显示用) */
 typedef struct { uint8_t state, found, braking, reason;
                  int8_t zero_sign;
                  int16_t err_f10k;
+                 int16_t thr_f10k;    /* 当拍实际生效的点火阈(定点): 标定 LAG 与判"预测是否生效"都读它 */
                  uint16_t frame_age_ms, hold_ms; } Trk_Info_t;
 
 void    Tracking_Start(uint8_t speed_level, uint8_t aim_axis);

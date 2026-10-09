@@ -12,12 +12,14 @@ static struct
 	TrackingState_t state;
 	float    horizontal_error_normalized;  /* 最新归一化横向误差, 约 -1~+1 */
 	uint8_t  target_found_flag;            /* 最新有效标志 */
+	uint8_t  error_fresh;                  /* 本拍消费到一帧(无论 found); 斜率窗口据此喂样 */
 	uint16_t frame_age_ms;                 /* 距上次有效误差帧时长 */
 	uint16_t hold_ms;                      /* 进阈即刹: |e|≤阈 的连续累计 */
 	int8_t   zero_sign;                    /* 已确认误差符号(+1/-1/0=未确认), 过零判据的基准 */
 	int8_t   sign_cand;                    /* 去抖候选符号 */
 	uint8_t  confirm_cnt;                  /* 去抖: 候选符号连续同号帧数 */
 	uint8_t  braking;                      /* 已触发制动的锁存: 不再重判, 只走制动斜坡 */
+	float    brake_thr;                    /* 当拍实际生效的点火阈(观测用; 触发后不再刷新=保留点火值) */
 	float    brake_cap;                    /* 制动斜坡: 当拍允许的段表目标速度上限 */
 	uint16_t noconv_ms;                    /* 段表已完 + |e|>阈 的连续累计(FAULT 01) */
 	uint8_t  noconv_latch;                 /* FAULT(01) 闩锁: 防重复上报, START/STOP 清 */
@@ -29,6 +31,85 @@ static struct
 /* 状态迁移唯一入口: 复位判据计数器 + 登记一次迁移打点(主循环 Car_TrkChange_Log 消费)。
  * 只走这里是为了让"哪一拍切的态、为什么切"有据可查, 也防止某条路径漏清计数 */
 static volatile uint8_t trk_chg_from, trk_chg_to, trk_chg_fresh;
+
+/* ---- 误差序列斜率估计(预测式提前制动的唯一输入) ----
+ * 帧率在 18~23Hz 之间飘, 差分必须按**实际间隔**归一, 不能写死帧周期(与航向差分同一个坑,
+ * 见 docs/坑-编码器与里程.md §7)。时间戳用本模块自己的拍计数, 不借 frame_age_ms ——
+ * 后者会被重复帧重置, 拿它当时间基准等于让重复帧同时污染帧龄与斜率。 */
+static struct
+{
+	float    e[TRACKING_ERR_WIN];
+	uint32_t ms[TRACKING_ERR_WIN];
+	uint8_t  head;    /* 下一个写入位 */
+	uint8_t  count;
+} trk_rate;
+
+static uint32_t trk_ms;   /* 每拍 +CAR_TICK_MS; 只用差值, 不拍回绕 */
+
+static void Trk_RateClear(void)
+{
+	trk_rate.head = 0u;
+	trk_rate.count = 0u;
+}
+
+static void Trk_RateFeed(float e)
+{
+	uint8_t prev, slot;
+
+	if (trk_rate.count != 0u)
+	{
+		prev = (uint8_t)((trk_rate.head + TRACKING_ERR_WIN - 1u) % TRACKING_ERR_WIN);
+		if ((uint32_t)(trk_ms - trk_rate.ms[prev]) < TRACKING_ERR_MIN_DT_MS)
+		{
+			/* 同一帧被重复投递: 相邻 |de/dt| 恒 0, 会把斜率直接拖平 ⇒ 静默失效 */
+			return;
+		}
+	}
+	slot = trk_rate.head;
+	trk_rate.e[slot] = e;
+	trk_rate.ms[slot] = trk_ms;
+	trk_rate.head = (uint8_t)((trk_rate.head + 1u) % TRACKING_ERR_WIN);
+	if (trk_rate.count < (uint8_t)TRACKING_ERR_WIN)
+	{
+		trk_rate.count++;
+	}
+}
+
+/* 最小二乘斜率(e/s)。返回 0 = 窗口不足/跨度太短/退化 ⇒ 调用方退回固定阈 */
+static float Trk_RateSlope(void)
+{
+	uint8_t n = trk_rate.count;
+	uint8_t oldest, i;
+	float   t0, st = 0.0f, se = 0.0f, stt = 0.0f, ste = 0.0f, den;
+
+	if (n < 3u)
+	{
+		return 0.0f;
+	}
+	oldest = (uint8_t)((trk_rate.head + TRACKING_ERR_WIN - n) % TRACKING_ERR_WIN);
+	t0 = trk_rate.ms[oldest];
+	if ((uint32_t)(trk_rate.ms[(uint8_t)((trk_rate.head + TRACKING_ERR_WIN - 1u) % TRACKING_ERR_WIN)] - t0)
+	    < TRACKING_ERR_MIN_SPAN_MS)
+	{
+		return 0.0f;
+	}
+	for (i = 0u; i < n; i++)
+	{
+		uint8_t idx = (uint8_t)((oldest + i) % TRACKING_ERR_WIN);
+		float   t   = (float)(trk_rate.ms[idx] - t0) * 0.001f;
+
+		st  += t;
+		se  += trk_rate.e[idx];
+		stt += t * t;
+		ste += t * trk_rate.e[idx];
+	}
+	den = ((float)n * stt) - (st * st);
+	if (den <= 0.0f)
+	{
+		return 0.0f;
+	}
+	return (((float)n * ste) - (st * se)) / den;
+}
 
 static void Tracking_Goto(TrackingState_t next)
 {
@@ -48,6 +129,8 @@ static void Tracking_Goto(TrackingState_t next)
 	tracking.stop_done = 0u;
 	tracking.noconv_ms = 0u;
 	tracking.lost_ms = 0u;
+	tracking.error_fresh = 0u;
+	Trk_RateClear();
 	/* 注意**不清** noconv_latch —— 它由 START/STOP 专门清(见 Tracking_Start/Stop),
 	 * 好让 Brain 的容错计数能在每次重开后重新累计 */
 	__disable_irq();
@@ -199,6 +282,7 @@ void Tracking_ConsumeErrorFrame(void)
 		if (tracking.horizontal_error_normalized < -1.0f) { tracking.horizontal_error_normalized = -1.0f; }
 		tracking.target_found_flag = (uint8_t)(tracking_found_mail & 0x01u);
 		tracking.frame_age_ms = 0u;
+		tracking.error_fresh = 1u;
 		tracking_error_pending = 0u;
 	}
 	__enable_irq();
@@ -270,6 +354,7 @@ uint8_t Tracking_ApplyOverlay(void)
 	float e, abs_e;
 	uint8_t fresh, done;
 
+	trk_ms = trk_ms + CAR_TICK_MS;   /* 本模块时基: 必须在任何早返回之前推进 */
 	if (tracking.state == TRACKING_OFF)
 	{
 		return 0u;                     /* 段表全权(不变量 I1) */
@@ -289,6 +374,21 @@ uint8_t Tracking_ApplyOverlay(void)
 
 	/* ==== ARMED: 段表全权驱动, 这里只评估刹停判据/上报故障, 不改 cmd ==== */
 	Tracking_ConsumeErrorFrame();
+	if (tracking.error_fresh != 0u)
+	{
+		tracking.error_fresh = 0u;
+		if ((tracking.target_found_flag != 0u) &&
+		    (mf_absf(tracking.horizontal_error_normalized) < TRACKING_ERR_SAT_LEVEL))
+		{
+			Trk_RateFeed(tracking.horizontal_error_normalized);
+		}
+		else
+		{
+			/* 两种"有帧但不可用": 丢检(found=0, e 被置 0) 与 量程饱和(found=1 但 e 钉在 ±0.96)。
+			 * 前者让 |de/dt| 恒 0, 后者让重捕那一帧的跳变(实测 -9594 -> +9588)进窗 —— 都得清 */
+			Trk_RateClear();
+		}
+	}
 	if (tracking.frame_age_ms < (uint16_t)(0xFFFFu - CAR_TICK_MS))
 	{
 		tracking.frame_age_ms = (uint16_t)(tracking.frame_age_ms + CAR_TICK_MS);
@@ -372,21 +472,43 @@ uint8_t Tracking_ApplyOverlay(void)
 		}
 	}
 
-	/* ---- 进阈即刹(主判据): |e| 一进 ±阈 就刹, 不等符号翻转 ----
-	 * 提前量 = 停止距离(v·链路滞后 + v²/(2·BRAKE))折算到 e 域; 用 |e| 直接比, 不引入
-	 * 第二个几何标定。去抖按帧读(见 TRACKING_HOLD_TIME_MS 注释)。
+	/* ---- 进阈即刹(主判据): |e| 一进阈就刹, 不等符号翻转 ----
+	 * 阈 = max(固定阈, 预测阈)。预测阈把停止距离 v·L + v²/(2a) 用当前斜率折算到 e 域,
+	 * 只加不减 ⇒ 斜率不可用/没在接近时与固定阈逐拍等价(不会更晚刹)。
+	 * 去抖按帧读(见 TRACKING_HOLD_TIME_MS 注释)。
 	 * 只在咬靶区内计数 —— 否则段起点的误检(锁错目标 ⇒ e≈0)会把车从起步刹死 */
-	if ((abs_e <= TRACKING_ERROR_THRESHOLD) && (Tracking_InSlowZone(motion) != 0u))
 	{
-		tracking.hold_ms = (uint16_t)(tracking.hold_ms + CAR_TICK_MS);
-		if (tracking.hold_ms >= TRACKING_HOLD_TIME_MS)
+		float approach = -Trk_RateSlope();   /* >0 = |e| 在缩小 */
+		float thr = TRACKING_ERROR_THRESHOLD;
+
+		if ((TRACKING_PRED_EN != 0u) && (approach > TRACKING_ERR_MIN_SLOPE))
 		{
-			Tracking_BrakeStart(motion);
+			float lead;
+
+			if (approach > TRACKING_ERR_MAX_SLOPE)
+			{
+				approach = TRACKING_ERR_MAX_SLOPE;
+			}
+			lead = ((float)TRACKING_LAG_MS * 0.001f)
+			     + (mf_absf(motion->path.cur_speed) / (2.0f * TRACKING_BRAKE_MPS2));
+			if ((approach * lead) > thr)
+			{
+				thr = approach * lead;
+			}
 		}
-	}
-	else
-	{
-		tracking.hold_ms = 0u;
+		tracking.brake_thr = thr;
+		if ((abs_e <= thr) && (Tracking_InSlowZone(motion) != 0u))
+		{
+			tracking.hold_ms = (uint16_t)(tracking.hold_ms + CAR_TICK_MS);
+			if (tracking.hold_ms >= TRACKING_HOLD_TIME_MS)
+			{
+				Tracking_BrakeStart(motion);
+			}
+		}
+		else
+		{
+			tracking.hold_ms = 0u;
+		}
 	}
 
 	/* ---- 未收敛 FAULT(01): 段表已完 + |e| 持续超阈; 闩锁防重复上报 ---- */
@@ -447,6 +569,7 @@ void Tracking_GetInfo(Trk_Info_t *out)
 	out->reason       = tracking.fault_reason;
 	out->zero_sign    = tracking.zero_sign;
 	out->err_f10k     = (int16_t)(tracking.horizontal_error_normalized * TRACKING_ERROR_FIXED_SCALE);
+	out->thr_f10k     = (int16_t)(tracking.brake_thr * TRACKING_ERROR_FIXED_SCALE);
 	out->frame_age_ms = tracking.frame_age_ms;
 	out->hold_ms      = tracking.hold_ms;
 	__enable_irq();
