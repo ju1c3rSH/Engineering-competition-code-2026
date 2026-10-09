@@ -162,13 +162,13 @@ int16_t Hwt101_BootCalib(uint16_t seconds);
 #ifndef HWT101_CFG_MANUALCALI_EN
 #define HWT101_CFG_MANUALCALI_EN    1
 #endif
-/* 上电手动零偏的静止窗口(s)。协议本身对 MANUALCALI 只写"时长由用户决定", 但
+/* 上电手动零偏的静止窗口(s)。协议对 MANUALCALI 只写"时长由用户决定", 但
  * **模块内部按 GBAISTIME(0x4D, 出厂默认 0x000A = 10s) 计算零偏** —— 窗口短于它,
  * 退出时零偏可能还没算完(见 docs/坑-IMU零偏与长期漂移.md §6 阻塞项 5)。
- * 5s 是用户指定值: 比 10s 激进, 若实测 BIAS 不更新/漂移大, 优先怀疑此处太短,
- * 改大(如 10~12s)再看。改这一个数字即改窗口。 */
+ * 10s 与 GBAISTIME 默认值对齐, 保证模块算得完; 再想更稳可加到 12~15s。
+ * 改这一个数字即改窗口(上电总耗时随之变化, 看门狗在其后启动、不受影响)。 */
 #ifndef HWT101_CFG_CALIB_SECONDS
-#define HWT101_CFG_CALIB_SECONDS    5u
+#define HWT101_CFG_CALIB_SECONDS    10u
 #endif
 /* 帧率判定阈值：远高于出厂 10Hz 即认为 RRATE 已生效, 从而不写模块 Flash
  * (官方模块 Flash 有擦写寿命)。已达标就跳过写入。

@@ -563,7 +563,8 @@ void Car_ImuProbe_Task(void)
 	}
 }
 
-/* 上电 5s 手动零偏校准的结果行。**只能在 main 上电序列、Hwt101_BootCalib() 之后调一次**:
+/* 上电手动零偏校准的结果行(窗口 HWT101_CFG_CALIB_SECONDS 秒)。**只能在 main 上电
+ * 序列、Hwt101_BootCalib() 之后调一次**:
  * 此刻车静止、调试口已初始化(Fault_Boot_Report 同款先例)。打的是"这次校准算出的账面零偏"
  * (0x4C), 与 IMU: 行的 BIAS 同源但时机不同 —— 这一行是上电快照, 那行是运行期轮读。
  * BIA: 行落点见 docs/坑-IMU零偏与长期漂移.md §3.4。 */
