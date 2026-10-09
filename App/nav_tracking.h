@@ -60,7 +60,7 @@ typedef enum
  * 实测口径与反解见 docs/打靶段架构-刹停与续跑.md §10.15 */
 #define TRACKING_PRED_EN                1u      /* 0 = 关(回退现状) */
 #define TRACKING_LAG_MS                 80u     /* L: 视觉取像推理+转发+拍对齐(不含制动段); build_verify/calibrate_lag_ms.py 标定 */
-#define TRACKING_ERR_WIN                4u      /* 斜率窗口(帧)。两点差分噪声达均值 ±40%, 必须最小二乘 */
+#define TRACKING_ERR_WIN                6u      /* 斜率窗口(帧)。两点差分噪声达均值 ±40%, 必须最小二乘 */
 #define TRACKING_ERR_MIN_DT_MS          12u     /* 相邻样本最小间隔: 更密的重复帧不喂进窗口 */
 #define TRACKING_ERR_MIN_SPAN_MS        40u     /* 窗口最小跨度: 不足则判据不可用, 走固定阈 */
 #define TRACKING_ERR_MIN_SLOPE          0.02f   /* e/s: 接近速度低于它不预测(没在收敛, 提前量无意义) */
