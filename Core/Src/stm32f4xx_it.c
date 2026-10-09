@@ -41,6 +41,9 @@ __IO uint16_t UART6_RX_STA = 0;
  * 生产者: fputc(主循环) 与 HAL_UART_ErrorCallback(ISR); 消费者: Car_Debug_Stat_Print
  * 的 LINK 行(主循环, 1Hz)。均为单字读写, 无需临界区。 */
 volatile uint32_t Dbg2_TxFail_Cnt = 0u;   /* HAL_UART_Transmit 非 OK = 该字符没发出去 */
+volatile uint32_t Dbg2_RearmFail_Cnt = 0u; /* RX 重装失败次数: 转台命令的 printf 突发期
+ * fputc 持 huart2 锁, 期间到达的 IDLE 在 ISR 里重装会被拒(交给 TIM4 拍重试, 至多丢
+ * 一个 '?' 而已) —— RRF 增长即"机制被踩过", 持续哑掉才需警惕(旧固件无重试会永久哑) */
 volatile uint32_t Dbg2_RxErr_Cnt  = 0u;   /* USART2 RX 错误回调次数(ORE/FE/NE/PE) */
 
 
@@ -138,6 +141,7 @@ static void RxRearm(UART_HandleTypeDef *hu, uint8_t *buf, uint16_t size, uint8_t
   __disable_irq();
   if (HAL_UART_Receive_DMA(hu, buf, size) != HAL_OK)
   {
+    Dbg2_RearmFail_Cnt++;    /* LINK: 行 RRF= 观测: 重试机制被踩过几次 */
     rx_rearm_req |= bit;     /* 重装未成功: 下一 TIM4 拍重试 */
   }
   else

@@ -110,6 +110,7 @@ void Car_Debug_Stat_Print(void)
 {
 	extern volatile uint32_t Dbg2_TxFail_Cnt;   /* stm32f4xx_it.c: 调试口链路健康计数 */
 	extern volatile uint32_t Dbg2_RxErr_Cnt;
+	extern volatile uint32_t Dbg2_RearmFail_Cnt;
 	/* HWT101 全部诊断字段已收进驱动库的 hwt101_health_t(GetData/hwt101.c),
 	 * 经 Hwt101_Health() 取。原先在这里 extern 的 Hwt101_RateHz/RateBoot/YawSeq
 	 * 三个散量已删除 —— 它们现在是 health 的成员, 少三个跨层 extern。 */
@@ -219,10 +220,11 @@ void Car_Debug_Stat_Print(void)
 	       (unsigned)Emm_tx_fail_cnt,
 	       (unsigned)Emm_rx_cnt, (unsigned)Emm_reply_ok_cnt);
 	/* 调试口链路健康: MS=MCU uptime(空档后跳过整段=丢在 PC/线缆侧, 归小=MCU 复位过),
-	 * TF=发送失败次数, RXE=接收错误次数 */
-	printf("LINK:MS=%u TF=%u RXE=%u\r\n",
+	 * TF=发送失败次数, RXE=接收错误次数; RRF=RX 重装失败(仅行尾追加, 见 stm32f4xx_it.c) */
+	printf("LINK:MS=%u TF=%u RXE=%u RRF=%u\r\n",
 	       (unsigned)HAL_GetTick(),
-	       (unsigned)Dbg2_TxFail_Cnt, (unsigned)Dbg2_RxErr_Cnt);
+	       (unsigned)Dbg2_TxFail_Cnt, (unsigned)Dbg2_RxErr_Cnt,
+	       (unsigned)Dbg2_RearmFail_Cnt);
 	/* 控制链耗时(DWT 周期数换算 us): ISRTIME=距上次打印的最长 TIM4 回调(Car_Control 全链), 读后清零。
 	 * 4ms 拍验收: 必须 << 4000(建议 < 2500); 贴近 4000 = 拍溢出前兆(丢拍/控制抖动)。
 	 * 换 250Hz 拍的第一验收项, 见 docs/坑-编码器与里程.md §8.13 */
