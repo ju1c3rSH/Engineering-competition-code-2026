@@ -114,10 +114,12 @@ static void Nav_DoStop(void)
 static void Nav_Fault(void)
 {
 	mf_stop(mf_app());
+	Car_Dbg2_NavFltRecord(nav.nav_id);
+	Car_Event_Send(CAR_EVT_NAV_FAULT, nav.nav_id, CAR_FAULT_WATCHDOG);
 	nav.state = NAV_IDLE;
+	nav.nav_id = NAV_ID_NONE;
 	nav.last_done = NAV_ID_NONE;
 	nav.chain_to = NAV_ID_NONE;
-	Car_Event_Send(CAR_EVT_NAV_FAULT, nav.nav_id, CAR_FAULT_WATCHDOG);
 }
 
 void Car_Nav_Task(void)

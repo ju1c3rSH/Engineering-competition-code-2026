@@ -1,4 +1,4 @@
-﻿#include "interurp.h"
+#include "interurp.h"
 #include "protocol.h"
 #include "selftest.h"
 #include "hwt101.h"
@@ -147,7 +147,19 @@ static volatile struct
 	volatile uint8_t bench_fresh;
 	uint8_t  bench_kind;               /* 台架: 0=停转 1=+5° 2=-5° 3=直接打码 */
 	uint8_t  bench_arg;                /* bench_kind==3: 码 1~7 */
+	uint16_t navflt_cnt;               /* Nav_Fault 累计次数 */
+	uint8_t  navflt_id;                /* 最近一次 Nav_Fault 时的 nav_id */
+	volatile uint8_t navflt_fresh;
 } dbg2;
+
+void Car_Dbg2_NavFltRecord(uint8_t nav_id)
+{
+	__disable_irq();
+	dbg2.navflt_cnt++;
+	dbg2.navflt_id = nav_id;
+	dbg2.navflt_fresh = 1u;
+	__enable_irq();
+}
 
 /* 入队后的观测登记: ISR 与主循环双上下文都会调, 关中断保护计数字段 */
 static void Car_Dbg2_Record(uint8_t ack, uint8_t sub, uint8_t code)
@@ -455,9 +467,11 @@ void Car_DebugTask(void)
 	uint8_t  sub, code, evt, evt_echo, evt_q;
 	uint16_t txq_drop;
 	uint8_t  tt_kind, tt_code, bench_kind, bench_arg;
+	uint16_t navflt_n;
+	uint8_t  navflt_id;
 	float    tt_ang;
 	uint8_t  ack_f = 0u, nack_f = 0u, evt_f = 0u, query_f = 0u, periodic_f = 0u;
-	uint8_t  tt_f = 0u, bench_f = 0u, trace_f = 0u, imu_f = 0u;
+	uint8_t  tt_f = 0u, bench_f = 0u, trace_f = 0u, imu_f = 0u, navflt_f = 0u;
 
 	Hwt101_RateTask();   /* 0x53 帧率滚动统计: 每圈刷新, 与有没有敲 '?' 无关 */
 	__disable_irq();
@@ -475,6 +489,8 @@ void Car_DebugTask(void)
 	bench_kind  = dbg2.bench_kind;
 	bench_arg   = dbg2.bench_arg;
 	tt_ang   = dbg2.tt_ang;
+	navflt_n  = dbg2.navflt_cnt;
+	navflt_id = dbg2.navflt_id;
 	if (dbg2.ack_fresh != 0u)      { dbg2.ack_fresh = 0u;      ack_f = 1u; }
 	if (dbg2.nack_fresh != 0u)     { dbg2.nack_fresh = 0u;     nack_f = 1u; }
 	if (dbg2.evt_fresh != 0u)      { dbg2.evt_fresh = 0u;      evt_f = 1u; }
@@ -484,6 +500,7 @@ void Car_DebugTask(void)
 	if (dbg2.imu_fresh != 0u)      { dbg2.imu_fresh = 0u;      imu_f = 1u; }
 	if (dbg2.tt_fresh != 0u)       { dbg2.tt_fresh = 0u;       tt_f = 1u; }
 	if (dbg2.bench_fresh != 0u)    { dbg2.bench_fresh = 0u;    bench_f = 1u; }
+	if (dbg2.navflt_fresh != 0u)   { dbg2.navflt_fresh = 0u;   navflt_f = 1u; }
 	__enable_irq();
 
 	if (ack_f != 0u)
@@ -493,6 +510,10 @@ void Car_DebugTask(void)
 	if (nack_f != 0u)
 	{
 		printf("NACK:%02X/%02X #%u\r\n", sub, code, (unsigned)nack_n);
+	}
+	if (navflt_f != 0u)
+	{
+		printf("NAVFLT:id=%u #%u\r\n", (unsigned)navflt_id, (unsigned)navflt_n);
 	}
 	if (evt_f != 0u)   /* NAV_DONE/NAV_FAULT/TURN_DONE/TRACKING_DONE 上行回显 */
 	{

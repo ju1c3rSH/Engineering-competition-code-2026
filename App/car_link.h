@@ -17,6 +17,8 @@ void Car_Event_Send(uint8_t event, uint8_t echo, uint8_t reason);
 void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg);
 /* 作废上电静置期攒下的台架转台命令(bench_fresh): 实现 GetData/interurp.c */
 void Car_Dbg2_BenchDrop(void);
+/* Nav_Fault 观测登记(调试口 NAVFLT: 行): 实现 GetData/interurp.c */
+void Car_Dbg2_NavFltRecord(uint8_t nav_id);
 
 /* ---- HWT101(采样层驱动 GetData/hwt101.c)----
  * 这一层只留"壳函数"而非让 App 直接调驱动, 使依赖方向单一(换驱动/协议不动 App 调用点)。

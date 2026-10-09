@@ -124,6 +124,11 @@ void Turntable_Request(uint8_t turn_code)
 	float   angle;
 	float   prev_deg = Car_data.Motor_Angle;   /* 绝对定位: 上次目标=电机应已在的位置 */
 
+	if ((tt.busy != 0u) && (tt.code == turn_code))
+	{
+		return;
+	}
+
 	tt_arm = 0u;                     /* 更新期间冻结 TIM5 重发 */
 	switch (turn_code)
 	{
