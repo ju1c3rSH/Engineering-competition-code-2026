@@ -80,7 +80,7 @@ static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 
 };
 static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区(末段直线+重锚移入 rebase 表) */
 {
-	SEG_MOVE(V_STRAIGHT, MF_M_DIST(6.0f)),   /* 48.5 − 38: 与 tbl_target 成对, 见上 */
+	SEG_MOVE(V_STRAIGHT, MF_M_DIST(8.0f)),   /* 48.5 − 38: 与 tbl_target 成对, 见上 */
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag14) */
 	SEG_END
 };
@@ -90,7 +90,7 @@ static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区
 static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口重锚+末段直线进停点 */
 {
 	SEG_TURN_TO(NAV_REBASE_HOSTAGE_YAW_DEG),
-	SEG_MOVE_HD(V_KEEP_MID, MF_M_DIST(78.0f), NAV_REBASE_HOSTAGE_YAW_DEG),
+	SEG_MOVE_HD(V_KEEP_MID, MF_M_DIST(75.0f), NAV_REBASE_HOSTAGE_YAW_DEG),
 	SEG_END
 };
 /* 返程段/终点的绝对航向: 任务终点 YAW 严格 -180° —— 几何真值(GYRO_ZERO 定出发 0°, 反向即 -180°)。
@@ -108,7 +108,7 @@ static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口
 
 static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 */
 {
-	SEG_MOVE_HD(V_RETURN, MF_M_DIST(175.0f), NAV_RETURN_LEG_YAW_DEG),
+	SEG_MOVE_HD(V_RETURN, MF_M_DIST(178.0f), NAV_RETURN_LEG_YAW_DEG),
 #if NAV_RETURN_FINAL_REBASE_EN
 	SEG_TURN_TO(NAV_RETURN_LEG_YAW_DEG),   /* 终点姿态收尾: 注入 -180° 绝对真值 */
 #endif
@@ -129,7 +129,7 @@ static const mf_seg_t tbl_rebase_bomb[] =   /* NAV_REBASE_BOMB: 排爆区末段(
                                              * nav_entry_turn[6] 置 0 = 主控 NAV_DONE 后再发(=串行) */
 {
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),      /* 右 90: 原 tbl_bomb 表尾转弯 */
-	SEG_MOVE(V_SLOW_DOCK, MF_M_DIST(49.0f)),/* 末段低速进作业点 —— 不许提速 */
+	SEG_MOVE(V_SLOW_DOCK, MF_M_DIST(47.0f)),/* 末段低速进作业点 —— 不许提速 */
 	SEG_TURN_TO(NAV_REBASE_BOMB_YAW_DEG),                /* 对坑前重锚: 五个闭环 90° 弧的终点。
 	                                                      * 几何真值, 不掺补偿 —— 基准偏差统一走
 	                                                      * MF_HEADING_BIAS_DEG(见其定义处注释) */
