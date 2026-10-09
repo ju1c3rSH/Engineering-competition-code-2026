@@ -162,9 +162,11 @@ int16_t Hwt101_BootCalib(uint16_t seconds);
 #ifndef HWT101_CFG_MANUALCALI_EN
 #define HWT101_CFG_MANUALCALI_EN    1
 #endif
-/* 上电手动零偏的静止窗口(s)。协议本身**不规定时长**(它是"开始/结束"一对指令),
- * 该值即两者之间保持静止的秒数。5s 是"静止判定收敛"与"占用上电时间"的折中;
- * 越大零偏越稳(抗抖动), 越小上电越快。改这里即改窗口。 */
+/* 上电手动零偏的静止窗口(s)。协议本身对 MANUALCALI 只写"时长由用户决定", 但
+ * **模块内部按 GBAISTIME(0x4D, 出厂默认 0x000A = 10s) 计算零偏** —— 窗口短于它,
+ * 退出时零偏可能还没算完(见 docs/坑-IMU零偏与长期漂移.md §6 阻塞项 5)。
+ * 5s 是用户指定值: 比 10s 激进, 若实测 BIAS 不更新/漂移大, 优先怀疑此处太短,
+ * 改大(如 10~12s)再看。改这一个数字即改窗口。 */
 #ifndef HWT101_CFG_CALIB_SECONDS
 #define HWT101_CFG_CALIB_SECONDS    5u
 #endif

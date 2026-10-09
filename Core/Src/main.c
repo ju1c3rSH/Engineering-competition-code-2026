@@ -136,7 +136,9 @@ int main(void)
    * 两条命令官方标注免解锁免保存、不写 Flash。**必须在电机使能和任何运动之前**:
    * 此刻 Motor_Init() 已调但未使能驱动、且下面转台 BootZero/看门狗都还没到, 车物理静止,
    * 正是官方"机器人静止后进、运动前退"的推荐窗口。耗时 = 5s, 取代原先的 2s 裸静置。
-   * 零偏结果由回归层落 reg 槽, 调试口敲 i 看 IMU: 行的 BIAS 字段核对。 */
+   * ⚠ 5s 短于模块内部的 GBAISTIME(默认10s): 若实测 BIAS 不更新, 先加长
+   * HWT101_CFG_CALIB_SECONDS 再排查别处(见 docs/坑-IMU零偏与长期漂移.md §6 阻塞项5)。
+   * 零偏结果由回读层落 reg 槽, 调试口敲 i 看 IMU: 行的 BIAS 字段核对。 */
   (void)Hwt101_BootCalib(HWT101_CFG_CALIB_SECONDS);
   {
     /* 上电一次性快照这轮校准算出的账面零偏(全工程唯一 printf 出口在 car_obs.c;

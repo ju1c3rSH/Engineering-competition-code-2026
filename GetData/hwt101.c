@@ -213,7 +213,10 @@ int16_t Hwt101_BootCalib(uint16_t seconds)
 	Hwt101_ManualBias(1u);        /* 0xA6=1 进零偏采集 */
 	/* 官方 AGV 流程: 进/退之间保持静止。时长由本函数给, 期间车必须不动 ——
 	 * 电机此刻未使能(main() 序列保证), 轮速恒 0 ⇒ 静止前提成立。
-	 * 按 100ms 分片延时, 便于将来插看门狗喂狗而不改函数签名。 */
+	 * ⚠ 模块内部按 GBAISTIME(0x4D, 默认 10s) 计算零偏, 窗口短于它可能算不完
+	 * (见 docs/坑-IMU零偏与长期漂移.md §6 阻塞项 5)。seconds 由调用方定,
+	 * 默认 5s < 10s ⇒ 若回读到的 BIAS 不更新, 首先怀疑这里太短, 加长再试。
+	 * 分片延时(100ms/片), 便于将来插看门狗喂狗而不改函数签名。 */
 	for (i = 0u; i < (uint16_t)(seconds * 10u); i++)
 	{
 		HAL_Delay(100u);
@@ -221,15 +224,22 @@ int16_t Hwt101_BootCalib(uint16_t seconds)
 	Hwt101_ManualBias(0u);        /* 0xA6=4 退零偏, 锁定新的零偏参数 */
 
 	/* 回读 0x4C GYROBAIS 做账面核对(官方: 读寄存器免解锁、不写 Flash)。
-	 * 先声明上下文再发: 0x5F 是通用应答头, 不登记会被当版本号。等待窗口给足
-	 * 50ms(模块 200Hz 出帧时 0.43ms 就够, 但 HAL_GetTick 仅 1ms 分辨率)。
-	 * 结果由解析层异步填 reg_val[BIAS] 并置 fresh 位, 这里读回给调用方。 */
+	 * **先清 fresh 位再发**: 否则若该槽此前碰巧被读过, 50ms 内没收到应答时
+	 * Hwt101_RegFresh 仍是 1, 会把"上一次的陈旧值"当成本次校准结果(单槽误判,
+	 * 见 docs 单槽设计不可用)。清掉后 fresh=0 才是"这次真读到了"。
+	 * Hwt101_ReadReg 内部会 Hwt101_ExpectReg 登记上下文; 0x5F 是通用应答头,
+	 * 不登记会被当版本号。等待窗口给足 50ms(模块 200Hz 出帧时 0.43ms 就够,
+	 * 但 HAL_GetTick 仅 1ms 分辨率)。
+	 * **返回值语义**: 未回读到时返回 0 且 fresh 位保持 0; 调用方若要区分
+	 * "读到 0 零偏"与"没读到", 查 Hwt101_RegFresh(HWT101_RB_BIAS)
+	 * (Car_ImuBootCalib_Log 就是这么做的)。 */
+	health.reg_fresh = (uint16_t)(health.reg_fresh & (uint16_t)~(uint16_t)(1u << HWT101_RB_BIAS));
 	Hwt101_ReadReg((uint8_t)HWT101_REG_GYROBAIS);
 	HAL_Delay(50u);
 
 	if (!Hwt101_RegFresh((uint8_t)HWT101_RB_BIAS))
 	{
-		return (int16_t)0;        /* 没读到: 不置 fresh, 上层按"未知"处理 */
+		return (int16_t)0;
 	}
 	return Hwt101_RegRaw((uint8_t)HWT101_RB_BIAS);
 }
