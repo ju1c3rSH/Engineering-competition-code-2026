@@ -23,6 +23,7 @@ void Car_Obs_TraceArm(void);       /* 't': 武装段内瞬时跟踪(命中弧/�
 void Car_Obs_TraceTask(void);      /* 主循环每圈调: 武装态/采集态才有输出, 其余立即返回 */
 void Car_ImuProbe_Arm(void);       /* 'i': 启动 3s 陀螺仪观测窗口(轮读零偏/校准开关/峰峰/模式) */
 void Car_ImuProbe_Task(void);      /* 主循环每圈调: 窗口期内 5Hz 打一行 IMU */
+void Car_ImuBootCalib_Log(void);   /* main 上电: Hwt101_BootCalib() 之后打一行 BIA: 快照校准结果 */
 
 /* 控制拍 -> 观测层单向发布(TIM4 ISR 写, main 上下文读) */
 void Car_Obs_SetVx(int16_t path_mm, int16_t final_mm, uint8_t overlay);

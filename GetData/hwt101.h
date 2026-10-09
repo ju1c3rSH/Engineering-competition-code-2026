@@ -142,13 +142,31 @@ void Hwt101_ConfigRate(uint8_t rrate);  /* 写 RRATE 并保存（解锁→写→
 void Hwt101_ZeroYaw(void);              /* CALIYAW 归零：解锁→0x76 写 0→保存 */
 void Hwt101_ReadVersion(void);          /* 回读 0x2E 版本号（阻塞，结果进 Health） */
 void Hwt101_SetAutoCalib(uint8_t off);  /* NOAUTOCALI=0xA7：1 关自动零偏（免解锁） */
-void Hwt101_ManualBias(uint8_t start); /* MANUALCALI=0xA6：1 进/0 退零偏采集（免解锁） */
+void Hwt101_ManualBias(uint8_t start); /* MANUALCALI=0xA6：非0 进/0 退零偏采集（免解锁） */
+/* 上电零偏校准一站式封装: 关自动校准 → 进零偏 → 静置 seconds → 退零偏 → 回读 0x4C。
+ * 含 HAL_Delay(seconds*1000) 的阻塞, **只许 main() 上电静置期调用**; 其间车必须完全
+ * 静止(轮速=0 且电机未使能), 否则会把运动数据当零偏。返回回读到的 BIAS 原始码
+ * (int16, /1000 = °/s), 未回读到返回 0 且不置 fresh 位。 */
+int16_t Hwt101_BootCalib(uint16_t seconds);
 
 /* ---- 编译期开关（放这里是因为它们是"本库行为的一部分"） ---- */
 /* CALIYAW 归零会阻塞约 1.2s。单基准航向架构(MF_HEADING_FRAME_EN=1)下 GYRO_ZERO
  * 改用实测航向钉基准，物理归零只影响读数是否从 0 起。默认 0 = 不做这次归零。 */
 #ifndef HWT101_CFG_ZEROWAW_EN
 #define HWT101_CFG_ZEROWAW_EN       0
+#endif
+/* 上电手动零偏采集: 1 = 开(默认)。官方 AGV 流程的落地——车静止后 0xA6=1 进、
+ * 运动前 0xA6=4 退, 免解锁免保存、不写 Flash。上电静置期本就不动, 顺手做掉。
+ * 走手动零偏必须先关自动校准(见 Hwt101_BootCalib), 否则两者会互相打架。
+ * 置 0 可整体回退到"只有 Hwt101_Init + 2s 静置"的老行为, 便于 A/B。 */
+#ifndef HWT101_CFG_MANUALCALI_EN
+#define HWT101_CFG_MANUALCALI_EN    1
+#endif
+/* 上电手动零偏的静止窗口(s)。协议本身**不规定时长**(它是"开始/结束"一对指令),
+ * 该值即两者之间保持静止的秒数。5s 是"静止判定收敛"与"占用上电时间"的折中;
+ * 越大零偏越稳(抗抖动), 越小上电越快。改这里即改窗口。 */
+#ifndef HWT101_CFG_CALIB_SECONDS
+#define HWT101_CFG_CALIB_SECONDS    5u
 #endif
 /* 帧率判定阈值：远高于出厂 10Hz 即认为 RRATE 已生效, 从而不写模块 Flash
  * (官方模块 Flash 有擦写寿命)。已达标就跳过写入。

@@ -563,6 +563,20 @@ void Car_ImuProbe_Task(void)
 	}
 }
 
+/* 上电 5s 手动零偏校准的结果行。**只能在 main 上电序列、Hwt101_BootCalib() 之后调一次**:
+ * 此刻车静止、调试口已初始化(Fault_Boot_Report 同款先例)。打的是"这次校准算出的账面零偏"
+ * (0x4C), 与 IMU: 行的 BIAS 同源但时机不同 —— 这一行是上电快照, 那行是运行期轮读。
+ * BIA: 行落点见 docs/坑-IMU零偏与长期漂移.md §3.4。 */
+void Car_ImuBootCalib_Log(void)
+{
+	const hwt101_health_t *hw = Hwt101_Health();
+	char b_bias[16];
+
+	Imu_FmtRaw(b_bias, Hwt101_RegFresh(HWT101_RB_BIAS), Hwt101_RegRaw(HWT101_RB_BIAS), 1u);
+	printf("BIA:CAL=%us BIAS=%s TXF=%lu (未读到=该槽 fresh=0)\r\n",
+	       (unsigned)HWT101_CFG_CALIB_SECONDS, b_bias, (unsigned long)hw->tx_fail);
+}
+
 /* 整表重锚事件(YAWZERO, 每趟 GYRO_ZERO 打一行): BASE=置零时刻模块读数=本趟重锚基点;
  * 表里绝对角从此解释在"置零时刻车头=0"路线系, BASE 非 0 不再是问题(仍是"两趟差多少"读数)。
  * FEN=MF_HEADING_FRAME_EN(1=整表重锚 / 0=A/B 旧行为)。触发: mf_path 的 ref_seq 变化才打。 */

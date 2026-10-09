@@ -130,12 +130,28 @@ int main(void)
    * 但那 1.2s 纯是上电开销 ⇒ 需要"看数从 0 起"时置 1 即可。 */
   Hwt101_ZeroYaw();
 #endif
+#if HWT101_CFG_MANUALCALI_EN
+  /* 上电手动零偏采集: 关自动校准(0xA7=1) → 进零偏(0xA6=1) → 静置
+   * HWT101_CFG_CALIB_SECONDS(默认5s) → 退零偏(0xA6=4) → 回读 0x4C。
+   * 两条命令官方标注免解锁免保存、不写 Flash。**必须在电机使能和任何运动之前**:
+   * 此刻 Motor_Init() 已调但未使能驱动、且下面转台 BootZero/看门狗都还没到, 车物理静止,
+   * 正是官方"机器人静止后进、运动前退"的推荐窗口。耗时 = 5s, 取代原先的 2s 裸静置。
+   * 零偏结果由回归层落 reg 槽, 调试口敲 i 看 IMU: 行的 BIAS 字段核对。 */
+  (void)Hwt101_BootCalib(HWT101_CFG_CALIB_SECONDS);
+  {
+    /* 上电一次性快照这轮校准算出的账面零偏(全工程唯一 printf 出口在 car_obs.c;
+     * Fault_Boot_Report 同款"上电先例"外调) */
+    extern void Car_ImuBootCalib_Log(void);
+    Car_ImuBootCalib_Log();
+  }
+#else
 	HAL_Delay(2000);
+#endif
 	{
 		/* 转台上电零点对齐: 把驱动器"当前位置"清零(电机不动)并把 MCU 记账角对齐到同一
 		 * 物理姿态 —— 修"一条命令转好几圈"(绝对定位 + 从不回零, MCU 与驱动器零点脱节)。
 		 * 必须在 htim5 启动前调用: TIM5 一起就开始周期下发绝对位置了。
-		 * 放在 2.5s 静置之后, 等张大头驱动器上电自检完成。 */
+		 * 放在静置之后, 等张大头驱动器上电自检完成。 */
 		extern void Car_Turntable_BootZero(void);   /* Control_Car.c */
 		Car_Turntable_BootZero();
 	}
@@ -144,7 +160,8 @@ int main(void)
 
   /* 独立看门狗: LSI 32kHz/64 分频/重载 99 ≈ 198ms; Car_Control(TIM4 10ms) 末尾喂狗。
    * 控制环停摆(HardFault/跑飞/时钟失效)即复位, 防故障态履带保持最后占空比失控;
-   * 放在 2s 静置之后启动, 避免 HAL_Delay 期间被复位。调试器挂起时冻结不喂狗复位。
+   * **必须放在所有上电阻塞(Hwt101_BootCalib 的 5s 静置 / 原 2s)之后**启动, 否则
+   * HAL_Delay 期间没人喂狗会被复位。调试器挂起时冻结不喂狗复位。
    * 直接寄存器操作(HAL IWDG 模块未启用): prescaler=4×2^PR, PR=4 → /64 */
   DBGMCU->APB1FZ |= DBGMCU_APB1_FZ_DBG_IWDG_STOP;
   IWDG->KR = 0xCCCCU;                                   /* 启动 */

@@ -200,3 +200,36 @@ void Hwt101_ManualBias(uint8_t start)
 	}
 	HAL_Delay(10u);
 }
+
+int16_t Hwt101_BootCalib(uint16_t seconds)
+{
+	uint16_t i;
+
+	/* 顺序不可换: 必须先关自动校准再进手动零偏。反了的话模块内部的自动校准
+	 * 会在采集窗口里插一脚(官方: 自动校准"容易获取错误零偏"), 手动这次就白做。
+	 * 两条命令都免解锁免保存, 不写 Flash。 */
+	Hwt101_SetAutoCalib(1u);      /* 0xA7=1 关自动零偏 */
+
+	Hwt101_ManualBias(1u);        /* 0xA6=1 进零偏采集 */
+	/* 官方 AGV 流程: 进/退之间保持静止。时长由本函数给, 期间车必须不动 ——
+	 * 电机此刻未使能(main() 序列保证), 轮速恒 0 ⇒ 静止前提成立。
+	 * 按 100ms 分片延时, 便于将来插看门狗喂狗而不改函数签名。 */
+	for (i = 0u; i < (uint16_t)(seconds * 10u); i++)
+	{
+		HAL_Delay(100u);
+	}
+	Hwt101_ManualBias(0u);        /* 0xA6=4 退零偏, 锁定新的零偏参数 */
+
+	/* 回读 0x4C GYROBAIS 做账面核对(官方: 读寄存器免解锁、不写 Flash)。
+	 * 先声明上下文再发: 0x5F 是通用应答头, 不登记会被当版本号。等待窗口给足
+	 * 50ms(模块 200Hz 出帧时 0.43ms 就够, 但 HAL_GetTick 仅 1ms 分辨率)。
+	 * 结果由解析层异步填 reg_val[BIAS] 并置 fresh 位, 这里读回给调用方。 */
+	Hwt101_ReadReg((uint8_t)HWT101_REG_GYROBAIS);
+	HAL_Delay(50u);
+
+	if (!Hwt101_RegFresh((uint8_t)HWT101_RB_BIAS))
+	{
+		return (int16_t)0;        /* 没读到: 不置 fresh, 上层按"未知"处理 */
+	}
+	return Hwt101_RegRaw((uint8_t)HWT101_RB_BIAS);
+}
