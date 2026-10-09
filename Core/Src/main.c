@@ -119,7 +119,7 @@ int main(void)
 	/* 先等 HWT101 出流再配置: 它上电 ~200ms 内一帧不发, 采早了会把启动期低读成速率,
 	 * 而那个读数正是"要不要写模块 Flash"的判据(hwt101.c 的 Hwt101_MeasureYawHz) */
   HAL_Delay(500);
-  /* HWT101 全部初始化收进驱动库(GetData/hwt101.c): 测 0x53 帧率, 未达标才写 RRATE 到 200Hz(旧码两步合并为一次)。
+  /* HWT101 全部初始化收进驱动库(GetData/hwt101.c): 测 0x53 帧率, 未达标才写 RRATE 0x0B(本机实出 250Hz, 旧码两步合并为一次)。
    * 本函数含 HAL_Delay, 阻塞 ~500ms(已达标) ~1.3s(要写 RRATE 时), 只能在这里调 —— 中断内调会堵控制拍。 */
   Hwt101_Init();
 #if HWT101_CFG_ZEROWAW_EN

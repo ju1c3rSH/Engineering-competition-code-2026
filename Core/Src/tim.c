@@ -194,9 +194,11 @@ void MX_TIM4_Init(void)
   htim4.Instance = TIM4;
   htim4.Init.Prescaler = 840-1;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  /* 84MHz/840/500 = 200Hz(5ms一拍), 与 HWT101 的 200Hz 输出 1:1。推导见 docs/坑-编码器与里程.md §8.13。
-   * 同一份配置在 panzer.ioc 有副本, 改这里必须同步改那份 */
-  htim4.Init.Period = 500-1;
+  /* 84MHz/840/400 = 250Hz(4ms一拍), 与 HWT101 实际输出 250Hz(RRATE=250) 1:1。
+   * 2026-10-10 从 5ms/200Hz 改: 模块实出 250Hz(旧文档"200Hz 已配"前提有误, YF=250/200),
+   * 200Hz 拍对 250Hz 帧产生 25Hz 拍频, 两拍差分窗 8/12ms 交替 ⇒ RATE:W 恒定低读 0.8x(混叠)。
+   * 推导见 docs/坑-编码器与里程.md §8.13。同一份配置在 panzer.ioc 有副本, 改这里必须同步改那份 */
+  htim4.Init.Period = 400-1;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim4) != HAL_OK)

@@ -11,8 +11,9 @@
 
 #define M_PI_F 3.141592653589793f
 
-/* 控制拍周期: TIM4 5ms。段表斜坡、跟瞄制动、堵转看门狗共用同一值 */
-#define CAR_TICK_MS   5u
+/* 控制拍周期: TIM4 4ms(250Hz)。段表斜坡、跟瞄制动、堵转看门狗共用同一值。
+ * 2026-10-10 从 5ms/200Hz 改: 与 HWT101 实际 250Hz 帧率 1:1, 消除差分混叠(docs §8.13) */
+#define CAR_TICK_MS   4u
 
 /* 旧速度挡位(驱动轮转/秒) */
 #define Low_speed     1.5f

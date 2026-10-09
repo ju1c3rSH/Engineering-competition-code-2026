@@ -35,7 +35,7 @@ void Hwt101_RateTask(void)
 	}
 }
 
-/* 发一帧并等它出去。用轮询而非 DMA: IDLE 中断突发会调 HAL_UART_DMAStop(), 在 BUSY_TX 且 DMAT=1 时 Abort TX DMA ⇒ 掐断配置帧(模块 200Hz, 5字节窗口仅 0.43ms);
+/* 发一帧并等它出去。用轮询而非 DMA: IDLE 中断突发会调 HAL_UART_DMAStop(), 在 BUSY_TX 且 DMAT=1 时 Abort TX DMA ⇒ 掐断配置帧(模块 250Hz, 5字节窗口仅 0.43ms);
  * 本库从不发 DMA ⇒ DMAT 恒 0 ⇒ 该分支永不进, 轮询与 DMAStop 共存。超时 50ms(实际 0.43ms, 但 HAL_GetTick 仅 1ms 分辨率, 按 0.43ms 设必误判)。权衡见 docs/坑-DMAStop与轮询发送的权衡.md */
 static HAL_StatusTypeDef Hwt101_Tx(const uint8_t *cmd)
 {
@@ -114,7 +114,7 @@ void Hwt101_Init(void)
 	{
 		return;   /* 已达标: 别再写模块 Flash(它有擦写寿命) */
 	}
-	Hwt101_ConfigRate(HWT101_RRATE_200HZ);
+	Hwt101_ConfigRate(HWT101_RRATE_200HZ);   /* 官方码表 0x0B=200Hz; 本机固件非标, 实出 250Hz(以 HWT:RRATE 实测为准) */
 	health.rate_boot = Hwt101_MeasureYawHz();   /* 复验: 不达标会经 HWT: 行暴露 */
 	health.rate_hz   = health.rate_boot;
 }
@@ -227,7 +227,7 @@ int16_t Hwt101_BootCalib(uint16_t seconds)
 	 * Hwt101_RegFresh 仍是 1, 会把"上一次的陈旧值"当成本次校准结果(单槽误判,
 	 * 见 docs 单槽设计不可用)。清掉后 fresh=0 才是"这次真读到了"。
 	 * Hwt101_ReadReg 内部会 Hwt101_ExpectReg 登记上下文; 0x5F 是通用应答头,
-	 * 不登记会被当版本号。等待窗口给足 50ms(模块 200Hz 出帧时 0.43ms 就够,
+	 * 不登记会被当版本号。等待窗口给足 50ms(模块 250Hz 出帧时 0.43ms 就够,
 	 * 但 HAL_GetTick 仅 1ms 分辨率)。
 	 * **返回值语义**: 未回读到时返回 0 且 fresh 位保持 0; 调用方若要区分
 	 * "读到 0 零偏"与"没读到", 查 Hwt101_RegFresh(HWT101_RB_BIAS)

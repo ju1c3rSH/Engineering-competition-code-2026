@@ -13,7 +13,7 @@
 //串口数据存储数组
 #define RXbuffer1_size     8
 #define RXbuffer2_size     10
-/* 128: RRATE=200Hz 时模块连续出流(0x52+0x53 各 11B), 一个 IDLE 突发实测多为单帧 11B、
+/* 128: RRATE=250Hz 时模块连续出流(0x52+0x53 各 11B), 一个 IDLE 突发实测多为单帧 11B、
  * 两帧粘连时 22B; 旧值 44 只容 2 个突发就写满触发 DMA 停摆(丢帧, 靠下一拍 RxRearm 恢复),
  * 128 ≈ 数个突发的余量。解析按**实际突发长度**扫描, 不依赖 22B 这个经验值 */
 #define RXbuffer3_size     128

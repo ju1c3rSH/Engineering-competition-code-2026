@@ -14,11 +14,32 @@ uint8_t Rxbuffer3[RXbuffer3_size] = {0};
 uint8_t Rxbuffer6[RXbuffer6_size] = {0};
 uint8_t Rxbuffer4[RXbuffer4_size] = {0};
 
+/* TIM4 回调最大耗时(DWT 周期计数, 168MHz; 观测口读后清零): 换 4ms 拍的前置验收 ——
+ * 控制链(CarSense 采样→Nav→tx 泵→mf_tick→输出)最大耗时必须远小于 4000us,
+ * 贴近即拍溢出前兆。car_obs.c 的 CPU: 行消费, 声明在 car_link.h(跨层接缝)。 */
+volatile uint32_t Car_Isr_Cyc_Max = 0u;
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-	if(htim->Instance == TIM4)      //10ms定时器
+	if(htim->Instance == TIM4)      //4ms定时器(250Hz, 2026-10-10 从 5ms 改)
 	{
+		static uint8_t dwt_on = 0u;
+		uint32_t c0, cyc;
+
+		if (dwt_on == 0u)   /* DWT CYCCNT 使能一次即可, 之后自由运行 */
+		{
+			CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+			DWT->CYCCNT = 0u;
+			DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+			dwt_on = 1u;
+		}
+		c0 = DWT->CYCCNT;
 		Car_Control();
+		cyc = DWT->CYCCNT - c0;
+		if (cyc > Car_Isr_Cyc_Max)
+		{
+			Car_Isr_Cyc_Max = cyc;
+		}
 	}
 	else if(htim->Instance == TIM5)
 	{

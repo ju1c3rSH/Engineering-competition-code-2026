@@ -19,6 +19,8 @@ void Car_Dbg2_TtRecord(uint8_t kind, uint8_t code, float angle_deg);
 void Car_Dbg2_BenchDrop(void);
 /* Nav_Fault 观测登记(调试口 NAVFLT: 行): 实现 GetData/interurp.c */
 void Car_Dbg2_NavFltRecord(uint8_t nav_id);
+/* TIM4 回调最大耗时(DWT 原始周期数; 观测口读后清零): 实现 GetData/interurp.c, car_obs.c CPU: 行消费 */
+extern volatile uint32_t Car_Isr_Cyc_Max;
 
 /* ---- HWT101(采样层驱动 GetData/hwt101.c)----
  * 这一层只留"壳函数"而非让 App 直接调驱动, 使依赖方向单一(换驱动/协议不动 App 调用点)。

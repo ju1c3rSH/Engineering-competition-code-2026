@@ -223,6 +223,15 @@ void Car_Debug_Stat_Print(void)
 	printf("LINK:MS=%u TF=%u RXE=%u\r\n",
 	       (unsigned)HAL_GetTick(),
 	       (unsigned)Dbg2_TxFail_Cnt, (unsigned)Dbg2_RxErr_Cnt);
+	/* 控制链耗时(DWT 周期数换算 us): ISRTIME=距上次打印的最长 TIM4 回调(Car_Control 全链), 读后清零。
+	 * 4ms 拍验收: 必须 << 4000(建议 < 2500); 贴近 4000 = 拍溢出前兆(丢拍/控制抖动)。
+	 * 换 250Hz 拍的第一验收项, 见 docs/坑-编码器与里程.md §8.13 */
+	{
+		uint32_t cyc = Car_Isr_Cyc_Max;
+		Car_Isr_Cyc_Max = 0u;   /* 读后清零: 每个打印窗口报最差值, 不丢毛刺 */
+		printf("CPU:ISRTIME=%u/4000us\r\n",
+		       (unsigned)(cyc / (SystemCoreClock / 1000000u)));
+	}
 	/* HWT101 链路健康(hwt101_health_t): RRATE=当前 0x53 帧率 / BOOT=上电采样 / SEQ=帧计数(不涨即断流)
 	 * / BAD=校验失败 / XOK/XBAD=交叉校验通过/丢弃 / TXF=配置帧发送失败 / VER=版本。
 	 * 判"速率配置生效": RRATE≈200 已配 / ≈10 出厂默认 / 0 没通; TXF≠0=配置帧没发出(写寄存器单向无 ACK)。
@@ -256,7 +265,7 @@ void Car_Debug_Stat_Print(void)
 	/* 弧几何观测(RAD): RSP=设定半径 v/|wz_sp|; RM=实测 v/|ω_meas|; REF=库内同间隔实测半径(mf_odom.c);
 	 * RV=REF 新鲜; KH=对象增益 ω_meas/ω_out; YF=**帧数/拍数原始比值 dq/dtk**(如 200/200), 不是百分比。
 	 * 务必打原始比值: 百分比把 1:1 健康值压成 100, 正落在"丢帧/<100=故障"边界, 丢帧变 99 误判;
-	 * 原始比值里丢帧显为 199/200 一眼可辨(200Hz 改拍后 YF 恒 N/N)。判半径只认 RM/REF/R 或卷尺(§8)。 */
+	 * 原始比值里丢帧显为 199/250 一眼可辨(拍率对齐 250Hz 后 YF 恒 N/N)。判半径只认 RM/REF/R 或卷尺(§8)。 */
 	{
 		static uint32_t yf_seq, yf_tick, yf_ms, yf_dq, yf_dtk;
 		uint32_t tick_now = ri.n_ok + ri.n_stale + ri.n_sign;

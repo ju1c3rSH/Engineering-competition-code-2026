@@ -49,11 +49,16 @@
 #define HWT101_REG_PGSCALE    0x50u   /* Z 轴标定因素 P */
 #define HWT101_REG_GSCALERANGE 0x52u  /* Z 轴校准角度 */
 
-/* ---- RRATE 取值（官方枚举） ---- */
+/* ---- RRATE 取值（官方枚举, 唯一权威: 语雀 HWT101 TTL 协议页 wit-motion.yuque.com/wumwnr/ltst03/seuiba） ----
+ * 2026-10-10 复核官方协议: 0x0B=200Hz, 0x0C=500Hz, 0x0D=1000Hz —— **协议里没有 250Hz 档**。
+ * (同日曾误"勘误"为 0x0C=250Hz, 已回退 —— 教训: 动码表前先查官方协议原文, 见坑文档 §8.14)
+ * 现场这台模块实测稳定出 250Hz(HWT:RRATE=250): 属该机固件的非标行为, 配置写 0x0B 实出 250Hz。
+ * 码表以协议为准, **实际帧率以 HWT:RRATE / YF 实测为准**(FRAME_DT_S 跟实测走)。 */
 #define HWT101_RRATE_10HZ     0x06u   /* 出厂默认 */
 #define HWT101_RRATE_100HZ    0x09u
-#define HWT101_RRATE_200HZ    0x0Bu   /* 本工程目标值 */
-#define HWT101_RRATE_500HZ    0x0Cu   /* 500Hz 在 115200 下占用率过高，勿用（见 docs §8.11） */
+#define HWT101_RRATE_200HZ    0x0Bu   /* 本工程写入目标(本机实出 250Hz, 见上) */
+#define HWT101_RRATE_500HZ    0x0Cu   /* 500Hz: 22B/帧*500≈11kB/s 顶满 115200 链路, 勿用（见 docs §8.11） */
+#define HWT101_RRATE_1000HZ   0x0Du   /* 1000Hz: 同上更甚, 勿用 */
 
 /* ---- BAUD 取值 ---- */
 #define HWT101_BAUD_115200    0x06u   /* 本工程 USART3 固定值；模块出厂是 0x02=9600 */
@@ -170,13 +175,16 @@ int16_t Hwt101_BootCalib(uint16_t seconds);
 #ifndef HWT101_CFG_CALIB_SECONDS
 #define HWT101_CFG_CALIB_SECONDS    10u
 #endif
-/* 帧率判定阈值：远高于出厂 10Hz 即认为 RRATE 已生效, 从而不写模块 Flash
+/* 帧率判定阈值：达到目标帧率附近即认为 RRATE 已生效, 从而不写模块 Flash
  * (官方模块 Flash 有擦写寿命)。已达标就跳过写入。
- * 该值同时**必须保证 HWT101_FRAME_DT_S 成立**: 交叉校验的分母按 200Hz 折算,
- *   若放行 100Hz, 真实 Δt=10ms 而分母按 5ms ⇒ yaw_rate 是真值的 2 倍 ⇒ 弧段
- *   每帧都被判不一致。取 180: 只有真正接近 200Hz 才放行。 */
+ * 该值同时**必须保证 HWT101_FRAME_DT_S 成立**: 交叉校验的分母按 250Hz(实测)折算,
+ *   若放行 100Hz, 真实 Δt=10ms 而分母按 4ms ⇒ yaw_rate 是真值的 2.5 倍 ⇒ 弧段
+ *   每帧都被判不一致。取 230: 本机 250Hz 放行(免写 Flash); 若掉回出厂 10Hz 则补写
+ *   0x0B(本机实出 250Hz, 见 RRATE 枚举注)。注意: 若哪天换上一台**标准**模块(0x0B 实出
+ *   200Hz), 它 <230 每次上电都会补写一次且 FRAME_DT_S 失配 —— 那是换硬件的信号,
+ *   到时按新机实测帧率改 FRAME_DT_S 与控制拍, 别硬凑这组数。 */
 #ifndef HWT101_RATE_TARGET_HZ
-#define HWT101_RATE_TARGET_HZ       180u
+#define HWT101_RATE_TARGET_HZ       230u
 #endif
 /* 帧率统计窗口(ms) */
 #ifndef HWT101_RATE_WIN_MS
@@ -185,7 +193,7 @@ int16_t Hwt101_BootCalib(uint16_t seconds);
 /* 交叉校验：|ψ̇_0x52 − Δψ/Δt| 超过此值即判该 Wz 不可信(deg/s)。0 = 关闭。
  * 取 12 而非更大: WzL 单字节全翻转的最大偏差 = 255×(2000/32768) ≈ 15.6dps,
  * 容差必须显著小于它才有意义; 同时远大于两路正常时的量化噪声
- * (航向 1LSB ≈ 0.0055°, /5ms ≈ 1.1dps), 不会误报。 */
+ * (航向 1LSB ≈ 0.0055°, /4ms ≈ 1.4dps), 不会误报。 */
 #ifndef HWT101_XCHK_EN
 #define HWT101_XCHK_EN              1
 #endif
@@ -199,12 +207,12 @@ int16_t Hwt101_BootCalib(uint16_t seconds);
 #ifndef HWT101_XCHK_MIN_DPS
 #define HWT101_XCHK_MIN_DPS         40.0f
 #endif
-/* 0x52/0x53 的帧间隔(s): 模块每周期各发一帧, RRATE=200Hz ⇒ 5ms。
- * 必须与 HWT101_RATE_TARGET_HZ 一致(那个阈值的作用之一就是保证这点):
- *   改速率时同步改这里, 否则交叉校验的 Δψ/Δt 分母错, 表现为"好好的链路被
- *   大量丢弃"。HWT: 行可核对实际 RRATE。 */
+/* 0x52/0x53 的帧间隔(s): 模块每周期各发一帧, 实测 RRATE=250Hz ⇒ 4ms。
+ * 2026-10-10 从 0.005f 改: 模块实出 250Hz(旧文档"200Hz 已配"前提有误), 分母不改则交叉校验
+ * 的 Δψ/Δt 低读 0.8x, 弧上大批丢样(XBAD 随弧爬升 ~20/条)。
+ * 注意它按**模块实际帧率**填, 不随控制拍自动变; HWT: 行可核对实际 RRATE。 */
 #ifndef HWT101_FRAME_DT_S
-#define HWT101_FRAME_DT_S           0.005f
+#define HWT101_FRAME_DT_S           0.004f
 #endif
 
 #endif /* __HWT101_H__ */

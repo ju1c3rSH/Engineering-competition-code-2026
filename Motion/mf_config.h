@@ -47,15 +47,19 @@
 #endif
 
 #ifndef MF_DT_S
-/* 控制周期(panzer TIM4=5ms)。改周期必须同步核对 4 处(清单见 §8.13): ① panzer.ioc TIM4.Period
+/* 控制周期(panzer TIM4=4ms/250Hz, 2026-10-10 从 5ms 改, 对齐 HWT101 实际 250Hz 帧率)。
+ * 改周期必须同步核对 5 处(清单见 §8.13): ① panzer.ioc TIM4.Period
  * (CubeMX 重生成源头, 漏改静默回退) ② MF_WZ_RATE_FB_TICKS ③ MF_REFF_STALE_TICKS(保 1.0s 语义)
- * ④ App/car_units.h 的 CAR_TICK_MS。CARSENSE_WZ_DIFF_TICKS **不随本宏缩放**(受 Car_Sense.c
+ * ④ App/car_units.h 的 CAR_TICK_MS ⑤ GetData/hwt101.h 的 HWT101_FRAME_DT_S(交叉校验分母, 按
+ * **模块实际帧率**填, 不随本宏自动变)。CARSENSE_WZ_DIFF_TICKS **不随本宏缩放**(受 Car_Sense.c
  * 固定两样本实现约束, 见该文件注释)。 */
-#define MF_DT_S             0.005f
+#define MF_DT_S             0.004f
 #endif
 
-/* 航向差分窗口**上限**(拍)= 每拍帧数最简分数的分母; 现 200Hz÷200Hz=1:1 零交替, 故 mf_pid 的
- * d_win 恒 1(采样层从未下发 yaw_diff_win), 航向微分项现配置下实际为逐拍差分, 正确。
+/* 航向差分窗口**上限**(拍)= 每拍帧数最简分数的分母; 现 250Hz 拍 ÷ 250Hz 帧 = 1:1 零交替
+ * (2026-10-10 从 200Hz 拍 ÷ 250Hz 帧的 4:5 失配改齐 —— 那时两拍差分窗 8/12ms 交替,
+ * W 恒定低读 0.8x), 故 mf_pid 的 d_win 恒 1(采样层从未下发 yaw_diff_win), 航向微分项
+ * 现配置下实际为逐拍差分, 正确。
  * 本宏只是**上限**: 实际窗口由 Car_Sense.c 的 CARSENSE_WZ_DIFF_TICKS 决定(改成 1 会让反馈翻倍 2 倍)。§8.6/§8.11/§8.13 */
 #ifndef MF_YAW_DIFF_WIN_MAX
 #define MF_YAW_DIFF_WIN_MAX   4
@@ -164,7 +168,7 @@
 #endif
 
 /* ============ 弧实测半径 R_eff = Σ轮位移 / |ΣΔψ|（观测口径, 实车标定项） ============
- * 必须"同间隔": 航向是 0x53 帧到达才步进的零阶保持值, 控制拍 200Hz(5ms); 位移每拍累加、航向只在收新帧时推进。
+ * 必须"同间隔": 航向是 0x53 帧到达才步进的零阶保持值, 控制拍 250Hz(4ms); 位移每拍累加、航向只在收新帧时推进。
  * 结算阈值 3° ⇒ 弧上(43dps)约 70ms 一次、整条 90° 弧约 30 次; 0.0055° 航向量化误差摊到 3° 仅 0.18%。
  * 用途: ① 观测(调试口 RAD: 行) ② 供里程计形状与速率内环前馈 1/k̂。 */
 #ifndef MF_REFF_MIN_DYAW_DEG
@@ -196,7 +200,7 @@
 #define MF_REFF_IMPLAUSIBLE_M  (MF_REFF_MAX_M * 1.5f)
 #endif
 #ifndef MF_REFF_STALE_TICKS
-#define MF_REFF_STALE_TICKS    200u    /* 这么久没**成功结算**即判"当前没有新鲜半径"(≈1.0s @200Hz) */
+#define MF_REFF_STALE_TICKS    250u    /* 这么久没**成功结算**即判"当前没有新鲜半径"(=1.0s @250Hz; 换拍 5→4ms 时从 200 同步改) */
 #endif
 
 /* ================= 段间残差结转（置 0 = 原行为；本项目不推荐开） ================= */
@@ -273,7 +277,8 @@
 #error "mf_config.h: MF_WZ_RATE_FB_TIMEOUT_MS 不能小于一个控制拍"
 #endif
 /* 浮点除数恒 ≥1 才安全(否则除零)。#if 里无法对浮点做 (uint32_t) 转换, 只能转成运行时断言;
- * 当前 MF_DT_S = 0.005f 精确舍入为 5.0, 已由反汇编(CMP #0x45 = 70 拍)确认 */
+ * 当前 MF_DT_S = 0.004f: 0.004f*1000 = 4.0000002 同样精确舍入为 4, FB_TICKS = 350/4 = 87
+ * (0.005f 时代为 5.0/70 拍, 反汇编 CMP #0x45 确认过; 换 4ms 后应复核为 CMP #0x57) */
 /* 一阶低通(Hz): 太狠会吃掉内环相位裕度。15Hz 对应差分噪声 0.5dps -> 约 0.2dps */
 #ifndef MF_WZ_RATE_LPF_HZ
 #define MF_WZ_RATE_LPF_HZ 15.0f
