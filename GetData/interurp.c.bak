@@ -1,4 +1,4 @@
-﻿#include "interurp.h"
+#include "interurp.h"
 #include "protocol.h"
 #include "selftest.h"
 #include "hwt101.h"
@@ -513,7 +513,7 @@ void Car_DebugTask(void)
 	}
 	if (navflt_f != 0u)
 	{
-		printf("NAVFLT:id=%u #%u\r\n", (unsigned)navflt_id, (unsigned)navflt_cnt);
+		printf("NAVFLT:id=%u #%u\r\n", (unsigned)navflt_id, (unsigned)navflt_n);
 	}
 	if (evt_f != 0u)   /* NAV_DONE/NAV_FAULT/TURN_DONE/TRACKING_DONE 上行回显 */
 	{
