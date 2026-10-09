@@ -8,15 +8,14 @@
  * 直行/弧线统一降到 5转/s²(≈2.36m/s², 0.4s 拉满 0.94m/s), 削起步浪涌 */
 #define SEG_ACC_MPS2  MF_M_ACC(5.0f)
 
-/* 档位(2026-10-07 实车复测后)。mf_config.h 的 MF_WZ_RATE_OUT_HEADROOM 已从 1.8 抬到 3.0(=450dps),
- * 弯道角速度指令发得出去, 但**弯道速度不能给满**: 外侧轮需求 = v×(1+TRIM·轨距/(2R·k))
- * = v×1.3455, 给满 High(1.414) ⇒ 外轮要1.90m/s 远超v_free⇒ duty 顶格、实际车速被钳在
- * ~1.05, 而 wz 前馈仍按指令1.414 算 ⇒ 车速没上去角速度给多 ⇒ 半径偏小、转过头超调。
- * 实测两趟印证: 六个弧 R=937~959 均值943(名义942.5), 提速后无超调。
- * 直道无差速需求、外轮需求=v 本身, 可高于弯道。
- * 扫描依据(两种 v_free 口径都 PASS, 判据终点<=120mm): diag_speed_ceiling.py */
-#define V_STRAIGHT   MF_M_SPEED(3.10f)        /* 直道1.461: 前段有弧, 出弧车速不足会带偏下一弧 */
-#define V_ARC        MF_M_SPEED(2.20f)        /* 弯道1.036: 贴外轮饱和临界(v_free/1.3455)之下 */
+/* 档位(2026-10-09 全程降档): 所有路径(直行 MOVE 段)统一 Middle(0.943m/s),
+ * 所有转弯(ARC 弧段)统一 Low(0.707m/s)。此前的分档标定结论如下, 提速前须重验:
+ * 弯道速度不能给满: 外侧轮需求 = v×(1+TRIM·轨距/(2R·k))
+ * = v×1.3455, 给满 ⇒ 外轮超 v_free ⇒ duty 顶格 ⇒ 车速被钳、wz 前馈按指令算
+ * ⇒ 半径偏小、转过头超调。直道无差速需求, 可高于弯道。
+ * 扫描判据(终点<=120mm): diag_speed_ceiling.py */
+#define V_STRAIGHT   MF_M_SPEED(Middle_speed) /* 直道: 全程统一中速 */
+#define V_ARC        MF_M_SPEED(Low_speed)    /* 转弯: 全程统一低速 */
 #define V_KEEP_MID   MF_M_SPEED(Middle_speed) /* 保持原速: 人质末段(见该表注) */
 #define V_SLOW_ENTRY MF_M_SPEED(Middle_speed) /* 首段过减速带 */
 #define V_SLOW_DOCK  MF_M_SPEED(Low_speed)    /* 末段低速进作业点, 横向精度靠它 */
@@ -25,7 +24,7 @@
  * 那 2.5m 的 5.556s 是固定开销(任何档位都省不掉); 可省的只有前 4.286m。
  * 阶跃风险已核: 现 0.943->0.45 的轮速环duty 本就饱和在 -1.00 且实测稳定,提到 1.461 只是
  * err 从 -0.49 变 -1.01, duty 同样饱和 => 环路行为不变。 */
-#define V_TARGET     MF_M_SPEED(3.10f)        /* 打靶直线大段: 与直道同档, 咬靶区自动压速 */
+#define V_TARGET     MF_M_SPEED(Middle_speed) /* 打靶直线大段: 与直道同档(中速), 咬靶区自动压速 */
 
 /* nav_id 段表: 原 flags 路线逐段复刻(基线 git 4f3ceb2 true_BOOM_Finish) */
 #define SEG_MOVE(v, d)  { .type = MF_SEG_MOVE_DIST, .reset_pid = 1, \
@@ -71,8 +70,8 @@ static const mf_seg_t tbl_bucket[] =      /* NAV_TO_BUCKET: 桶与排爆作业�
  * 刹停判据永不成立)。与 tbl_hostage 首段**成对改**: 加多少减多少, 净和 223.5 不变, 否则
  * 90° 弧起点整体前移、落点横向偏同样距离。
  * 推导(E≈2300 反解/窗口公式)与验证法: docs/坑-运动与导航.md §6
- * 2026-10-07: 给 V_TARGET(3.10转/s=1.461)。此前按"要给跟瞄留收敛窗口"保持 Middle 是
- * 过度保守 —— 咬靶区那2.5m 由 TRACKING_SLOW_MPS=0.45 恒定压住, 与段表档位无关 */
+ * 2026-10-07 曾给 V_TARGET 3.10(=1.461m/s); 2026-10-09 全程降档改回 Middle ——
+ * 咬靶区那2.5m 由 TRACKING_SLOW_MPS=0.45 恒定压住, 与段表档位无关 */
 static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 */
 {
 	SEG_MOVE(V_TARGET, MF_M_DIST(216.0f)),
@@ -99,12 +98,10 @@ static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口
  * docs/坑-运动与导航.md §6 + Motion/README.md「返程与终点航向」。 */
 #define NAV_RETURN_LEG_YAW_DEG     (-179.4f)
 #define NAV_RETURN_FINAL_REBASE_EN 1u
-/* 返程腿(2026-10-07): 纯直线无弧, 外轮需求=v 本身, 无饱和顾虑。
- * 必须**跨过饱和点**: 该腿末端接 SEG_TURN_TO(v_next=0), 全程受 v_stop 抛物线钳制,
- * v_stop=sqrt(2*acc*MF_STOP_DECEL_SCALE*remain)。巡航 v 只在 remain > v²/(2*1.414) 时有效,
- * 故提速收益随 v 增大而衰减(实测: 2.00->3.10 省1.82s, 3.10->3.90 只再省 0.09s 后饱和)。
- * 3.50 制动距离 0.962m, 占该腿 5.498m 的 18%, 余量充足。 */
-#define V_RETURN     MF_M_SPEED(3.50f)        /* 返程1.649 */
+/* 返程腿: 纯直线无弧, 统一中速。v_stop 抛物线钳制仍在(巡航 v 只在
+ * remain > v²/(2*1.414) 时有效), Middle=2.00 时制动距离约 0.40m, 余量充足。
+ * 2026-10-07 的提速扫描(2.00->3.10/3.50)结论作废, 提速前须重验。 */
+#define V_RETURN     MF_M_SPEED(Middle_speed) /* 返程: 全程统一中速 */
 
 static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 */
 {
