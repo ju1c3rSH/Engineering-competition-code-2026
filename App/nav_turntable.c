@@ -206,9 +206,20 @@ void Turntable_GetInfo(Tt_Info_t *out)
 
 /* ---- 台架直转调试(USART2 'w'/'e'/'1'~'7'/'x', 经 Car_DebugTask 主循环执行):
  * 绕过 UART4 协议与状态机, 单独验证 TIM5 重发 -> UART6 DMA -> 驱动器链路。
- * 微调不置 tt.busy —— 台架期间不发 TURN_DONE 事件, 不会误喂 Brain 状态机 */
+ * 微调不置 tt.busy —— 台架期间不发 TURN_DONE 事件, 不会误喂 Brain 状态机。
+ * TURNTABLE_BENCH_EN=0(car_config.h, 比赛默认): 整条台架链路 early-return ——
+ * 裸单字节无校验, 调试口噪声曾被当 '1'~'7' 执行(仅上电十几秒后转盘自旋);
+ * 'x' 也必须挡: 噪声会掐断协议驱动的合法转台动作 */
+#if !TURNTABLE_BENCH_EN
+/* 打一行 TT:STOP(台架上可见"被拒") 后直接返回; 三个 Bench 入口均为 void 函数 */
+#define TT_BENCH_GATE()   do { Car_Dbg2_TtRecord(0u, 0u, Car_data.Motor_Angle); return; } while (0)
+#else
+#define TT_BENCH_GATE()   do { } while (0)
+#endif
+
 void Car_Turntable_BenchNudge(float delta_deg)
 {
+	TT_BENCH_GATE();
 #if !TURNTABLE_ENABLE
 	(void)delta_deg;   /* 转台冻结: 台架微调亦不开电机 */
 	return;
@@ -223,12 +234,14 @@ void Car_Turntable_BenchNudge(float delta_deg)
 
 void Car_Turntable_BenchCode(uint8_t turn_code)
 {
+	TT_BENCH_GATE();
 	Turntable_Request(turn_code);   /* 走协议同款码表, 含 TT 事件登记 */
 	tt.busy = 0u;                   /* 台架不播出 TURN_DONE: 挂着链路时不误推进 Brain */
 }
 
 void Car_Turntable_BenchStop(void)
 {
+	TT_BENCH_GATE();
 	Turntable_Stop();
 }
 

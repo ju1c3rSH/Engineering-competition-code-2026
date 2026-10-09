@@ -24,6 +24,14 @@
 #define NAV_CHAIN_4_TO           8u   /* NAV_TO_HOSTAGE(4) 跑完自动续跑 NAV_REBASE_HOSTAGE(8) */
 #endif
 
+/* 转台调试口禁令: 0 = 屏蔽 USART2 台架直转('x''w''e''1'~'7'), 1 = 台架标定时打开。
+ * 必须默认 0: 台架链路是裸单字节、无帧无校验, 仅 panzer 上电时 USART2 RX 悬空/受扰,
+ * 噪声字节被 Uart2_task 逐字节扫描, 恰为 '1'~'7'/'w'/'e' 即驱动转盘 —— 上电阻塞期
+ * (BootZero 前)攒下的会被 BenchDrop 作废, BootZero(≈12s)之后到达的立即执行,
+ * 即"只上 panzer 过十几秒转盘自动旋转"。禁令同时挡掉噪声 'x' 在正式任务中
+ * 误触 Turntable_Stop 掐断协议驱动的转台动作。开关点: nav_turntable.c 三个 Bench 入口 */
+#define TURNTABLE_BENCH_EN       0u
+
 /* 调试口(USART2 与它的 RX DMA)的抢占优先级。必须低于控制拍 TIM4(1) 与转台 TIM5(2):
  * 调试口是纯观测通道, 不该抢占 10ms 控制环。UART4(底盘链路)/USART3(HWT101)/USART6(转台)
  * 是控制链路, 保持 0。usart.c 与 dma.c 两处都取这一个宏 —— 单点改 */
