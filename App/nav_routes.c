@@ -80,7 +80,7 @@ static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 
 };
 static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区(末段直线+重锚移入 rebase 表) */
 {
-	SEG_MOVE(V_STRAIGHT, MF_M_DIST(7.0f)),   /* 48.5 − 38: 与 tbl_target 成对, 见上 */
+	SEG_MOVE(V_STRAIGHT, MF_M_DIST(6.0f)),   /* 48.5 − 38: 与 tbl_target 成对, 见上 */
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag14) */
 	SEG_END
 };
@@ -97,7 +97,7 @@ static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口
  * 约束: 段表里**只允许出现几何量**; 基准系与真实几何的固定偏差已收口到 MF_HEADING_BIAS_DEG 一个旋钮
  * (旧 NAV_RETURN_TRIM_DEG=1.8 等散落补偿混在几何常量里分不出几何错还是补偿, 且不能互推)。详见
  * docs/坑-运动与导航.md §6 + Motion/README.md「返程与终点航向」。 */
-#define NAV_RETURN_LEG_YAW_DEG     (-179.4f)
+#define NAV_RETURN_LEG_YAW_DEG     (-180.0f)
 #define NAV_RETURN_FINAL_REBASE_EN 1u
 /* 返程腿(2026-10-07): 纯直线无弧, 外轮需求=v 本身, 无饱和顾虑。
  * 必须**跨过饱和点**: 该腿末端接 SEG_TURN_TO(v_next=0), 全程受 v_stop 抛物线钳制,
