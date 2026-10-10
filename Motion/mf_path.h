@@ -36,6 +36,9 @@ typedef struct
     uint8_t carry_link;     /* 1=上一段是位移段，本段可承接残差；ARC/GOTO 后归 0 */
     uint16_t tol_hold_ms;   /* 到位驻留累计：|err|<tol 连续保持时长 */
     float cur_speed;        /* 斜坡后的当前前向速度，m/s（跨段保持，衔接用） */
+    float v_meas_f;         /* 实测前向速度(低通后, m/s): ds/dt 滤波值, 与 cur_speed 同口径。
+                             * MF_ARC_VSRC_MEAS=1 时弧线 ω 前馈取它 ⇒ 车速在 R=v/ω 里约掉,
+                             * 半径不再随电池/饱和/地面变化(见 mf_config.h)。调试口 VF= 打它 */
     float cur_wz;           /* 斜坡后的当前角速度指令，deg/s（TURN/GOTO 入段缓起） */
     float prev_wz;          /* 上一拍最终输出角速度，deg/s（进段时作 cur_wz 种子） */
     uint8_t subphase;       /* GOTO 段：0=接近点，1=收尾转向 */
@@ -187,6 +190,14 @@ float mf_path_exit_radius_m(const mf_path_ctx_t *p);
 float mf_path_exit_dyaw_deg(const mf_path_ctx_t *p);
 
 float mf_path_remain_m(const mf_path_ctx_t *p);   /* 剩余里程估算(m): 只算位移段, ARC 全额计入 */
+
+/**
+ * @brief 弧线 ω 前馈当前实际使用的速度源(m/s)：MF_ARC_VSRC_MEAS=1 时是实测值，否则是指令值
+ *
+ * 与段表指令速度对比就是**车速亏损比** v̂/v_cmd —— 它同时就是半径亏损比(取指令源时)。
+ * 取实测源后两者相等才对; 持续偏低即"车吃不消这个弧速", 弧会自动走慢但不改半径。
+ */
+float mf_path_get_vsrc(const mf_path_ctx_t *p);
 
 /* ---- 按拍观测（调试口用）：与 mf_path_pop_seg_exit 的区别是"每拍都更新" ---- */
 typedef struct

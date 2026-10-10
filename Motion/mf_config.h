@@ -97,6 +97,30 @@
 #define MF_ARC_WZ_TRIM      1.042f
 #endif
 
+/* ---- 弧线 ω 前馈的**速度源**（2025 boom_finish 的做法规整回来, 2026 重写时丢了这个机制）----
+ * ω_sp = v_src/R_cmd·TRIM, 而 R_true = v_ground/ω_actual:
+ *   v_src = 指令(cur_speed) ⇒ R_true = R_cmd·η/TRIM·(v̂/v_cmd)  ← 车速掉多少, 半径掉多少
+ *   v_src = 实测(v̂)         ⇒ R_true = R_cmd·η/TRIM             ← 车速在分子分母里**约掉**
+ * 取实测后, 电池掉压/外轮饱和/地面变涩只让弧走慢, **不再改变半径**; 且外轮饱和时 ω 需求随
+ * v̂ 自动下降, 车自己退出饱和(去年的 R≡2π·D_eff 就是这么来的 —— 它与 TRIM 同源, 见上)。
+ * 未饱和时 v̂≡v_cmd 两者完全等价, 故本开关只在"车速没跟上"时才起作用, 不会动现有标定。
+ * 1=实测(推荐) / 0=指令(2026 现状, 留作 A/B) */
+#ifndef MF_ARC_VSRC_MEAS
+#define MF_ARC_VSRC_MEAS    1u
+#endif
+/* 实测速度源的钳位(相对 |cur_speed| 的倍数): 下限保证 ω_sp 恒 >0, 真堵转时弧不会永远走不完
+ * (堵转另由上层看门狗判); 上限防下坡/超调把半径反放大。低于下限时半径保护按比例退化 */
+#ifndef MF_ARC_VSRC_MIN_MULT
+#define MF_ARC_VSRC_MIN_MULT 0.35f
+#endif
+#ifndef MF_ARC_VSRC_MAX_MULT
+#define MF_ARC_VSRC_MAX_MULT 1.05f
+#endif
+/* 实测速度低通(Hz)。ds/dt 逐拍差分有量化噪声; 但要跟得上 MF_DEFAULT_ACC 的斜坡, 别调太低 */
+#ifndef MF_ARC_VSRC_LPF_HZ
+#define MF_ARC_VSRC_LPF_HZ  8.0f
+#endif
+
 /* 转向/收尾到位驻留: |err|<tol 需连续保持此时长才算到位(防高速穿越误判) */
 #ifndef MF_TOL_HOLD_MS
 #define MF_TOL_HOLD_MS      100u

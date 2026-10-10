@@ -291,10 +291,14 @@ void Car_Debug_Stat_Print(void)
 			yf_tick = tick_now;
 			yf_ms   = now;
 		}
-		printf("RAD:RSP=%d RM=%d REF=%d RV=%u KH=%d YF=%lu/%lu OSRC=%u TR=%u\r\n",
+		/* AV=弧线 ω 前馈**实际用的速度源**(mm/s, MF_ARC_VSRC_MEAS=1 时是实测值, 0 时是指令值)。
+		 * 与段表弧速对比 = 车速亏损比 v̂/v_cmd: 取实测源后它同时就是半径亏损比(半径被保住了
+		 * 就不该有亏损, 亏损≠0 说明钳位下限被踩 —— 车真吃不消这个弧速, 弧会走慢而非跑偏) */
+		printf("RAD:RSP=%d RM=%d REF=%d RV=%u KH=%d YF=%lu/%lu OSRC=%u TR=%u AV=%d\r\n",
 		       rsp, rmeas, (int)(reff_m * 1000.0f), (unsigned)reff_valid, kh,
 		       (unsigned long)yf_dq, (unsigned long)yf_dtk, (unsigned)arc_src,
-		       (unsigned)(MF_ARC_WZ_TRIM * 1000.0f));   /* TR=弧径向 trim ×1000 */
+		       (unsigned)(MF_ARC_WZ_TRIM * 1000.0f),   /* TR=弧径向 trim ×1000 */
+		       (int)(mf_path_get_vsrc(&mf_app()->path) * 1000.0f));
 	}
 }
 

@@ -43,6 +43,7 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->obs_yawerr_deg = 0.0f;
     p->obs_ey_m = 0.0f;
     p->obs_kind = 0u;
+    p->v_meas_f = 0.0f;     /* 实测速度源: 从 0 起滤, 弧首拍由下限钳位兜住 */
 }
 
 /* 整表重锚基点(不变量 P5, 见 mf_path.h): 表里声明的绝对角与 nom_yaw 都在路线系
@@ -146,6 +147,7 @@ void mf_path_stop(mf_path_ctx_t *p)
     p->cur_wz = 0.0f;
     p->prev_wz = 0.0f;
     p->slip_gain = 1.0f;    /* 手动/停稳段没有弧线几何, 滑移基线必须复位 */
+    p->v_meas_f = 0.0f;     /* 停稳即视为 v̂=0, 新路径重新起滤 */
 }
 
 uint8_t mf_path_pop_chain(mf_path_ctx_t *p)
@@ -349,11 +351,35 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
     return 0u;
 }
 
+/* 弧线 ω 前馈取哪个速度。取实测(v̂)时 ω_sp = v̂/R, 于是 R_true = v̂·η/(v̂/R·TRIM) 里车速约掉
+ * ⇒ 半径与电池/饱和/地面无关, 代价只是弧走慢。钳位理由见 mf_config.h 的 MF_ARC_VSRC_* */
+static float seg_arc_vsrc(const mf_path_ctx_t *p)
+{
+#if MF_ARC_VSRC_MEAS
+    {
+        float ref = mf_absf(p->cur_speed);
+        float mag = mf_absf(p->v_meas_f);
+
+        if (ref > 0.05f)
+        {
+            float lo = ref * MF_ARC_VSRC_MIN_MULT;
+            float hi = ref * MF_ARC_VSRC_MAX_MULT;
+
+            if (mag < lo) { mag = lo; }
+            if (mag > hi) { mag = hi; }
+        }
+        return (p->cur_speed >= 0.0f) ? mag : -mag;
+    }
+#else
+    return p->cur_speed;
+#endif
+}
+
 /* 弧线几何前馈 wz_ff = v/R × 径向 trim。trim 见 mf_config.h —— 它是**物理半径的唯一旋钮**
  * (基线/内环/横向项全被速率内环吸收, 改不动稳态半径)。三处用同一个式子, 不许各写一份 */
 static float seg_arc_wz_ff(const mf_path_ctx_t *p, const mf_arc_t *a)
 {
-    return (p->cur_speed / a->radius_m) * (180.0f / MF_PI_F) * MF_ARC_WZ_TRIM;
+    return (seg_arc_vsrc(p) / a->radius_m) * (180.0f / MF_PI_F) * MF_ARC_WZ_TRIM;
 }
 
 /* 定半径弧线: 走够 d_yaw 即完成(判据只用 IMU 转角); 设定值取"名义切线航向"
@@ -719,6 +745,15 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
 
     p->time_ms += (uint32_t)(dt * 1000.0f);
 
+    /* 实测前向速度(弧线 ω 前馈的速度源, MF_ARC_VSRC_MEAS): ds/dt 逐拍差分噪声大, 一阶低通。
+     * 必须在段分支**之前**更新 —— 段内读到的才是本拍值。dt 恒为 MF_DT_S(>0), 无需防零 */
+    {
+        float tau = 1.0f / (6.2831853f * MF_ARC_VSRC_LPF_HZ);
+        float alpha = dt / (tau + dt);
+
+        p->v_meas_f += ((ds / dt) - p->v_meas_f) * alpha;
+    }
+
     switch (s->type)
     {
     case MF_SEG_MOVE_DIST:
@@ -939,6 +974,11 @@ float mf_path_remain_m(const mf_path_ctx_t *p)
         }
     }
     return remain;
+}
+
+float mf_path_get_vsrc(const mf_path_ctx_t *p)
+{
+    return (p == 0) ? 0.0f : seg_arc_vsrc(p);
 }
 
 /* ---------- 调试口用的按拍观测（只读，不参与控制） ---------- */
