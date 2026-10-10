@@ -17,6 +17,10 @@
  * 扫描依据(两种 v_free 口径都 PASS, 判据终点<=120mm): diag_speed_ceiling.py */
 #define V_STRAIGHT   MF_M_SPEED(3.10f)        /* 直道1.461: 前段有弧, 出弧车速不足会带偏下一弧 */
 #define V_ARC        MF_M_SPEED(2.20f)        /* 弯道1.036: 贴外轮饱和临界(v_free/1.3455)之下 */
+/* 越障弧专用低速(seg5, 左90 flag4): 上障碍瞬间打滑/俯仰使里程虚高+转角亏,
+ * 2026-10-10 两趟复现 R=984/EY=44(其余弧940±3, 出口判据±10)。降速给外轮差速留余量;
+ * 物理落点需卷尺核对后再调档。注意: speed_gear≠0 时 Nav_GearTable 覆盖弧速, 本值仅 gear=0 生效 */
+#define V_ARC_OBST   MF_M_SPEED(Low_speed)    /* 低速0.707: 越障段, 代价约+0.66s */
 #define V_KEEP_MID   MF_M_SPEED(Middle_speed) /* 保持原速: 人质末段(见该表注) */
 #define V_SLOW_ENTRY MF_M_SPEED(Middle_speed) /* 首段过减速带 */
 #define V_SLOW_DOCK  MF_M_SPEED(Low_speed)    /* 末段低速进作业点, 横向精度靠它 */
@@ -51,12 +55,12 @@ static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: 排爆区去程(末段
  * 直线物理长度 = (单位/15)×π×**真实**轮径, 而真实有效轮径 ≈156.3mm(固件假设 150)——
  * 同一比例也让弧半径变成 982(卷尺), 见 mf_config.h: MF_ARC_WZ_TRIM。两处同源, 要改一起改。 */
 {
-	SEG_MOVE(V_SLOW_ENTRY, MF_M_DIST(46.1f)),
+	SEG_MOVE(V_SLOW_ENTRY, MF_M_DIST(41.6f)),
 	SEG_ARC(V_ARC,  TURN_RADIUS_M),   /* 左 90 (flag1) */
 	SEG_MOVE(V_STRAIGHT, MF_M_DIST(18.2f)),
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag2) */
 	SEG_MOVE(V_STRAIGHT, MF_M_DIST(45.0f)),
-	SEG_ARC(V_ARC,  TURN_RADIUS_M),   /* 左 90 (flag4) */
+	SEG_ARC(V_ARC_OBST, TURN_RADIUS_M),/* 左 90 (flag4): 越障弧, 见 V_ARC_OBST 注 */
 	SEG_MOVE(V_STRAIGHT, MF_M_DIST(32.0f)),
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag6) */
 	SEG_MOVE(V_STRAIGHT, MF_M_DIST(47.0f)),
@@ -73,8 +77,19 @@ static const mf_seg_t tbl_bucket[] =      /* NAV_TO_BUCKET: 桶与排爆作业�
  * 推导(E≈2300 反解/窗口公式)与验证法: docs/坑-运动与导航.md §6
  * 2026-10-07: 给 V_TARGET(3.10转/s=1.461)。此前按"要给跟瞄留收敛窗口"保持 Middle 是
  * 过度保守 —— 咬靶区那2.5m 由 TRACKING_SLOW_MPS=0.45 恒定压住, 与段表档位无关 */
+/* 重锚角 = 几何真值(-90.0)。**不要再往这里塞补偿** —— 补偿统一走 MF_HEADING_BIAS_DEG。
+ * 旧值 -90.3 / -89.5 是台架标定残差: 它随"跑了多久、改了什么行为"变, 且与 -180 那处
+ * 符号相反、不能互推(Motion/README.md §11.5 的 K5)。单基准航向下整条路线是刚性旋转,
+ * 一个 bias 就够; 段表里保持纯几何才能把误差归因到唯一一个数上 */
+#define NAV_REBASE_BOMB_YAW_DEG     (-90.0f)
+#define NAV_REBASE_TARGET_YAW_DEG   (-90.2f)
 static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 */
 {
+	/* 入口重锚: 排爆作业期静止漂移(实测 -901→-905)在进长直前原地纠回。
+	 * 注意: 上一表 TURN_TO 已把标称航向吸附到 -90(MF_HEADING_FRAME_EN 跨表不重定锚),
+	 * 本段不改变长腿目标航向, 只是把 IE 提前清零 —— 对赛道系统性横偏要靠
+	 * MF_HEADING_BIAS_DEG, 别指望这里 */
+	SEG_TURN_TO(NAV_REBASE_TARGET_YAW_DEG),
 	SEG_MOVE(V_TARGET, MF_M_DIST(216.0f)),
 	SEG_END
 };
@@ -90,7 +105,7 @@ static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区
 static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口重锚+末段直线进停点 */
 {
 	SEG_TURN_TO(NAV_REBASE_HOSTAGE_YAW_DEG),
-	SEG_MOVE_HD(V_KEEP_MID, MF_M_DIST(79.0f), NAV_REBASE_HOSTAGE_YAW_DEG),
+	SEG_MOVE_HD(V_KEEP_MID, MF_M_DIST(77.0f), NAV_REBASE_HOSTAGE_YAW_DEG),
 	SEG_END
 };
 /* 返程段/终点的绝对航向: 任务终点 YAW 严格 -180° —— 几何真值(GYRO_ZERO 定出发 0°, 反向即 -180°)。
@@ -108,17 +123,12 @@ static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口
 
 static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 */
 {
-	SEG_MOVE_HD(V_RETURN, MF_M_DIST(175.0f), NAV_RETURN_LEG_YAW_DEG),
+	SEG_MOVE_HD(V_RETURN, MF_M_DIST(177.0f), NAV_RETURN_LEG_YAW_DEG),
 #if NAV_RETURN_FINAL_REBASE_EN
 	SEG_TURN_TO(NAV_RETURN_LEG_YAW_DEG),   /* 终点姿态收尾: 注入 -180° 绝对真值 */
 #endif
 	SEG_END
 };
-/* 重锚角 = 几何真值(-90.0)。**不要再往这里塞补偿** —— 补偿统一走 MF_HEADING_BIAS_DEG。
- * 旧值 -90.3 / -89.5 是台架标定残差: 它随"跑了多久、改了什么行为"变, 且与 -180 那处
- * 符号相反、不能互推(Motion/README.md §11.5 的 K5)。单基准航向下整条路线是刚性旋转,
- * 一个 bias 就够; 段表里保持纯几何才能把误差归因到唯一一个数上 */
-#define NAV_REBASE_BOMB_YAW_DEG     (-90.0f)
 /* 返程重锚角 = 几何真值 -180.0(旧标定值 -179.8 / -179.5 已作废) */
 #define NAV_REBASE_RETURN_YAW_DEG   (-180.0f)
 
