@@ -120,12 +120,15 @@ void Fault_Capture_Auto(void)
 void HardFault_Handler(void);   /* 定义在 file 主体(接 Fault_Capture), 见下 */
 
 /* ---- RX DMA 重装修复: IDLE/Error 路径重装失败必须可恢复 ----
- * IDLE/Error 路径先 HAL_UART_DMAStop() 裸停 RX, 随后的 HAL_UART_Receive_DMA 若返回
+ * IDLE/Error 路径先 HAL_UART_AbortReceive() **只停 RX**, 随后的 HAL_UART_Receive_DMA 若返回
  * 非 HAL_OK 则 RX 永远装不回来 → IDLE 不再产生 → 该链路永久哑掉。
  * 失败返回的成因(判据是 huart->RxState, 见 stm32f4xx_hal_uart.c:1449):
- *   - RxState 未回 READY(DMAStop 只在 CR3.DMAR 仍置位时才走 UART_EndRxTransfer);
+ *   - RxState 未回 READY(早期用 DMAStop: 它只在 CR3.DMAR 仍置位时才走 UART_EndRxTransfer);
  *   - UART_Start_Receive_DMA 内 HAL_DMA_Start_IT 因 hdma->State != READY 返回非 OK。
- * 注意 gState(Tx) 与 RxState(Rx) 是独立字段, "在途 Tx 抢占"**不是**这条路径的成因。
+ * 注意 gState(Tx) 与 RxState(Rx) 是独立字段, "在途 Tx 抢占"**不是**以上两条的成因 ——
+ * 但 DMAStop 会**连带中止在途 TX DMA**: 上行帧被砍成半帧/整帧丢, 发送侧还观测不到。
+ * UART4 上 TRACKING_DONE 就是这样丢的(2026-10-10, docs/打靶段架构-刹停与续跑.md §10.17);
+ * USART6 早已按此改过, 本次补齐 USART2/USART3/UART4 三条。
  * 现改: 失败置标志, Car_Control 的 TIM4 拍调用 Uart_RxRearm_Task 重试(堵住死口)。 */
 static volatile uint8_t rx_rearm_req = 0u;
 
@@ -429,9 +432,12 @@ void USART2_IRQHandler(void)
   /* USER CODE BEGIN USART2_IRQn 0 */
   if(__HAL_UART_GET_FLAG(&huart2, UART_FLAG_IDLE) != RESET)
   {
-      __HAL_UART_CLEAR_IDLEFLAG(&huart2); 
-      HAL_UART_DMAStop(&huart2);   
-      UART2_RX_STA = RXbuffer2_size - __HAL_DMA_GET_COUNTER(huart2.hdmarx);
+      /* NDTR 必须在 abort 前读: AbortReceive 走 EndRxTransfer 后 DMA 计数器不再可信 */
+      uint16_t ndtr2 = (uint16_t)__HAL_DMA_GET_COUNTER(huart2.hdmarx);
+      __HAL_UART_CLEAR_IDLEFLAG(&huart2);
+      UART2_RX_STA = RXbuffer2_size - ndtr2;
+      /* 只停 RX: DMAStop 会连带中止在途 TX DMA, 把上行整帧砍掉(见文件头 RX 重装说明) */
+      (void)HAL_UART_AbortReceive(&huart2);
       Uart2_task();
       UART2_RX_STA |= 0X8000; 
 			memset(Rxbuffer2,0,RXbuffer2_size);
@@ -453,9 +459,12 @@ void USART3_IRQHandler(void)
 	
 	if(__HAL_UART_GET_FLAG(&huart3, UART_FLAG_IDLE) != RESET)
 	{
-	    __HAL_UART_CLEAR_IDLEFLAG(&huart3); 
-	    HAL_UART_DMAStop(&huart3);   
-	    UART3_RX_STA = RXbuffer3_size - __HAL_DMA_GET_COUNTER(huart3.hdmarx);
+	    /* NDTR 必须在 abort 前读(同 USART2); HWT101 配置帧(写 RRATE/BAUD)也在 TX 上,
+	     * DMAStop 会把它们砍掉且写寄存器单向无 ACK ⇒ 静默不生效 */
+	    uint16_t ndtr3 = (uint16_t)__HAL_DMA_GET_COUNTER(huart3.hdmarx);
+	    __HAL_UART_CLEAR_IDLEFLAG(&huart3);
+	    UART3_RX_STA = RXbuffer3_size - ndtr3;
+	    (void)HAL_UART_AbortReceive(&huart3);
 		Uart3_task();
 			UART3_RX_STA |= 0X8000; 
 			memset(Rxbuffer3,0,RXbuffer3_size);
@@ -490,9 +499,15 @@ void UART4_IRQHandler(void)
   /* USER CODE BEGIN UART4_IRQn 0 */
   if(__HAL_UART_GET_FLAG(&huart4, UART_FLAG_IDLE) != RESET)
   {
-      __HAL_UART_CLEAR_IDLEFLAG(&huart4); 
-      HAL_UART_DMAStop(&huart4);   
-      UART4_RX_STA = RXbuffer4_size - __HAL_DMA_GET_COUNTER(huart4.hdmarx);  
+      /* NDTR 必须在 abort 前读(同 USART2)。UART4 是唯一"上行帧决定主控状态迁移"的链路 ——
+       * TRACKING_DONE / NAV_DONE / TURN_DONE 全走本口 TX */
+      uint16_t ndtr4 = (uint16_t)__HAL_DMA_GET_COUNTER(huart4.hdmarx);
+      __HAL_UART_CLEAR_IDLEFLAG(&huart4);
+      UART4_RX_STA = RXbuffer4_size - ndtr4;
+      /* 只停 RX, **不许 DMAStop**: 它连带中止在途 TX DMA ⇒ 事件帧被砍成半帧静默丢, 而
+       * Car_TxQueue_Pump 已先推 txq_tail, 发送侧观测(EVT: 的 Q/DROP)照样报"发出去了"。
+       * 打靶段 TRACKING_DONE 丢帧的根因即此(§10.17) */
+      (void)HAL_UART_AbortReceive(&huart4);
       Uart4_task();
       UART4_RX_STA |= 0X8000; 
 			memset(Rxbuffer4,0,RXbuffer4_size);
