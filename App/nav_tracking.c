@@ -26,6 +26,10 @@ static struct
 	uint16_t lost_ms;                      /* 段表已完 + 无测量的连续累计(FAULT 02) */
 	uint8_t  stop_done;                    /* STOPPED 已报 TRACKING_DONE 的闩锁(START 清, 补发用) */
 	uint8_t  fault_reason;                 /* TRACKING_FAULT 的 reason, 见本头 TRK_FAULT_* */
+	uint8_t  near_cap;                     /* 近靶二级限速当拍是否生效(纯观测, TRKD 的 N=) */
+	uint16_t settle_ms;                    /* 物理停稳驻留: 轮速实测≤阈的连续累计(SETTLE_MS) */
+	uint16_t settle_to_ms;                 /* 停稳确认总等待: 超过 GIVEUP 强制放行(测速异常兜底) */
+	uint8_t  settling;                     /* 目标已到零但还在等物理停稳(纯观测, TRKD 的 W=) */
 } tracking;
 
 /* 状态迁移唯一入口: 复位判据计数器 + 登记一次迁移打点(主循环 Car_TrkChange_Log 消费)。
@@ -127,6 +131,10 @@ static void Tracking_Goto(TrackingState_t next)
 	tracking.braking = 0u;
 	tracking.brake_cap = 0.0f;
 	tracking.stop_done = 0u;
+	tracking.near_cap = 0u;
+	tracking.settle_ms = 0u;
+	tracking.settle_to_ms = 0u;
+	tracking.settling = 0u;
 	tracking.noconv_ms = 0u;
 	tracking.lost_ms = 0u;
 	tracking.error_fresh = 0u;
@@ -241,6 +249,10 @@ static void Tracking_BrakeStart(mf_ctx_t *motion)
 {
 	tracking.braking = 1u;
 	tracking.brake_cap = motion->path.cur_speed;
+	tracking.settle_ms = 0u;       /* 停稳计时从制动起点锚定: 制动段 ≤0.45/BRAKE≈112ms,
+	                                * 计入 GIVEUP 预算仍余 ~890ms, 不必另设"目标到零"迁移检测 */
+	tracking.settle_to_ms = 0u;
+	tracking.settling = 0u;
 }
 
 /* 制动斜坡一拍: 把 brake_cap 沿固定减速度往 0 收(带符号, 倒车段也适用), 并只**往下**压
@@ -266,6 +278,40 @@ static uint8_t Tracking_BrakeRamp(mf_ctx_t *motion)
 	}
 	return (uint8_t)((tracking.brake_cap <= 0.02f) && (tracking.brake_cap >= -0.02f));
 }
+
+#if (TRACKING_SETTLE_EN != 0u)
+/* 物理停稳确认: 制动**目标**到零 ≠ 车停了 —— 低速轮速环制动偏软(0.15m/s 下实测等效
+ * ~0.6m/s², 远低于 BRAKE 4), 目标零后还要滑 ~10mm, 此刻报 DONE 会让 Brain 开火时
+ * 枪口还在滑, 弹着点系统性早于停点(现场"擦边"根因之一)。轮速实测 ≤ 阈驻留
+ * SETTLE_MS 才放行; GIVEUP 兜底防测速异常导致 DONE 永不来。
+ * 只挂在"打靶制动完成"路径; STOP 指令的立即刹停(FireStop)不走这里 —— 主控要的是即时响应 */
+static uint8_t Tracking_SettleCheck(mf_ctx_t *motion)
+{
+	float sp = mf_absf(motion->wheel[0].speed_mps);
+
+	if (mf_absf(motion->wheel[1].speed_mps) > sp)
+	{
+		sp = mf_absf(motion->wheel[1].speed_mps);
+	}
+	if (sp > TRACKING_SETTLE_MPS)
+	{
+		tracking.settle_ms = 0u;               /* 还在滑/回弹: 驻留重新计 */
+	}
+	if (tracking.settle_to_ms < (uint16_t)(0xFFFFu - CAR_TICK_MS))
+	{
+		tracking.settle_to_ms = (uint16_t)(tracking.settle_to_ms + CAR_TICK_MS);
+	}
+	if (sp <= TRACKING_SETTLE_MPS)
+	{
+		if (tracking.settle_ms < (uint16_t)(0xFFFFu - CAR_TICK_MS))
+		{
+			tracking.settle_ms = (uint16_t)(tracking.settle_ms + CAR_TICK_MS);
+		}
+	}
+	return (uint8_t)((tracking.settle_ms >= TRACKING_SETTLE_MS) ||
+	                 (tracking.settle_to_ms >= TRACKING_SETTLE_GIVEUP_MS));
+}
+#endif
 
 /* 原子消费误差帧: 有新帧更新误差并喂狗, 无新帧不碰 frame_age_ms */
 void Tracking_ConsumeErrorFrame(void)
@@ -308,6 +354,7 @@ void Tracking_LimitApproachSpeed(void)
 	{
 		return;   /* 只武装期限速 */
 	}
+	tracking.near_cap = 0u;
 	if (Tracking_InSlowZone(mf_app()) == 0u)
 	{
 		return;   /* 还没进咬靶区: 段表全速 */
@@ -316,6 +363,24 @@ void Tracking_LimitApproachSpeed(void)
 	{
 		path->cur_speed = TRACKING_SLOW_MPS;   /* 只往下限: 倒车段不会被误抬速 */
 	}
+#if (TRACKING_NEAR_EN != 0u)
+	/* 近靶二级限速: 按**帧龄**持有, 不按 found —— found=0 的窄窗闪断帧会让限速释放、
+	 * 车速在点火前爬回高速, 实测停车消耗 C 在 60~241 计数双峰(2026-10-10 两趟),
+	 * 固定点火阈无法两头兼顾; 闪断帧沿用最后 e 爬行, 盲爬上限=TIMEOUT×NEAR_MPS=7.5cm,
+	 * 比闪断即加速回 0.45 安全。本函数跑在 ConsumeErrorFrame 之前, 用上一拍帧, 差一拍无害 */
+	if ((tracking.braking == 0u) &&
+	    (tracking.frame_age_ms <= TRACKING_FRAME_TIMEOUT_MS) &&
+	    (mf_absf(tracking.horizontal_error_normalized) < TRACKING_ERR_SAT_LEVEL) &&
+	    (mf_absf(tracking.horizontal_error_normalized) <=
+	         ((float)TRACKING_NEAR_E_THR / TRACKING_ERROR_FIXED_SCALE)))
+	{
+		if (path->cur_speed > TRACKING_NEAR_MPS)
+		{
+			path->cur_speed = TRACKING_NEAR_MPS;   /* 只往下限, 与 SLOW_MPS 同契约 */
+		}
+		tracking.near_cap = 1u;
+	}
+#endif
 }
 
 /* TRACKING_STOP: 0=就地刹停(立即暂停本段) / 1=放行段表续跑完本段。
@@ -405,6 +470,14 @@ uint8_t Tracking_ApplyOverlay(void)
 	{
 		if (Tracking_BrakeRamp(motion) != 0u)
 		{
+#if (TRACKING_SETTLE_EN != 0u)
+			if (Tracking_SettleCheck(motion) == 0u)
+			{
+				tracking.settling = 1u;
+				return 0u;   /* 目标已到零但车还在滑: 等物理停稳再报 DONE, 否则开火早于停点 */
+			}
+			tracking.settling = 0u;
+#endif
 			Tracking_EnterStopped(motion);
 			return 1u;
 		}
@@ -480,24 +553,39 @@ uint8_t Tracking_ApplyOverlay(void)
 	{
 		float approach = -Trk_RateSlope();   /* >0 = |e| 在缩小 */
 		float thr = TRACKING_ERROR_THRESHOLD;
+		uint8_t in_win;
 
-		if ((TRACKING_PRED_EN != 0u) && (approach > TRACKING_ERR_MIN_SLOPE))
+#if (TRACKING_FIRE_PAST_EN != 0u)
+		if (TRACKING_FIRE_PAST_E > 0u)
 		{
-			float lead;
-
-			if (approach > TRACKING_ERR_MAX_SLOPE)
-			{
-				approach = TRACKING_ERR_MAX_SLOPE;
-			}
-			lead = ((float)TRACKING_LAG_MS * 0.001f)
-			     + (mf_absf(motion->path.cur_speed) / (2.0f * TRACKING_BRAKE_MPS2));
-			if ((approach * lead) > thr)
-			{
-				thr = approach * lead;
-			}
+			/* 定点开火: E ≤ −FIRE_PAST_E 才点火。丢检帧 e 被置 0 不满足负过点,
+			 * 比进阈窗更抗丢检; 停点 = −FIRE_PAST_E − C, C 恒定 ⇒ 标定 1:1 */
+			thr = -(float)TRACKING_FIRE_PAST_E / TRACKING_ERROR_FIXED_SCALE;
+			in_win = (uint8_t)((e <= thr) && (Tracking_InSlowZone(motion) != 0u));
+			tracking.brake_thr = -thr;   /* 观测: THR 行显示开火点幅值 */
 		}
-		tracking.brake_thr = thr;
-		if ((abs_e <= thr) && (Tracking_InSlowZone(motion) != 0u))
+		else
+#endif
+		{
+			if ((TRACKING_PRED_EN != 0u) && (approach > TRACKING_ERR_MIN_SLOPE))
+			{
+				float lead;
+
+				if (approach > TRACKING_ERR_MAX_SLOPE)
+				{
+					approach = TRACKING_ERR_MAX_SLOPE;
+				}
+				lead = ((float)TRACKING_LAG_MS * 0.001f)
+				     + (mf_absf(motion->path.cur_speed) / (2.0f * TRACKING_BRAKE_MPS2));
+				if ((approach * lead) > thr)
+				{
+					thr = approach * lead;
+				}
+			}
+			tracking.brake_thr = thr;
+			in_win = (uint8_t)((abs_e <= thr) && (Tracking_InSlowZone(motion) != 0u));
+		}
+		if (in_win)
 		{
 			tracking.hold_ms = (uint16_t)(tracking.hold_ms + CAR_TICK_MS);
 			if (tracking.hold_ms >= TRACKING_HOLD_TIME_MS)
@@ -566,6 +654,8 @@ void Tracking_GetInfo(Trk_Info_t *out)
 	out->state        = (uint8_t)tracking.state;
 	out->found        = tracking.target_found_flag;
 	out->braking      = tracking.braking;
+	out->near         = tracking.near_cap;
+	out->settling     = tracking.settling;
 	out->reason       = tracking.fault_reason;
 	out->zero_sign    = tracking.zero_sign;
 	out->err_f10k     = (int16_t)(tracking.horizontal_error_normalized * TRACKING_ERROR_FIXED_SCALE);

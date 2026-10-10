@@ -28,7 +28,11 @@ typedef enum
  * 会把整个停止距离留在靶心之后; 提前一个停止距离点火才停在靶心。
  * 符号翻转(过零)退为兜底(万一整帧漏过阈值窗)。进近在咬靶区用固定低速, 制动距离可控。
  * 完整规格与实测: docs/打靶段架构-刹停与续跑.md §10/§11 */
-#define TRACKING_ERROR_THRESHOLD        0.03f   /* ±300 定点: 进阈即刹的阈 + "未收敛"判定阈 */
+#define TRACKING_ERROR_THRESHOLD        0.008f  /* 地板只挡噪声(须>死区20与帧量化33计数), 不再背停车距离:
+                                                 * 实测停点=点火帧−C, C 随点火时车速强变化(0.15m/s→C≈60,
+                                                 * 0.45→C≈454), 固定大地板两头不讨好(300 停 +59 / 250 停
+                                                 * +190, 同一辆车两趟)。速度自适应交给预测阈(∝v, 天然跟随),
+                                                 * 见 docs/打靶段架构-刹停与续跑.md §10.16 */
 /* 去抖: 连续这么久 |e|≤阈 才刹。按"帧数"读比按"时长"读好: 帧周期 30ms 时
  * 40ms≈2 帧、17ms 时≈3 帧 —— 帧率越高反而越抗噪。旧的 500/300 是当"收敛驻留"用的,
  * 结果是车一路冲过靶心才刹(现场 TRK:A>S 几乎不出现)。实测 300→40 使过冲 78→26mm */
@@ -49,6 +53,22 @@ typedef enum
 /* 触发后的制动减速度(压 cur_speed 用)。2026-09-29 由 2.0 提到 4.0: 制动距离 v²/(2a)
  * 从 56mm 降到 28mm。再往上(6.0)可再省约 13mm, 但要先确认履带不打滑、母线不塌 */
 #define TRACKING_BRAKE_MPS2             4.0f
+/* 近靶二级限速: 咬靶区内 |e|≤NEAR_E_THR(定点计数) 时把限速从 SLOW_MPS 再压到 NEAR_MPS
+ * —— 剩余停点误差三项(帧量化/触发抖动/斜率噪声)都 ∝ v, 全部缩到 1/3。限速按**帧龄**持有
+ * (found=0 闪断帧不释放, 见 .c 内注释), 饱和/断流>FRAME_TIMEOUT 才释放回 SLOW_MPS;
+ * **故意不加欠冲护栏**: 本限速永不到 0, 车不会停在段表中途(上 §11 到点律时需重评)。
+ * 实测 S≈1.5m 时 ±1000 ≈ 0.15m 窗; 窗太紧(E 在减速完成前过零)就加大, 与 LAG 同款一次标定 */
+#define TRACKING_NEAR_EN                1u      /* 0 = 关(回退现状) */
+#define TRACKING_NEAR_E_THR             1000u   /* |e|≤此值(×1e-4)进二级限速 */
+#define TRACKING_NEAR_MPS               0.15f   /* 近靶限速; 制动距离 0.15²/(2·BRAKE)≈5.6mm */
+/* 停稳判据: 制动**目标**到零 ≠ 物理停稳 —— 低速轮速环制动偏软(0.15m/s 下实测等效
+ * ~0.6m/s², 远低于 BRAKE 4), 目标零后还要滑 ~10mm, 此刻报 DONE 会让开火早于停点
+ * (2026-10-10 现场"开火早"第二层根因)。轮速实测 ≤ 阈驻留 SETTLE_MS 才进 STOPPED;
+ * 兜底上限防测速异常导致 DONE 永不来(超时=带滑行量报, Brain 超时容错仍在) */
+#define TRACKING_SETTLE_EN              1u      /* 0 = 回旧行为(制动目标到零即报 DONE) */
+#define TRACKING_SETTLE_MPS             0.02f
+#define TRACKING_SETTLE_MS              150u
+#define TRACKING_SETTLE_GIVEUP_MS       1000u
 #define TRACKING_NOCONV_MS              500u    /* 段表已完 + |e|>阈 持续这么久 → FAULT(01) */
 #define TRACKING_LOST_DONE_MS           1500u   /* 段表已完 + 无测量 持续这么久 → FAULT(02) */
 
@@ -59,7 +79,10 @@ typedef enum
  * 标定 L: 跑一趟读停车那拍的 |E|(定点), 停点冲过靶心就加大、没到靶心就减小, 一次即定。
  * 实测口径与反解见 docs/打靶段架构-刹停与续跑.md §10.15 */
 #define TRACKING_PRED_EN                1u      /* 0 = 关(回退现状) */
-#define TRACKING_LAG_MS                 80u     /* L: 视觉取像推理+转发+拍对齐(不含制动段); build_verify/calibrate_lag_ms.py 标定 */
+#define TRACKING_LAG_MS                 69u     /* L: 视觉取像推理+转发+拍对齐(不含制动段); 标定=跑一趟读停点E。
+                                                 * 2026-10-10 相机重装后三点实测(80,-46)/(125,+275)/(72,-124),
+                                                 * 局部响应 ≈8 计数/ms; 72→69 = 再前进 ~25 计数(用户要求)。
+                                                 * 修正规则 ΔL=ΔE/8 ms; 步长 <5ms 会淹没在帧量化噪声里 */
 #define TRACKING_ERR_WIN                6u      /* 斜率窗口(帧)。两点差分噪声达均值 ±40%, 必须最小二乘 */
 #define TRACKING_ERR_MIN_DT_MS          12u     /* 相邻样本最小间隔: 更密的重复帧不喂进窗口 */
 #define TRACKING_ERR_MIN_SPAN_MS        40u     /* 窗口最小跨度: 不足则判据不可用, 走固定阈 */
@@ -68,12 +91,20 @@ typedef enum
 #define TRACKING_ERR_SAT_LEVEL          0.95f   /* |e| 到此=量程饱和。实测 found=1 也会长时间给 ±0.96 的
                                                  * 常值(2026-10-09 现场 2.5s), 它既不是"接近速度"、也不是
                                                  * 重捕后的可信起点 ⇒ 与 found=0 同处理: 清窗 */
+/* 定点开火(带符号, >0 启用): 进阈窗(|e|≤THR)的点火采样带 ±半窗帧相位散布, 且相机安装
+ * 偏置使"视觉零点 e=0"≠弹着圆心对应的停点 —— 改为 E 过 **−FIRE_PAST_E**(过视觉零点后再
+ * 走这么多 ×1e-4 计数)才点火。停点 = −FIRE_PAST_E − C(近靶速 C≈80~150, 实测 ~115),
+ * **标定 1:1**: 弹着还早 X 计数 → 本宏 +X, 冲过 → −X, 无斜率猜测。启用后 J1 进阈窗与
+ * 预测式同时退位(TRKD 的 THR 行改显开火点幅值); J2 过零兜底保留 */
+#define TRACKING_FIRE_PAST_EN           1u      /* 0 = 回退进阈窗点火 */
+#define TRACKING_FIRE_PAST_E            150u    /* 开火点 150 计数≈2.2cm(1 计数≈0.15mm, S≈1.5m/1.0)。
+                                                 * 首趟顺带标定 C: C = −停点E − 本值, 之后 1:1 修正 */
 #if (TRACKING_ERR_WIN < 3u)
 #error "TRACKING_ERR_WIN 必须 >= 3"
 #endif
 
 /* 跟瞄观测快照(仅调试显示用) */
-typedef struct { uint8_t state, found, braking, reason;
+typedef struct { uint8_t state, found, braking, reason, near, settling;
                  int8_t zero_sign;
                  int16_t err_f10k;
                  int16_t thr_f10k;    /* 当拍实际生效的点火阈(定点): 标定 LAG 与判"预测是否生效"都读它 */

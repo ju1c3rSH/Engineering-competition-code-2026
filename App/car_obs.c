@@ -328,7 +328,11 @@ void Car_TrkChange_Log(void)
 /* ARMED/STOPPED 期高频打点(主循环 10Hz, 规格 §10.6): 定性"误差卡在哪一环" ——
  * 光看 TRK: 迁移行只能知道换了态, 不知道车在不在动、轮子跟没跟、判据卡在哪。
  * 读法: E 在收敛 = 车真在逼近靶心; E 不动而 SL/SR>0 = 车在走但视觉没更新;
- * CL/CR>0 而 SL/SR≈0 = 指令到电机侧没跟(轮速环/驱动/编码器); BRK=1 = 已触发制动。
+ * CL/CR>0 而 SL/SR≈0 = 指令到电机侧没跟(轮速环/驱动/编码器); BRK=1 = 已触发制动;
+ * N=1 = 近靶二级限速生效(限 0.15) —— 若 E 在 CL/CR 降到 ~0.16 之前已过零, 窗太紧,
+ * 调大 TRACKING_NEAR_E_THR(与 LAG 同款一次标定);
+ * W=1 = 目标速度已到零、正在等轮速实测停稳(物理停稳确认) —— DONE 会晚 ~150ms 发,
+ * 属预期; 长时间 W=1 说明轮速测速异常(超时 GIVEUP 会兜底放行)
  * THR=当拍点火阈(定点): 恒等于 300 说明预测式没生效(斜率一直没被采信);
  * 标定 TRACKING_LAG_MS 直接读它(见 build_verify/calibrate_lag_ms.py)。
  * 同 D-1: tri 与 wheel 分两次取样(基线共用一个窗口), 可能跨拍 → 上述读法会被误导 */
@@ -357,9 +361,10 @@ void Car_TrkDetail_Log(void)
 	sr = (int32_t)(mf_app()->wheel[1].speed_mps * 1000.0f);
 	__enable_irq();
 
-	printf("TRKD:ST=%c E=%d THR=%d ZX=%d HOLD=%u BRK=%u CL=%d SL=%d CR=%d SR=%d\r\n",
+	printf("TRKD:ST=%c E=%d THR=%d ZX=%d HOLD=%u BRK=%u N=%u W=%u CL=%d SL=%d CR=%d SR=%d\r\n",
 	       Tracking_StateChar((TrackingState_t)tri.state), (int)tri.err_f10k, (int)tri.thr_f10k,
-	       (int)tri.zero_sign, (unsigned)tri.hold_ms, (unsigned)tri.braking,
+	       (int)tri.zero_sign, (unsigned)tri.hold_ms, (unsigned)tri.braking, (unsigned)tri.near,
+	       (unsigned)tri.settling,
 	       (int)cl, (int)sl, (int)cr, (int)sr);
 }
 
