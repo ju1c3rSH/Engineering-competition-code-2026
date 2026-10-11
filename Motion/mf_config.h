@@ -137,7 +137,7 @@
  *   (量程从 ±0.1m 变成 ±0.7m)。回路增益 ≈ K×(dR/dω) = 250×0.0219 ≈ 5.5 ⇒ 欠阻尼(PM 只有 ~10°)。
  *   首次上线先置 0 做隔离，跑通后从 60~70dps/m 起复标，不要直接回到 250。 */
 #ifndef MF_ARC_XTRACK_K
-#define MF_ARC_XTRACK_K      0.0f
+#define MF_ARC_XTRACK_K      80.0f
 #endif
 /* 横向项自己的限幅: 只许占几何前馈(v/R)的这个比例。半径的主责归速率内环, 横向项只当微调 ——
  * 否则它会顶到段内限幅 MF_ARC_WZ_MAX_MULT, 两个环抢同一个误差(见 mf_path.h 的职责划分) */

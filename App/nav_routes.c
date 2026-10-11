@@ -21,6 +21,9 @@
  * 2026-10-10 两趟复现 R=984/EY=44(其余弧940±3, 出口判据±10)。降速给外轮差速留余量;
  * 物理落点需卷尺核对后再调档。注意: speed_gear≠0 时 Nav_GearTable 覆盖弧速, 本值仅 gear=0 生效 */
 #define V_ARC_OBST   MF_M_SPEED(Low_speed)    /* 低速0.707: 越障段, 代价约+0.66s */
+/* 越障前直道降速试验已否证(2026-10-10): V_STRAIGHT_OBST=2.60 一趟 ARC:5 EY=19/R=961,
+ * 不优于只降弧速的 EY=12/R=957 —— 瓶颈不在入障初速, 残余 ~15mm 弧外是越障扰动的
+ * 当前地板, 靠 LN:6/LN:8 直线吸收, 判据以物理落点为准。保留此注防再试 */
 #define V_KEEP_MID   MF_M_SPEED(Middle_speed) /* 保持原速: 人质末段(见该表注) */
 #define V_SLOW_ENTRY MF_M_SPEED(Middle_speed) /* 首段过减速带 */
 #define V_SLOW_DOCK  MF_M_SPEED(Low_speed)    /* 末段低速进作业点, 横向精度靠它 */
@@ -29,7 +32,9 @@
  * 那 2.5m 的 5.556s 是固定开销(任何档位都省不掉); 可省的只有前 4.286m。
  * 阶跃风险已核: 现 0.943->0.45 的轮速环duty 本就饱和在 -1.00 且实测稳定,提到 1.461 只是
  * err 从 -0.49 变 -1.01, duty 同样饱和 => 环路行为不变。 */
-#define V_TARGET     MF_M_SPEED(3.10f)        /* 打靶直线大段: 与直道同档, 咬靶区自动压速 */
+/* 2026-10-10 (方案A): 3.10->3.50(1.649m/s), 与 V_RETURN 同档 —— 该车速含刹停已在返程腿实车背书。
+ * 可提速窗口只有咬靶区前 4.29m, 净省约 0.2~0.3s; 验收 = 咬靶停点极差不变 + 进咬靶区实刹无冲过靶 */
+#define V_TARGET     MF_M_SPEED(3.50f)        /* 打靶直线大段: 与返程同档, 咬靶区自动压速 */
 
 /* nav_id 段表: 原 flags 路线逐段复刻(基线 git 4f3ceb2 true_BOOM_Finish) */
 #define SEG_MOVE(v, d)  { .type = MF_SEG_MOVE_DIST, .reset_pid = 1, \
