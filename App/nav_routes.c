@@ -25,6 +25,18 @@
  * 不优于只降弧速的 EY=12/R=957 —— 瓶颈不在入障初速, 残余 ~15mm 弧外是越障扰动的
  * 当前地板, 靠 LN:6/LN:8 直线吸收, 判据以物理落点为准。保留此注防再试 */
 #define V_KEEP_MID   MF_M_SPEED(Middle_speed) /* 保持原速: 人质末段(见该表注) */
+/* 减速带区拆段(2026-10-11): 命题图4 = 每车道 3 根 300x60x10 雪弗板、间隔 50, 全区沿行驶向
+ * 280mm, 场地坐标固定。爬坎时履带裹棱 + 顶棱打滑 → 里程虚高 δ, 弧前进弧点提前 → 出弧外侧
+ * 甩出(物理已见)。拆成 PRE/ZONE/POST: ZONE 用中速压 δ 方差与俯仰激励(过坎不劣化的首段先例
+ * 就是中速), POST 是干净里程; δ 的均值残差靠 POST 标定吸收。
+ * 标定(卷尺, 一次性): D1=seg4起点(前弧出口)→首根迎车面, D2=末根背车面→弧入口地面距离;
+ *   PRE=D1/32.74, POST=D2/32.74 (1单位地面 = π×156.3/15 = 32.74mm), ZONE=TOTAL-PRE-POST。
+ * 未标定前: PRE/ZONE/POST 之和恒等于 45 且三段同速 → 行为与不拆等价, 可直接上车 */
+#define V_OBST_ZONE  V_STRAIGHT               /* 标定后改 MF_M_SPEED(Middle_speed): 全程仅 +0.1s */
+#define SEG4_TOTAL_U 45.0f
+#define SEG4_PRE_U   20.0f                    /* TODO(卷尺标定): D1/32.74 */
+#define SEG4_POST_U  18.0f                    /* TODO(卷尺标定): D2/32.74; 出弧仍偏外则用均值残差修此数 */
+#define SEG4_ZONE_U  (SEG4_TOTAL_U - SEG4_PRE_U - SEG4_POST_U)
 #define V_SLOW_ENTRY MF_M_SPEED(Middle_speed) /* 首段过减速带 */
 #define V_SLOW_DOCK  MF_M_SPEED(Low_speed)    /* 末段低速进作业点, 横向精度靠它 */
 /* 打靶直线(2026-10-07): 咬靶速度与段表**解耦** —— Tracking_LimitApproachSpeed() 每拍
@@ -48,6 +60,10 @@
 #define SEG_TURN_TO(y)  { .type = MF_SEG_TURN_TO, .reset_pid = 1, \
                           .tol_yaw_deg = 0.5f, \
                           .p.turn = { (y), 0.0f } }
+/* MOVE 续段: 不复位 PID/不清 IE。拆段只切"里程累积的清零点", 航向目标(MF_KEEP→nom_yaw)
+ * 在单基准架构下跨段连续, 配合 reset_pid=0, 同速时行为与不拆等价(仅多两次进段快照, 只影响遥测) */
+#define SEG_MOVE_CONT(v, d) { .type = MF_SEG_MOVE_DIST, .reset_pid = 0, \
+                          .p.move_dist = { (v), (d), MF_KEEP, SEG_ACC_MPS2 } }
 #define SEG_END         { .type = MF_SEG_END }
 
 static const mf_seg_t tbl_qr[] =          /* NAV_TO_QR: flag0 出发首段(台架单段用, 长度随意改) */
@@ -64,7 +80,9 @@ static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: 排爆区去程(末段
 	SEG_ARC(V_ARC,  TURN_RADIUS_M),   /* 左 90 (flag1) */
 	SEG_MOVE(V_STRAIGHT, MF_M_DIST(18.2f)),
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag2) */
-	SEG_MOVE(V_STRAIGHT, MF_M_DIST(45.0f)),
+	SEG_MOVE(V_STRAIGHT, MF_M_DIST(SEG4_PRE_U)),
+	SEG_MOVE_CONT(V_OBST_ZONE, MF_M_DIST(SEG4_ZONE_U)), /* 减速带区: 里程虚高 δ 死在本段, 不外传 */
+	SEG_MOVE_CONT(V_STRAIGHT, MF_M_DIST(SEG4_POST_U)),
 	SEG_ARC(V_ARC_OBST, TURN_RADIUS_M),/* 左 90 (flag4): 越障弧, 见 V_ARC_OBST 注 */
 	SEG_MOVE(V_STRAIGHT, MF_M_DIST(32.0f)),
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag6) */
