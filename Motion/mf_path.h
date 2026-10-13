@@ -13,9 +13,8 @@
 typedef struct
 {
     const mf_seg_t *path;   /* 当前路径数组 */
-    const mf_seg_t *next_path;  /* 本表跑完将自动续跑的下一条(0=不续)。两处用途:
-                                 * ① 末段减速取它的首段速度, 免表尾硬性减到 0;
-                                 * ② 跨表时同拍切过去, 消除段表之间的零输出空窗 */
+    const mf_seg_t *next_path;  /* 本表跑完自动续跑的下一条(0=不续): ① 末段减速取其首段速度,
+                                 * 免表尾硬减到 0; ② 跨表同拍切过去, 消除零输出空窗 */
     uint16_t idx;           /* 当前段下标 */
     mf_path_state_t state;
     uint8_t chain_new;      /* 1=刚跨过表边界(上层 pop 后清零), 见 mf_path_pop_chain */
@@ -36,9 +35,8 @@ typedef struct
     uint8_t carry_link;     /* 1=上一段是位移段，本段可承接残差；ARC/GOTO 后归 0 */
     uint16_t tol_hold_ms;   /* 到位驻留累计：|err|<tol 连续保持时长 */
     float cur_speed;        /* 斜坡后的当前前向速度，m/s（跨段保持，衔接用） */
-    float v_meas_f;         /* 实测前向速度(低通后, m/s): ds/dt 滤波值, 与 cur_speed 同口径。
-                             * MF_ARC_VSRC_MEAS=1 时弧线 ω 前馈取它 ⇒ 车速在 R=v/ω 里约掉,
-                             * 半径不再随电池/饱和/地面变化(见 mf_config.h)。调试口 VF= 打它 */
+    float v_meas_f;         /* 实测前向速度(低通, m/s): MF_ARC_VSRC_MEAS=1 时弧线 ω 前馈取它
+                             * ⇒ 车速在 R=v/ω 里约掉, 半径不随电池/饱和/地面变。调试口 VF= */
     float cur_wz;           /* 斜坡后的当前角速度指令，deg/s（TURN/GOTO 入段缓起） */
     float prev_wz;          /* 上一拍最终输出角速度，deg/s（进段时作 cur_wz 种子） */
     uint8_t subphase;       /* GOTO 段：0=接近点，1=收尾转向 */
@@ -51,9 +49,8 @@ typedef struct
     float arc_r_abs;        /* |radius_m| */
     float arc_sgn;          /* +1=左转 / -1=右转（d_yaw 符号；与 radius 同号） */
     float arc_ey_m;         /* 本拍带符号横向偏差 m，正=弧外（诊断与横向环共用） */
-    float arc_remain_prev_deg;  /* 上一拍的 remain_yaw：两者的差就是**本段实测抽样步长**，
-                                 * 到位余量取它的一半才有零系统偏差（见 mf_config.h）。
-                                 * 进段时置为 d_yaw（首拍的步长即第一拍的转角） */
+    float arc_remain_prev_deg;  /* 上一拍 remain_yaw: 两者之差=本段实测抽样步长, 到位余量取
+                                 * 一半才零系统偏差; 进段置为 d_yaw(见 mf_config.h) */
     float slip_gain;        /* 本段的开环滑移基线（弧线 = MF_ARC_SLIP_GAIN，其余 1.0）。
                              * 速率内环(mf_rate.h)拿它当输出侧前馈；见 mf_config.h */
 
@@ -62,21 +59,17 @@ typedef struct
     float seg_exit_ey_m;        /* ARC: 出口横向偏差 m，正=弧外 */
     float seg_exit_yawerr_deg;  /* 出口航向偏差 deg（纠完剩多少） */
     float seg_exit_in_yawerr_deg; /* 进段航向偏差 deg（带进来多少），仅直线段填 */
-    float seg_exit_radius_m;    /* ARC 出口的 R = 本段轮程 / |IMU 转角| (m)。
-                                 * 自证量: 速率内环令 ω_actual=ω_sp=v_wheel/R_cmd,
-                                 * 故本值 ≡ R_cmd, **不是物理半径**(打滑机上不可观测,
-                                 * 真半径只能卷尺量, 见 mf_config.h 的 MF_ARC_WZ_TRIM)。
-                                 * 偏离 R_cmd ⇒ 反解/限幅出问题, 是内环健康判据 */
-    float seg_exit_dyaw_deg;    /* ARC 出口**实际转角** |Δyaw_imu|(deg, 恒正),
-                                 * "转够了没"的直接读数。到位余量已改为按实测步长
-                                 * 运行期计算(mf_config.h 的到位余量说明), 本条即验收读数 */
+    float seg_exit_radius_m;    /* ARC 出口的 R = 轮程/|IMU 转角|(m)。速率内环令 ω_actual=
+                                 * ω_sp=v_wheel/R_cmd ⇒ 本值 ≡ R_cmd(自证), **非物理半径**(真半径
+                                 * 只能卷尺, MF_ARC_WZ_TRIM); 偏离 R_cmd = 反解/限幅出问题, 是内环健康判据 */
+    float seg_exit_dyaw_deg;    /* ARC 出口实际转角 |Δyaw_imu|(deg, 恒正): "转够了没"的直接读数,
+                                 * 到位余量按实测步长运行期算, 本条即验收读数 */
     uint16_t seg_exit_seg;      /* 出口所在的段下标 */
     uint8_t  seg_exit_kind;     /* 0=ARC / 1=直线 MOVE */
     uint8_t  seg_exit_new;      /* 1=有新记录待取 */
 
-    /* 路径标称航向（MF_SEG_NOM_HEADING_EN=1 生效, 见 mf_config.h）：
-     * 由路径几何累积(ARC 加 d_yaw、TURN 赋目标角), MOVE 段目标航向取它,
-     * 上游残留航向误差被直线段主动纠回, 而非被 MF_KEEP 锁死按"误差×长度"放大 */
+    /* 路径标称航向（MF_SEG_NOM_HEADING_EN=1）: 由路径几何累积(ARC 加 d_yaw、TURN 赋目标角),
+     * MOVE 段目标航向取它 —— 上游残差被直线段主动纠回, 而非被 MF_KEEP 锁死放大 */
     float nom_yaw_deg;      /* 当前段起点处的标称航向 deg（**路线系**，见 frame_base_deg） */
     uint8_t nom_yaw_init;   /* 0=还没定过基准（本段进段时补上） */
     uint8_t heading_ref_locked; /* 1=基准已由 mf_path_set_heading_ref() 显式钉下,
@@ -84,9 +77,8 @@ typedef struct
     float line_in_yawerr_deg;   /* 直线段进段航向误差(带进来多少), 供出口记录对比 */
 
     /* ---- 整表重锚基点（不变量 P5, 见 Motion/README.md「单基准航向架构」）----
-     * 表里绝对角(重锚/返程)与 nom_yaw 一律在**路线系**(置零那一刻车头 = 0);
-     * pose.yaw 是模块读数域, 两者只差此基点, **换算只许走 seg_pose_yaw() 一处**。
-     * 缺它时: 上电到置零间车被转过 yaw0, 首绝对段后所有段整体偏 yaw0(走斜) */
+     * 表里绝对角与 nom_yaw 一律在**路线系**(置零那一刻车头=0); pose.yaw 是读数域,
+     * 换算只许走 seg_pose_yaw() 一处。缺它: 置零前车被转过 yaw0 ⇒ 首绝对段后全段整体偏 yaw0 */
     float frame_base_deg;   /* = GYRO_ZERO 那一刻的模块读数 deg */
     uint32_t ref_seq;       /* 基点被钉下的次数(1 起): 调试口靠它打 YAWZERO 事件行 */
     float line_hdg_deg;     /* 直线段名义线方向(读数域 deg): 进段由目标航向 + 基点解出,
@@ -107,10 +99,8 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v);
 
 /** @brief 显式钉下整表航向基准（MF_HEADING_FRAME_EN=1）
  *
- * 上层在 GYRO_ZERO 那一刻调用一次（车静止, 此刻车头朝向 = 路线几何 0°）。调用后
- * heading_ref_locked=1: 之后 mf_path_start()/跨表**不再重定锚**, 表里绝对角一律解释在
- * "置零时刻车头=0"的路线系(见 frame_base_deg)。
- * @param yaw_deg 传**当前实测航向**(Car_GetYawDeg()); 无需模块物理归零, 固定偏差走 MF_HEADING_BIAS_DEG
+ * GYRO_ZERO 那一刻调一次(车静止, 车头=路线几何 0°); 之后 start/跨表不再重定锚,
+ * 表里绝对角一律解释在路线系。传当前实测航向即可, 无需物理归零(固定偏差走 MF_HEADING_BIAS_DEG)
  */
 void mf_path_set_heading_ref(mf_path_ctx_t *p, float yaw_deg);
 
@@ -125,9 +115,8 @@ void mf_path_stop(mf_path_ctx_t *p);
 /**
  * @brief 取走"刚跨过表边界"标志（读后清）
  *
- * 段表链续时底盘已自行跑进下一条表，但上层仍要按旧 nav_id 上报 NAV_DONE 并切 nav_id，
- * 用它把这两件事与几何边界对齐。
- * @return 1=本次取到新边界；0=无
+ * 链续时底盘已跑进下一条表, 上层仍要按旧 nav_id 上报 NAV_DONE —— 用它对齐几何边界。
+ * @return 1=取到新边界；0=无
  */
 uint8_t mf_path_pop_chain(mf_path_ctx_t *p);
 
@@ -148,8 +137,7 @@ uint16_t mf_path_get_seg_index(const mf_path_ctx_t *p);
 /**
  * @brief 当前是否正处在 MF_SEG_WAIT（定时停等）段
  *
- * 上层（如底盘堵转看门狗）用它区分"段表主动要求的原地停等"与"真堵转": WAIT 段内车体
- * 本就应静止，里程 3s 无变化不能判成故障。
+ * 堵转看门狗用它区分"段表主动停等"与"真堵转": WAIT 段内里程不动不能判故障。
  * @return 1=正在 WAIT 段；0=非运行态/其它段
  */
 uint8_t mf_path_is_waiting(const mf_path_ctx_t *p);
@@ -157,45 +145,35 @@ uint8_t mf_path_is_waiting(const mf_path_ctx_t *p);
 /**
  * @brief 取走最近一次"段出口质量记录"（读后清标志）
  *
- * ARC: ey_m=出口横向偏差(跑没跑偏); 直线: ey_m 恒 0(无名义线, 见 Motion/README.md)。
- * 两者填 out_yawerr_deg=出口航向残差; 直线另填 in_yawerr_deg, "带进来多少/纠完剩多少"
- * 可现场对比(单基准架构验收判据)。上层主循环调用加中断保护。
- * @param seg_index       出口所在段下标（可传 0）
- * @param kind            0=ARC / 1=直线 MOVE（可传 0）
- * @param ey_m            ARC: 出口横向偏差 m，正=落在名义弧外侧; 直线: 相对"进段点+本段目标
- *                        航向"这条名义线的横向偏差, 正=左侧（可传 0）
- * @param in_yawerr_deg   进段航向误差 deg，仅直线段有效（可传 0）
- * @param out_yawerr_deg  出口航向残差 deg（可传 0）
- * @return 1=本次取到新记录；0=无新记录（出参不变）
+ * ARC: ey_m=出口横向偏差(跑没跑偏); 直线: ey_m 恒 0。两者填 out_yawerr_deg=出口航向残差;
+ * 直线另填 in_yawerr_deg(带进来多少), "进/出对比"是单基准架构验收判据。出参均可传 0。
+ * @return 1=取到新记录；0=无新记录（出参不变）
  */
 uint8_t mf_path_pop_seg_exit(mf_path_ctx_t *p, uint16_t *seg_index, uint8_t *kind,
                              float *ey_m, float *in_yawerr_deg, float *out_yawerr_deg);
 
 /**
- * @brief 最近一次 ARC 出口的 R = 本段轮程 / |本段 IMU 转角|（m，恒正）
+ * @brief 最近一次 ARC 出口的 R = 本段轮程 / |IMU 转角|（m，恒正；名义 0.9425）
  *
- * 名义 TURN_RADIUS_M = 0.9425。**非物理半径**: 速率内环令本值 ≡ R_cmd(自证), 物理半径另乘
- * (1−纵向打滑)且打滑机上不可观测 ⇒ 真半径只能卷尺量(mf_config.h: MF_ARC_WZ_TRIM)。
- * 本值偏离名义 = 内环没关到位/限幅, 是健康判据非几何。
- * @return 名义上 >0; 尚无 ARC 出口记录时返回 0
+ * **非物理半径**: 速率内环令 ω_actual=ω_sp=v_wheel/R_cmd ⇒ 本值 ≡ R_cmd(自证), 真半径只能
+ * 卷尺量(MF_ARC_WZ_TRIM)。偏离名义 = 内环没关到位/限幅, 是健康判据非几何。
+ * @return 尚无 ARC 出口记录时返回 0
  */
 float mf_path_exit_radius_m(const mf_path_ctx_t *p);
 
 /**
  * @brief 最近一次 ARC 的**实际转角** |Δyaw_imu|（deg，恒正；名义 90）
  *
- * "弧转够了没"的直接读数。EY/YE/R 都是"位姿 vs 名义圆"自证量看不出少转, 唯一旁证是下一段
- * MOVE 的 LN:IE(替弧补角)。到位余量按实测步长运行期算(见 mf_config.h), 本条即验收读数
+ * "弧转够了没"的直接读数(EY/YE/R 是自证量看不出少转); 到位余量按实测步长算, 本条即验收读数
  */
 float mf_path_exit_dyaw_deg(const mf_path_ctx_t *p);
 
 float mf_path_remain_m(const mf_path_ctx_t *p);   /* 剩余里程估算(m): 只算位移段, ARC 全额计入 */
 
 /**
- * @brief 弧线 ω 前馈当前实际使用的速度源(m/s)：MF_ARC_VSRC_MEAS=1 时是实测值，否则是指令值
+ * @brief 弧线 ω 前馈实际使用的速度源(m/s): MF_ARC_VSRC_MEAS=1 为实测值, 否则指令值
  *
- * 与段表指令速度对比就是**车速亏损比** v̂/v_cmd —— 它同时就是半径亏损比(取指令源时)。
- * 取实测源后两者相等才对; 持续偏低即"车吃不消这个弧速", 弧会自动走慢但不改半径。
+ * 与指令对比 = 车速亏损比 v̂/v_cmd(指令源时亦即半径亏损比); 持续偏低=车吃不消该弧速
  */
 float mf_path_get_vsrc(const mf_path_ctx_t *p);
 
@@ -210,8 +188,7 @@ typedef struct
 
 /** @brief 本拍的目标航向/误差/横向偏差（只读, 不参与控制）
  *
- * 直线横向偏差由"进段点+本段目标航向"名义线算出, 正=左侧。
- * 区分两种"长直线走偏": 沿程不变=整段平行挪出(弧半径/进段偏移); 随程线性增长=航向基准被转(越走越斜)
+ * 直线 ey 由"进段点+目标航向"名义线算出(正=左): 沿程不变=平行挪出, 线性增长=基准被转(越走越斜)
  */
 void mf_path_get_obs(const mf_path_ctx_t *p, mf_path_obs_t *obs);
 

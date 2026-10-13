@@ -46,9 +46,8 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->v_meas_f = 0.0f;     /* 实测速度源: 从 0 起滤, 弧首拍由下限钳位兜住 */
 }
 
-/* 整表重锚基点(不变量 P5, 见 mf_path.h): 表里声明的绝对角与 nom_yaw 都在路线系
- * ("置零那一刻车头 = 0"), 而 pose.yaw 是模块读数域 —— 两者之差只有 frame_base_deg
- * 这一个数, 换算只许走这里。MF_HEADING_FRAME_EN=0 时不平移(= 旧行为) */
+/* 整表重锚基点(不变量 P5, 见 mf_path.h): 表里绝对角与 nom_yaw 在路线系(置零车头=0),
+ * pose.yaw 是读数域, 换算只许走这里。MF_HEADING_FRAME_EN=0 时不平移(=旧行为) */
 static float seg_pose_yaw(const mf_path_ctx_t *p, const mf_pose_t *pose)
 {
 #if MF_HEADING_FRAME_EN
@@ -121,9 +120,8 @@ void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path, const mf_seg_t *next)
     p->carry_link = 0u;
 #if MF_SEG_NOM_HEADING_EN
   #if MF_HEADING_FRAME_EN
-    /* 单基准: 基准由 mf_path_set_heading_ref() 在 GYRO_ZERO 那一刻显式钉下, 此后跨表**不重定锚**。
-     * 未钉下时(heading_ref_locked=0)退回"首段用实测航向定基准", 与旧行为等价 ——
-     * 自测形态没有 GYRO_ZERO 命令, 走的就是这条兜底 */
+    /* 单基准: 基准由 mf_path_set_heading_ref() 在 GYRO_ZERO 时钉下, 跨表不重定锚;
+     * 未钉下(自测无 GYRO_ZERO)退回"首段用实测航向定基准", 与旧行为等价 */
     if (p->heading_ref_locked == 0u)
     {
         p->nom_yaw_init = 0u;
@@ -247,10 +245,9 @@ static uint8_t seg_dwell_reached(mf_path_ctx_t *p, float err, float tol, float d
 
 /* ---------- 各段类型执行（返回 1=完成） ---------- */
 
-/* 期望角(基准系几何) -> 实际下发角: 只差一个固定的基准偏差 MF_HEADING_BIAS_DEG。
- * 全工程只在这一处加, 保证"段表里全是几何量、补偿只有一个数"(见 mf_config.h)。
- * 只作用于**绝对角目标**; 相对角(TURN_REL/GOTO_REL)与 ARC 自解算不加 —— 它们从当前
- * 位姿续起, 天然继承整条路线的刚性旋转 */
+/* 期望角(基准系几何) -> 实际下发角: 只差固定基准偏差 MF_HEADING_BIAS_DEG, 全工程只在这一处加
+ * (段表全是几何量、补偿只有一个数, 见 mf_config.h)。只作用于**绝对角目标**; 相对角与 ARC
+ * 自解算不加 —— 它们从当前位姿续起, 天然继承整条路线的刚性旋转 */
 static float seg_cmd_yaw(float geom_deg)
 {
     return geom_deg + MF_HEADING_BIAS_DEG;
@@ -337,9 +334,8 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
     if (remain <= (0.5f * mf_absf(out->vx_mps) * dt))
     {
         /* 到位余量同上: = 本拍步长的一半(运行期), 不是常数 —— 见 mf_config.h 的推导 */
-        /* 直线段出口记录: IE=进段航向误差(带进来多少) / YE=出口残差(纠完剩多少)。
-         * 单基准架构下 IE 才有非零值 —— 旧行为(MF_KEEP 取进段实测)IE 恒 0, 上游误差
-         * 被锁死、现场看不见, 所以这一对数是"新旧架构有没有生效"的直接判据 */
+        /* 直线段出口记录: IE=进段航向误差 / YE=出口残差, 单基准架构下 IE 才非零
+         * (旧行为 IE 恒 0) —— 这一对数是"新旧架构有没有生效"的直接判据 */
         p->seg_exit_ey_m = ey;      /* 直线: 相对本段名义线的横向偏差(本段自己的漂移量) */
         p->seg_exit_in_yawerr_deg = p->line_in_yawerr_deg;
         p->seg_exit_yawerr_deg = err;
@@ -400,9 +396,8 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
                * ((a->d_yaw_deg >= 0.0f) ? 1.0f : -1.0f);  /* 剩余转角, 正=未走完 */
     target = (a->speed_mps < 0.0f) ? -a->speed_mps : a->speed_mps;
 
-    /* 到位余量 = 本段**抽样步长**的一半, 运行期量出来(推导见 mf_config.h)。
-     * 优先用实测(上一拍到本拍 remain 的减少量); 首拍或本拍航向未出新样时退回名义
-     * (v/R)·dt。两者都是运行期量, 换档/降速/改拍周期自动跟上 —— 这里不许出现常数 */
+    /* 到位余量 = 本段**抽样步长**的一半, 运行期量出(推导见 mf_config.h): 优先实测(上拍到本拍
+     * remain 减少量), 首拍/无新样退名义 (v/R)·dt。都不许出现常数 —— 换档/改拍自动跟上 */
     {
         float nom = mf_absf(seg_arc_wz_ff(p, a)) * dt;
 
@@ -428,9 +423,8 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
         }
     }
 
-    /* 没走完就不许停: 末段弧的下一段要求停稳时 v_stop 会把目标减到 0, 而 remain_yaw
-     * 可能还大于到位余量 ⇒ 车停在段里永远走不完。见 MF_ARC_CREEP_MPS
-     * (用运行期比较而不是 #if: 预处理器不认浮点字面量。宏为 0 时编译器会把整个分支折掉) */
+    /* 没走完就不许停: v_stop 会把目标减到 0 而 remain_yaw 还大于到位余量 ⇒ 永远走不完。
+     * 见 MF_ARC_CREEP_MPS(用运行期比较而非 #if: 预处理器不认浮点字面量) */
     if ((MF_ARC_CREEP_MPS > 0.0f) && (remain_yaw > tol_deg)
         && (target < MF_ARC_CREEP_MPS))
     {
@@ -454,16 +448,13 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
         /* 按拍观测(路线系): 弧的"目标航向"就是本拍的名义切线 */
         seg_obs(p, seg_pose_yaw(p, pose) + e_psi, e_psi, p->arc_ey_m, 0u);
 
-        /* 曲率前馈 wz_ff = v/R(带符号 radius, 左转+/右转-): 稳态角速度开环直给,
-         * PID 不再靠误差积累(纯P需滞后~3.6°才出稳态差速=进弯晚的根因), 只修打滑
-         * 残差; 速度源用 cur_speed(斜坡后实际值), 起步/减速前馈自动缩放。
-         * 注意: 勿套 seg_wz_ramp —— 进弯缓起 = 进弯前固定多走直线(实测 10~30cm) */
+        /* 曲率前馈 wz_ff = v/R(带符号 radius, 左+/右-): 稳态角速度开环直给, PID 只修打滑
+         * 残差(纯P需滞后~3.6°才出稳态差速=进弯晚的根因); 速度源用 cur_speed, 起步/减速自动
+         * 缩放。勿套 seg_wz_ramp —— 进弯缓起=进弯前固定多走直线(实测 10~30cm) */
 #if MF_ARC_XTRACK_EN
-        /* 横向项**必须乘 arc_sgn**(左+1/右-1): e_y 恒正=弧外、不分左右, 但"回弧内往哪边打"分左右
-         * —— 漏乘会把右转弧推向弧外(实测右转 EY +103 vs 左转 +77)。
-         * 注意 arc_xtrack_sim.py 只有左转用例, 这个符号错在仿真里不会暴露; 改仿真务必补右转用例。
-         * 另: 本项只当**微调** —— 半径的主责归速率内环(v/R + 内环闭环), 故自带 MF_ARC_XTRACK_MAX_FRAC
-         * 限幅, 免得它顶到段内限幅、与内环抢同一个误差(见 mf_config.h 的回路增益估算) */
+        /* 横向项**必须乘 arc_sgn**(左+1/右-1): e_y 恒正=弧外不分左右, 但"回弧内往哪边打"分
+         * 左右 —— 漏乘把右转弧推向弧外(实测右转 EY +103 vs 左转 +77); arc_xtrack_sim.py 只
+         * 有左转用例, 符号错仿真不暴露, 改仿真补右转。本项只当微调, 半径主责归速率内环 */
         {
             float wz_ff = seg_arc_wz_ff(p, a);
             float xt    = MF_ARC_XTRACK_K * p->arc_ey_m * p->arc_sgn;
@@ -481,10 +472,9 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
         }
 #endif
 
-        /* 弧线自限幅: 上面三项叠加(航向P + v/R + 横向K·e_y)可以顶到 cfg.max_wz_dps,
-         * 那是 R≈0.27m 的原地上转 —— 履带横向刮擦物理上做不到, 只会把车钉住、SP 钉在
-         * 限幅上十几秒而弧走不完(2026-09-30 实测)。上限定在几何前馈的
-         * MF_ARC_WZ_MAX_MULT 倍: 半径最紧只允许做到 R/该倍数, 慢一点也不会自锁 */
+        /* 弧线自限幅: 三项叠加(航向P + v/R + 横向K·e_y)可顶到 cfg.max_wz_dps, 那是
+         * R≈0.27m 的原地上转 —— 履带横向刮擦做不到, 只会把车钉住、SP 钉限幅十几秒而弧走不完
+         * (2026-09-30 实测)。上限定在几何前馈的 MF_ARC_WZ_MAX_MULT 倍, 最紧只做到 R/该倍数 */
         {
             float wz_ff  = seg_arc_wz_ff(p, a);
             float wz_lim = mf_absf(wz_ff) * MF_ARC_WZ_MAX_MULT;
@@ -522,9 +512,8 @@ static uint8_t seg_turn(mf_path_ctx_t *p, const mf_seg_t *s,
     return seg_dwell_reached(p, err, seg_tol_yaw(s), dt);
 }
 
-/* 点到点：方位角 P 转向 + 距离 P 前进，到位后按声明收尾转向
- * vx 经 cur_speed 斜坡衔接并按方位角投影(偏角越大前向分量越小, 防绕圈),
- * 角速度缓起, 收尾转向驻留判到位 */
+/* 点到点: 方位角 P 转向 + 距离 P 前进, 到位后按声明收尾转向;
+ * vx 按方位角投影(偏角越大前向分量越小, 防绕圈), 角速度缓起, 收尾转向驻留判到位 */
 static uint8_t seg_goto(mf_path_ctx_t *p, const mf_seg_t *s,
                         const mf_pose_t *pose, float dt,
                         mf_body_cmd_t *out)
@@ -626,9 +615,8 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
     {
     case MF_SEG_MOVE_DIST:
 #if MF_SEG_CARRY_EN
-        /* 残差结转：目标 = 上一段累计目标 + 本段名义长度，把上一段欠走/多走的量带过来。
-         * 上一段不是位移段（ARC/GOTO 之后）则重新对齐到当前里程。
-         * 注意 remain 的算法也跟着换成"目标 - 当前里程"，见 seg_move_dist */
+        /* 残差结转: 目标 = 上一段累计目标 + 本段名义长度, 把上一段欠走/多走的量带过来;
+         * 上一段不是位移段则重新对齐到当前里程。remain 算法跟着换成"目标-当前里程"(见 seg_move_dist) */
         if (p->carry_link)
         {
             p->dist_target_m += s->p.move_dist.dist_m;
@@ -639,9 +627,8 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
         }
         p->carry_link = 1u;
 #endif
-        /* 进段航向误差(带进来多少): 与出口残差同口径(都是在"下发角 - 实测角"上取的),
-         * 于是"纠完剩多少"可直接与它对比 —— 单基准架构的现场验收读数。
-         * 同时把本段名义线的方向存下来(要换回读数域给里程计 x/y 用) */
+        /* 进段航向误差(带进来多少): 与出口残差同口径(都是"下发角-实测角"), "纠完剩多少"
+         * 可直接对比 —— 单基准架构的现场验收读数。同时存下本段名义线方向(换回读数域) */
         {
             float h = seg_cmd_yaw(seg_move_hold_yaw(p, &s->p.move_dist));
 
@@ -653,10 +640,9 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
 #if MF_SEG_CARRY_EN
         p->carry_link = 0u;     /* 转弯后方向变了, 标量残差没有意义 -> 重新对齐 */
 #endif
-        /* 名义圆弧解算到世界系: 圆心 = 进段位姿 + R·左法线。
-         * radius 带符号, 左转圆心落在车体左侧、右转落在右侧, 一条式子两向通用。
-         * 用进段位姿定圆心, 等价于"车此刻正站在名义弧上且切线对齐" —— 与后续
-         * 位姿误差无关, 是本段自己的参考系 */
+        /* 名义圆弧解算到世界系: 圆心 = 进段位姿 + R·左法线。radius 带符号, 左转圆心在车体
+         * 左侧、右转在右侧, 一条式子两向通用。用进段位姿定圆心 = "车此刻正站在名义弧上且
+         * 切线对齐", 是本段自己的参考系, 与后续位姿误差无关 */
         {
             float r = s->p.arc.radius_m;
             float yaw_rad = pose->yaw_deg * (MF_PI_F / 180.0f);
@@ -759,9 +745,8 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
     case MF_SEG_MOVE_DIST:
     case MF_SEG_ARC:
 #if MF_SEG_CARRY_EN
-        /* 全程连续里程: 每拍都记, 含进段拍。进段拍的 ds 虽然由上一拍指令产生，但它是
-         * 真实走过的路, 绝对里程必须记; 上一段欠走/多走的量改由 MOVE 段的"累计名义
-         * 目标"(残差结转)去补, 不再用"丢一拍"做归属 */
+        /* 全程连续里程: 每拍都记, 含进段拍 —— 进段拍的 ds 是真实走过的路, 绝对里程必须记;
+         * 上一段欠走/多走改由 MOVE 段的"累计名义目标"(残差结转)补, 不用"丢一拍"做归属 */
         (void)entered;              /* 连续累计下该标记不再参与累加 */
         p->dist_accum += ds;
 #else
@@ -813,12 +798,10 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
 #endif
         if (s->type == MF_SEG_ARC)
         {
-            /* 弧线出口质量记录: 横向偏差 + 航向偏差(都是段完成这一拍的实测值)，
-             * 由上层主循环取走打 ARC: 行。旧律/新律都记, 指标同源可直接 A/B。
-             * 直线段(MOVE)的记录在 seg_move_dist 里落, 两条路共用同一套字段 */
+            /* 弧线出口质量记录: 横向偏差 + 航向偏差(段完成这一拍的实测值), 由上层取走打
+             * ARC: 行; 旧律/新律都记, 指标同源可直接 A/B。直线段记录在 seg_move_dist 里落 */
             p->seg_exit_ey_m = p->arc_ey_m;
-            /* 实际转角与轮程: 判"转够了没有"与"内环关到位没有"(
-             * 两者的口径与陷阱见 mf_path.h 的字段注释) */
+            /* 实际转角与轮程: 判"转够了没有"与"内环关到位没有"(口径与陷阱见 mf_path.h) */
             {
                 float hdg_d = mf_absf(mf_wrap_deg(pose->yaw_deg - p->entry.yaw_deg));
                 float dyaw_rad = hdg_d * (MF_PI_F / 180.0f);
@@ -837,10 +820,9 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
         p->started = 0;     /* 下一段下拍重新进段 */
         if (p->path[p->idx].type == MF_SEG_END)
         {
-            /* 有待续表: 不清 out、不置 DONE —— 本拍沿用刚完成那段的输出过渡一拍,
-             * 下拍在 tick 顶部切表并**本拍**执行新表首段。于是跨表没有零输出空窗:
-             * cur_speed 连续、轮速环不被复位(mf_motion 只在 vx==wz==0 时清积分),
-             * 也就没有"刹到 0 再阶跃拉回"的起步浪涌(实测 BOR 工况, 见 mf_config.h) */
+            /* 有待续表: 不清 out、不置 DONE —— 本拍沿用刚完成那段的输出过渡一拍, 下拍切表
+             * 并**本拍**执行新表首段 ⇒ 跨表没有零输出空窗(cur_speed 连续、轮速环不被复位,
+             * 无"刹到0再阶跃拉回"的起步浪涌, 实测 BOR 工况, 见 mf_config.h) */
             if (p->next_path == 0)
             {
                 p->state = MF_PATH_DONE;

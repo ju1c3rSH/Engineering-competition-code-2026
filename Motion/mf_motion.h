@@ -2,9 +2,8 @@
  * @file    mf_motion.h
  * @brief   运动框架顶层 API
  *
- * 结构：应用层 sense(采样/存储) -> mf_tick(里程计->段执行器/手动->逆解->轮速环) -> 应用层执行
- * 输入用采样 snapshot mf_state_in_t，输出留在 mf_ctx_t.wheel[].out。用法：mf_init ->
- * mf_start_path(或 mf_set_velocity)；固定周期中断里 sense_sample() -> mf_tick() -> drive_apply()
+ * 结构: 应用层 sense(采样) -> mf_tick(里程计->段执行/手动->逆解->轮速环) -> 应用层执行。
+ * 固定周期中断里 sense_sample() -> mf_tick() -> drive_apply()
  */
 #ifndef MF_MOTION_H
 #define MF_MOTION_H
@@ -78,7 +77,7 @@ typedef struct
 void mf_init(mf_ctx_t *m, const mf_cfg_t *cfg);
 
 /**
- * @brief 主 tick：在固定周期中断里调用（如 panzer TIM4 10ms）
+ * @brief 主 tick：固定周期中断里调用
  * @param in  应用层最新采样快照；为 NULL 或 seq 未变化时本拍不做任何事
  */
 void mf_tick(mf_ctx_t *m, const mf_state_in_t *in);
@@ -105,13 +104,11 @@ uint8_t mf_is_waiting(const mf_ctx_t *m);   /* 当前段是否为 WAIT(主动停
  */
 uint8_t mf_pop_seg_exit(mf_ctx_t *m, uint16_t *seg_index, uint8_t *kind,
                         float *ey_m, float *in_yawerr_deg, float *out_yawerr_deg);
-/* 最近一次 ARC 出口的 R(m), 见 mf_path.h:mf_path_exit_radius_m。它是自证量(R≡R_cmd),
- * 判物理半径要用卷尺 */
+/* 最近一次 ARC 出口的 R(m, 自证量 R≡R_cmd, 判物理半径要用卷尺), 见 mf_path.h */
 float mf_exit_radius_m(const mf_ctx_t *m);
 /* 最近一次 ARC 的实际转角(deg, 恒正; 名义 90), 见 mf_path.h:mf_path_exit_dyaw_deg */
 float mf_exit_dyaw_deg(const mf_ctx_t *m);
-/* 实测弧半径(m, 恒正) 与新鲜标志(*valid 可为 NULL): 见 mf_odom.h 的 mf_reff_t。
- * 当前只供观测(调试口 RAD: 行); 弧半径的判据认它或 R=/卷尺, 不认 ARC:EY */
+/* 实测弧半径(m, 恒正, *valid 可 NULL): 只供观测(RAD: 行); 判据认它或卷尺, 不认 ARC:EY */
 float mf_get_reff(const mf_ctx_t *m, uint8_t *valid);
 /* 当前生效的里程计形状来源(0/1): 调试口回报, 免得"跑在哪个分支"只能靠猜 */
 uint8_t mf_get_odom_arc_src(const mf_ctx_t *m);
@@ -133,7 +130,7 @@ void mf_set_pose(mf_ctx_t *m, float x, float y, float yaw);     /* 重定位/标
 const mf_pose_t *mf_get_pose(const mf_ctx_t *m);
 
 /* ---------- 航向基准（单基准架构，见 mf_config.h 的 MF_HEADING_FRAME_EN） ---------- */
-/* 在 GYRO_ZERO 那一刻调用一次，把"最开始时的车头朝向"钉成全程唯一航向基准 */
+/* GYRO_ZERO 那一刻调一次: 把出发朝向钉成全程唯一航向基准 */
 void mf_set_heading_ref(mf_ctx_t *m, float yaw_deg);
 
 #endif /* MF_MOTION_H */

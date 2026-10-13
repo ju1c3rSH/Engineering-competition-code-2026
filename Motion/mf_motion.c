@@ -90,9 +90,8 @@ uint8_t mf_pop_chain(mf_ctx_t *m)
     return mf_path_pop_chain(&m->path);
 }
 
-/* 清速率内环状态。除停机外, 上层把 cmd 硬置 0(跟瞄驻停/故障硬停)也必须调一次:
- * 内环在 mf_tick 内先于上层 overlay 执行, 上层把输出丢掉却不告诉内环, 积分就会在
- * 驻留期里对着"实测≈0、设定≠0"空转, 放行那一拍甩出一次未指令的转向 */
+/* 清速率内环状态。上层把 cmd 硬置 0(跟瞄驻停/故障硬停)时必须调一次:
+ * 否则积分在驻留期空转, 放行那一拍甩出未指令的转向(约定见 mf_motion.h) */
 void mf_clear_rate(mf_ctx_t *m)
 {
     mf_rate_reset(&m->rate);
@@ -135,8 +134,7 @@ uint8_t mf_is_waiting(const mf_ctx_t *m)
     return mf_path_is_waiting(&m->path);
 }
 
-/* 最近一次 ARC 出口的 R(m) = 本段轮程 / |IMU 转角|, 见 mf_path.c。
- * 它不是物理半径: 内环让 ω=v_wheel/R_cmd ⇒ 本值 ≡ R_cmd(自证), 判真半径只能用卷尺 */
+/* 最近一次 ARC 出口的 R(m) = 轮程/|IMU 转角|; 速率内环令 ω=v_wheel/R_cmd ⇒ 本值 ≡ R_cmd(自证), 判真半径只能用卷尺 */
 float mf_exit_radius_m(const mf_ctx_t *m)
 {
     return mf_path_exit_radius_m(&m->path);
@@ -148,8 +146,7 @@ float mf_exit_dyaw_deg(const mf_ctx_t *m)
     return mf_path_exit_dyaw_deg(&m->path);
 }
 
-/* 实测弧半径(m) + 新鲜标志: 同间隔配对的独立观测量(见 mf_odom.h / mf_config.h 的 MF_REFF_*)。
- * 判"弧此时在哪条半径上"用它, 不要用 ARC:EY —— odom 的形状与指令同源, EY 结构性看不见打滑 */
+/* 实测弧半径(m)+新鲜标志(独立观测量): 判"弧在哪条半径上"用它, 不用 ARC:EY(同源, 结构性看不见打滑) */
 float mf_get_reff(const mf_ctx_t *m, uint8_t *valid)
 {
     return mf_odom_get_reff(&m->odom, valid);
@@ -181,8 +178,7 @@ void mf_set_pose(mf_ctx_t *m, float x, float y, float yaw)
     m->pose = m->odom.pose;
 }
 
-/* 全程唯一航向基准: 由上层在 GYRO_ZERO 那一刻调用一次(见 mf_config.h 的 MF_HEADING_FRAME_EN)。
- * 注意它**不动 pose** —— pose.yaw 1:1 跟随 IMU(下一拍就会被覆盖), 能持久的是这个基准 */
+/* 全程唯一航向基准: GYRO_ZERO 那一刻调一次(MF_HEADING_FRAME_EN); 它不动 pose —— pose.yaw 每拍被 IMU 覆盖 */
 void mf_set_heading_ref(mf_ctx_t *m, float yaw_deg)
 {
     mf_path_set_heading_ref(&m->path, yaw_deg);
@@ -194,9 +190,8 @@ const mf_pose_t *mf_get_pose(const mf_ctx_t *m)
 }
 
 /* ---------- 单步便捷指令：单段路径（段 + 哨兵） ----------
- * 每个函数用**函数内 static** 存段表, 而 mf_start_path 保存的是它的指针 ⇒ 正在跑某条单段路径时
- * 再调任何一个单步指令, 会把在跑的段表**就地覆盖**(静默)。所以单步指令只用于台架/调试,
- * 正式路线一律走 nav_routes 的 flash 段表; 要支持嵌套得把 seg 提到调用方(下一轮) */
+ * 段表是函数内 static ⇒ 跑单段路径时再调任一个单步指令会就地覆盖在跑的表(静默);
+ * 只用于台架/调试, 正式路线走 nav_routes 的 flash 段表 */
 
 void mf_move_rel(mf_ctx_t *m, float dist_m, float speed_mps, float heading_deg)
 {
@@ -330,16 +325,13 @@ void mf_tick(mf_ctx_t *m, const mf_state_in_t *in)
     m->cmd.vy_mps = 0.0f;
 #endif
 
-    /* 4. 角速度内环: 上一步算出的 wz 只是**设定值**, 再对 IMU 实测转速闭环 ——
-     * 履带转弯的实际角速度只有指令的 k 倍(k<1), 这个亏损由本环的积分补掉,
-     * 逆解不再需要静态 boost 去猜 k(见 mf_rate.h / mf_config.h)。
-     * cmd_idle 必须在内环**之前**取: 第 6 步的"直接清输出"判的是外环要不要停,
-     * 若拿内环输出判, 车还在转时 wz!=0 -> 清不掉输出, 偏离急停语义 */
+    /* 4. 角速度内环: 上一步的 wz 只是设定值, 再对 IMU 实测闭环 —— 履带实际角速度只有
+     * 指令的 k 倍(k<1), 亏损由本环积分补掉, 逆解不再静态 boost 猜 k(见 mf_rate.h)。
+     * cmd_idle 必须在内环之前取: 拿内环输出判停, 车还在转时清不掉输出, 偏离急停语义 */
     cmd_idle = (uint8_t)((m->cmd.vx_mps == 0.0f) && (m->cmd.wz_dps == 0.0f));
 
 #if MF_WZ_RATE_EN
-    /* 滑移基线只对**段表弧线**生效: 手动模式的 wz 是遥控量, 弧线的几何前提(半径/
-     * 切向)都不存在, 拿 1/0.57 去放大它等于改动遥控手感 */
+    /* 滑移基线只对段表弧线生效: 手动的 wz 是遥控量, 无弧线几何前提, 拿 1/0.57 放大它=改遥控手感 */
     {
         float slip0 = (m->mode == MF_MODE_PATH) ? m->path.slip_gain : 1.0f;
 

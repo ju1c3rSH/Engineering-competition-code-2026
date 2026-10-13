@@ -3,11 +3,11 @@
 #include "car_config.h"
 #include "selftest.h"
 
-/* 5转/s²: 旧 45 等效阶跃触发电源 BOR(坑-电源与复位.md) */
+/* 5转/s²: 旧 45转/s²(≈21.2m/s²) 等效阶跃触发电源 BOR(坑-电源与复位.md) */
 #define SEG_ACC_MPS2  MF_M_ACC(5.0f)
 
-/* 弯道不能给满: 外轮需求 v×1.3455, 给满则 duty 顶格、wz 前馈按指令算 → 转过头
- * (扫描依据 diag_speed_ceiling.py); 直道无差速需求, 可高于弯道 */
+/* 弯道不能给满: 外轮需求 = v×(1+TRIM·轨距/(2R·k)) = v×1.3455, 给满则 duty 顶格、
+ * wz 前馈按指令算 → 转过头(扫描依据 diag_speed_ceiling.py); 直道无差速需求, 可高于弯道 */
 #define V_STRAIGHT   MF_M_SPEED(3.10f)        /* 直道1.461: 前段有弧, 出弧车速不足会带偏下一弧 */
 #define V_ARC        MF_M_SPEED(2.20f)        /* 弯道1.036: 贴外轮饱和临界(v_free/1.3455)之下 */
 /* 越障弧低速: 上障瞬间打滑/俯仰使里程虚高+转角亏, 降速给外轮差速留余量。
@@ -16,7 +16,7 @@
 /* 越障前直道降速试验已否证(瓶颈不在入障初速), 勿再试 */
 #define V_KEEP_MID   MF_M_SPEED(Middle_speed) /* 人质末段保持原速 */
 /* 减速带区拆段: ZONE 中速压里程虚高 δ 的方差, POST 是干净里程; 三段和恒 45, 未标定前与不拆等价。
- * 标定: PRE=D1/32.74, POST=D2/32.74(1单位=32.74mm), 详见 坑-运动与导航.md §7 */
+ * 标定: PRE=D1/32.74, POST=D2/32.74(1单位地面 = π×156.3/15 = 32.74mm), 详见 坑-运动与导航.md §7 */
 #define V_OBST_ZONE  V_STRAIGHT               /* 标定后改 MF_M_SPEED(Middle_speed): 全程仅 +0.1s */
 #define SEG4_TOTAL_U 45.0f
 #define SEG4_PRE_U   20.0f                    /* TODO(卷尺标定): D1/32.74 */
@@ -51,7 +51,8 @@ static const mf_seg_t tbl_qr[] =          /* NAV_TO_QR: flag0 出发首段(台�
 	SEG_END
 };
 static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: 排爆区去程(末段转弯+末段直线已移入重锚表) */
-/* MOVE 长度按真实轮径 156.3mm(固件假设 150)折算; 与 MF_ARC_WZ_TRIM 同源, 要改一起改 */
+/* MOVE 长度按真实轮径 156.3mm(固件假设 150)折算: 物理长度 = (单位/15)×π×真实轮径;
+ * 与 MF_ARC_WZ_TRIM 同源, 要改一起改 */
 {
 	SEG_MOVE(V_SLOW_ENTRY, MF_M_DIST(41.6f)),
 	SEG_ARC(V_ARC,  TURN_RADIUS_M),   /* 左 90 (flag1) */
@@ -99,7 +100,8 @@ static const mf_seg_t tbl_rebase_hostage[] = /* NAV_REBASE_HOSTAGE: 弧线出口
  * (坑-运动与导航.md §6 + Motion/README.md「返程与终点航向」) */
 #define NAV_RETURN_LEG_YAW_DEG     (-180.0f)
 #define NAV_RETURN_FINAL_REBASE_EN 1u
-/* 返程腿纯直线无弧; 末端接刹停, 提速收益受 v_stop 抛物线钳制会饱和 —— 3.50 已近饱和点 */
+/* 返程腿纯直线无弧; 末端接刹停(v_stop=sqrt(2·acc·MF_STOP_DECEL_SCALE·remain), 巡航 v 只在
+ * remain > v²/(2·1.414) 时有效) ⇒ 提速收益随 v 增大饱和 —— 3.50 已近饱和点 */
 #define V_RETURN     MF_M_SPEED(3.50f)        /* 返程1.649 */
 
 static const mf_seg_t tbl_return[] =      /* NAV_TO_RETURN: flag17~18 返回区 */

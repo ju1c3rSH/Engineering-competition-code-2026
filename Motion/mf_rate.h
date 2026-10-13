@@ -1,8 +1,7 @@
 /**
  * @file    mf_rate.h
- * @brief   角速度内环：外环 wz 只当设定值，对 IMU 实测转速闭环。gain0=本段开环滑移基线，
- *          与 PI 相加恒等于所需补偿而非二选一——写成编译期互斥会使反馈一失效补偿归零
- *          （实测弧半径 0.94→1.63m）。推导与实测见 docs/坑-编码器与里程.md §7.9 */
+ * @brief   角速度内环: 外环 wz 只当设定值, 对 IMU 实测转速闭环。gain0=开环滑移基线, 与 PI
+ *          相加(非二选一) —— 写成编译期互斥会使反馈一失效补偿归零(实测弧半径 0.94→1.63m)。§7.9 */
 #ifndef MF_RATE_H
 #define MF_RATE_H
 
@@ -70,9 +69,8 @@ static inline float mf_rate_apply(mf_rate_t *r, float wz_sp, float wz_meas,
 
     if (fb_valid == 0u)
     {
-        /* 反馈停更：冻结 PI（保留已学到的基线残差）、丢掉 kp 项。绝不可退成纯 wz_sp ——
-         * 那是补偿归零，弧半径 ×1/k。也不可按 wz_meas=0 闭环：误差恒等于设定值，
-         * kp·wz_sp + ki·I 足以把输出顶到 out_max（实算 57dps 命令撞 150dps） */
+        /* 反馈停更: 冻结 PI(保留已学到的基线残差)、丢 kp 项。不可退纯 wz_sp(补偿归零,
+         * 弧半径 ×1/k); 也不可按 wz_meas=0 闭环(kp·wz_sp+ki·I 足以顶到 out_max) */
         r->n_stale++;
         r->primed = 0u;
         out = base + r->pid.ki * r->pid.integral;
@@ -82,9 +80,9 @@ static inline float mf_rate_apply(mf_rate_t *r, float wz_sp, float wz_meas,
              (mf_absf(wz_meas) >= MF_WZ_RATE_SIGN_MIN_DPS) &&
              ((r->out_dps * wz_meas) < 0.0f))
     {
-        /* 打滑只改转速幅值不改转向 ⇒ 实测与下发反号只可能来自反馈源异常(帧偏移/符号错)或单侧空转;
-         * 丢反馈按基线走, 否则 PI 把反向误差当亏损补成正反馈。armed 初值 out_dps=0 不参判。
-         * 两侧须过 SIGN_MIN_DPS 死区: 判号用未滤波原始值, 近零即量化噪声, 无死区每拍误判清 primed ⇒ PI 失效 */
+        /* 打滑只改幅值不改转向 ⇒ 反号只可能来自反馈源异常或单侧空转; 丢反馈按基线走,
+         * 否则 PI 把反向误差当亏损补成正反馈。两侧须过 SIGN_MIN_DPS 死区(近零即量化噪声,
+         * 无死区每拍误判清 primed ⇒ PI 失效) */
         r->n_sign++;
         r->primed = 0u;
         out = base;

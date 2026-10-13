@@ -8,7 +8,7 @@ void mf_pid_init(mf_pid_t *pid, float kp, float ki, float kd,
     pid->kd = kd;
     pid->i_max = i_max;
     pid->out_max = out_max;
-    pid->d_win = 1u;    /* 采样层未下发(实测 200Hz = 2 帧/拍, 逐拍差分即真值): 见 mf_pid.h */
+    pid->d_win = 1u;    /* 采样层未下发 ⇒ 恒逐拍差分, 见 mf_pid.h */
     mf_pid_reset(pid);
 }
 
@@ -41,10 +41,8 @@ float mf_pid_calc(mf_pid_t *pid, float err, float dt)
     float unsat, out;
     uint8_t w, i;
 
-    /* 微分项: 跨 w 拍差分, w 由采样层按**实测帧率**下发(见 mf_pid.h)。
-     * (err − e_hist[w−1])/(w·dt): 跨满一个"整数帧数交替周期"就把该根谱线杀掉;
-     * 慢变真值几乎原样透过(相位代价约半个窗 = w·dt/2)。
-     * hist_fill < w 时给 0 —— 这同时充当"首拍不起跳踢"(旧 first 标志的职责) */
+    /* 微分项: 跨 w 拍差分 (err − e_hist[w−1])/(w·dt) —— 跨满一个整数帧交替周期即杀该根谱线,
+     * 慢变真值几乎原样透过(相位代价约半个窗 = w·dt/2); hist_fill<w 时给 0, 兼作首拍不起跳踢 */
     w = pid->d_win;
     if (w < 1u)
     {
@@ -74,9 +72,8 @@ float mf_pid_calc(mf_pid_t *pid, float err, float dt)
           + pid->ki * pid->integral
           + pid->kd * d_raw;
 
-    /* 条件积分抗饱和: 输出已饱和时只在误差把输出往带内拉的方向退/进积分;
-     * 误差同向(继续顶饱和)则冻结 —— 巡航钳位卡死时单侧差动
-     * "只降不升"的不对称响应即源于此 */
+    /* 条件积分抗饱和: 输出饱和时只在误差往带内拉的方向进积分, 同向(继续顶饱和)冻结
+     * —— 巡航钳位卡死时"只降不升"的不对称响应即源于此 */
     if (unsat > pid->out_max)
     {
         out = pid->out_max;

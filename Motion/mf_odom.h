@@ -2,21 +2,17 @@
  * @file    mf_odom.h
  * @brief   里程计：把各轮位移增量融合成底盘位姿（世界系 x,y,yaw）
  *
- * 底盘差异由编译期宏选择：
- *   差速/履带：ds=(dL+dR)/2，dyaw 用 IMU 或 (dR-dL)/W_eff（履带 W_eff 需打滑标定）
- *   麦轮     ：标准 X-构型四轮正运动学，可估计横向位移
- * 所有底盘均做中点积分（以本周期中间航向旋转）。
+ * 底盘差异由编译期宏选择: 差速/履带 ds=(dL+dR)/2, dyaw 用 IMU 或 (dR-dL)/W_eff(履带需打滑标定);
+ * 麦轮标准 X-构型四轮正运动学。所有底盘均中点积分(以本周期中间航向旋转)。
  */
 #ifndef MF_ODOM_H
 #define MF_ODOM_H
 
 #include "mf_types.h"
 
-/* 弧实测半径估计器（观测口径）：R_eff = Σ轮位移 / |ΣΔψ|
- * 分子分母必须覆盖**同一段时间**：航向是"帧到达才步进"的零阶保持量，拿单拍位移除单拍航向
- * 增量会在帧率≠控制拍率时给出 0 与数倍的跳变（阈值见 mf_config.h 的 MF_REFF_*）。
- * 本值是弧几何**唯一的非循环观测量** —— odom 的形状 ds_enc/Δθ_enc 里打滑因子被约掉，结构性
- * 等于指令半径，ARC 的 e_y/e_psi 因此看不见半径错（docs/坑-编码器与里程.md §8） */
+/* 弧实测半径估计器（观测口径）：R_eff = Σ轮位移 / |ΣΔψ|。分子分母必须覆盖同一段时间
+ * (航向是零阶保持量, 单拍相除会在帧率≠拍率时给出 0 与数倍跳变); 本值是弧几何唯一的
+ * 非循环观测量 —— odom 形状里打滑因子被约掉, ARC 的 e_y/e_psi 看不见半径错(§8) */
 typedef struct
 {
     float    r_m;             /* 上次结算的实测半径(m, 恒正)；0 = 尚无 */
@@ -46,10 +42,9 @@ void mf_odom_init(mf_odom_t *o, float track_width_m,
 /**
  * @brief 里程计更新
  * @param o        里程计对象
- * @param wheel    各轮状态（本函数读取 delta_m 增量）
+ * @param wheel    各轮状态（读 delta_m 增量）
  * @param imu_yaw  外部航向（deg，多圈）；MF_YAW_SOURCE 为 ENCODER 时忽略
- * @param yaw_seq  航向帧计数（快照 mf_state_in_t.yaw_seq）：判"本拍航向是不是新样"，
- *                 供 R_eff 的"同间隔配对"用；编码器航向源填 0
+ * @param yaw_seq  航向帧计数：判"本拍航向是否新样"，供 R_eff 同间隔配对；编码器源填 0
  */
 void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw,
                     uint32_t yaw_seq);

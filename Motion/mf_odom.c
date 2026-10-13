@@ -23,9 +23,8 @@ void mf_odom_init(mf_odom_t *o, float track_width_m,
     o->reff.valid = 0u;
 }
 
-/* 弧实测半径（观测口径）：见 mf_odom.h / mf_config.h 的推导。
- * 三道保护都是"丢窗重来"，绝不把两侧不同性质的量相除：航向阶跃(单拍闸)、窗口转角越界、
- * 以及"攒够 3° 之前比值已不可能落在弧半径量程内"(直线段/跨段残窗)。 */
+/* 弧实测半径(观测口径): 见 mf_odom.h。三道保护都是"丢窗重来", 绝不相除不同性质的量:
+ * 航向阶跃(单拍闸)、窗口转角越界、攒够 MIN_DYAW 前比值已不可能落在弧半径量程(直线/跨段残窗) */
 static void mf_odom_reff_update(mf_odom_t *o, float ds_enc,
                                 float imu_yaw, float dtheta_enc_rad,
                                 uint32_t yaw_seq)
@@ -142,8 +141,8 @@ void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw,
     dR = wheel[1].delta_m;
     ds_enc = (dL + dR) * 0.5f;
 
-    /* 编码器几何转角（rad）：对称打滑下它与真实转角只差一个公共系数 k，
-     * 而 ds_enc 同样被 k 放大，所以比值 R = ds_enc / dtheta_enc 不受 k 影响 */
+    /* 编码器几何转角(rad): 对称打滑下与真实转角只差公共系数 k, 而 ds_enc 同被 k 放大
+     * ⇒ 比值 R = ds_enc / dtheta_enc 不受 k 影响 */
     if (o->track_width_m > 0.0f)
     {
         dtheta_enc_rad = (dR - dL) / o->track_width_m;
@@ -168,9 +167,8 @@ void mf_odom_update(mf_odom_t *o, const mf_wheel_t *wheel, float imu_yaw,
     ds_for_xy = ds_enc;
     if (o->arc_src == 0u)
     {
-        /* 旧律弧长反解 ds_enc×(dyaw_imu/dtheta_enc)：只在**真转弯**时可信，门限见 MF_ODOM_RATIO_MIN_*。
-         * 它使 R_odom ≡ ds_enc/dtheta_enc 只含轮子量 ⇒ 弧半径恒等于指令半径，ARC 的 e_y/e_psi
-         * 结构性失效（推导与两趟实测：docs/坑-编码器与里程.md §8） */
+        /* 旧律弧长反解 ds_enc×(dyaw_imu/dtheta_enc): 只在真转弯时可信(门限见 MF_ODOM_RATIO_MIN_*);
+         * 它使 R_odom ≡ ds_enc/dtheta_enc 只含轮子量 ⇒ 弧半径恒等于指令半径, ARC 的 e_y/e_psi 结构性失效(§8) */
         if ((fabsf(dyaw_deg) >= MF_ODOM_RATIO_MIN_DYAW_DEG)
             && (fabsf(dtheta_enc_rad) >= MF_ODOM_RATIO_MIN_DTHETA_RAD))
         {
