@@ -1,5 +1,6 @@
 ﻿#include "Car_Sense.h"
 #include "mf_config.h"
+#include "car_config.h"
 #include "mf_math.h"
 #include "Encode.h"
 #include "Control_Car.h"
@@ -21,7 +22,7 @@ static float CarSense_YawRate(float yaw, uint8_t *valid)
 {
 	static float    y1, y2;                      /* 上两拍航向 */
 	static uint32_t last_frame;                  /* 上次收到的 0x53 帧序号 */
-	static uint16_t stale = MF_WZ_RATE_FB_TICKS; /* 距上次收到帧的拍数; 初值=尚无反馈 */
+	static uint16_t stale = CARSENSE_WZ_FB_TICKS; /* 距上次收到帧的拍数; 初值=尚无反馈 */
 	static uint8_t  filled;                      /* 滑窗已积累样本数 0..CARSENSE_WZ_DIFF_TICKS */
 	uint32_t frame = Hwt101_YawSeq();                /* 单次读: 读-比-写中途被 USART3 插入会吞帧 */
 	float d;
@@ -34,7 +35,7 @@ static float CarSense_YawRate(float yaw, uint8_t *valid)
 		last_frame = frame;
 		stale = 0u;
 	}
-	else if (stale < MF_WZ_RATE_FB_TICKS)
+	else if (stale < CARSENSE_WZ_FB_TICKS)
 	{
 		stale++;
 	}
@@ -44,7 +45,7 @@ static float CarSense_YawRate(float yaw, uint8_t *valid)
 		y2 = y1;
 		y1 = yaw;
 		filled++;
-		*valid = (uint8_t)((stale < MF_WZ_RATE_FB_TICKS) ? 1u : 0u);
+		*valid = (uint8_t)((stale < CARSENSE_WZ_FB_TICKS) ? 1u : 0u);
 		return 0.0f;   /* 窗口未填满: 没有差分基线, 也不给反馈 */
 	}
 
@@ -54,14 +55,14 @@ static float CarSense_YawRate(float yaw, uint8_t *valid)
 
 	rate = d / ((float)CARSENSE_WZ_DIFF_TICKS * MF_DT_S);
 
-	if ((rate > MF_WZ_RATE_MEAS_MAX_DPS) || (rate < -MF_WZ_RATE_MEAS_MAX_DPS))
+	if ((rate > CARSENSE_WZ_MEAS_MAX_DPS) || (rate < -CARSENSE_WZ_MEAS_MAX_DPS))
 	{
 		/* 航向阶跃(置零/协议假同步)不是真实转速: 丢窗重来, 免得阶跃前后两拍相除 */
 		rate = 0.0f;
 		filled = 0u;
 	}
 
-#if MF_WZ_RATE_GYRO_FRAME_EN
+#if CARSENSE_WZ_SRC_GYRO_EN
 	{
 		static uint32_t last_seq;
 		float w = Hwt101_GetWzDps();
@@ -72,7 +73,7 @@ static float CarSense_YawRate(float yaw, uint8_t *valid)
 		 * 帧计数门 + 量程闸一起兜住。
 		 * 量程闸仍要留: sum8 只有 1/256 效力, 交叉校验挡住的只是与差分不符的那些。 */
 		if ((Hwt101_WzSeq() != last_seq) &&
-		    (w <= MF_WZ_RATE_MEAS_MAX_DPS) && (w >= -MF_WZ_RATE_MEAS_MAX_DPS))
+		    (w <= CARSENSE_WZ_MEAS_MAX_DPS) && (w >= -CARSENSE_WZ_MEAS_MAX_DPS))
 		{
 			last_seq = Hwt101_WzSeq();
 			rate = w;
@@ -81,7 +82,7 @@ static float CarSense_YawRate(float yaw, uint8_t *valid)
 	}
 #endif
 
-	*valid = (uint8_t)((stale < MF_WZ_RATE_FB_TICKS) ? 1u : 0u);
+	*valid = (uint8_t)((stale < CARSENSE_WZ_FB_TICKS) ? 1u : 0u);
 	return rate;
 }
 

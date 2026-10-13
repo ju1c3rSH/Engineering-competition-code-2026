@@ -4,6 +4,8 @@
 #ifndef _CAR_CONFIG_H_
 #define _CAR_CONFIG_H_
 
+#include "mf_config.h"
+
 /* 路线自测总闸: 1 = 编入上电自跑全程路线 + 停等插桩 + 漂移诊断; 0 = 比赛形态 */
 #define SELFTEST_EN              0u
 
@@ -36,5 +38,20 @@
  * 调试口是纯观测通道, 不该抢占 10ms 控制环。UART4(底盘链路)/USART3(HWT101)/USART6(转台)
  * 是控制链路, 保持 0。usart.c 与 dma.c 两处都取这一个宏 —— 单点改 */
 #define DEBUG_IRQ_PRIO           3u
+
+/* 实测角速度来源: 0=航向差分 1=HWT101 0x52 帧。置 1 前必须台架确认符号(悬案: 接手核实报告 §8) */
+#define CARSENSE_WZ_SRC_GYRO_EN  0
+
+/* 实测角速度上限(dps), 超限=阶跃/伪帧, 丢弃。400=实车转速上限, 非模块量程 */
+#define CARSENSE_WZ_MEAS_MAX_DPS  400.0f
+
+/* 反馈新鲜度(ms), 超时判停更、内环退纯前馈。350=10Hz 下容连丢 2 帧(坑-编码器与里程.md §7) */
+#define CARSENSE_WZ_FB_TIMEOUT_MS 350u
+/* 换算成拍; 分母必须从 MF_DT_S 导出, 写死会在改拍时静默缩半 */
+#define CARSENSE_WZ_FB_TICKS \
+    (CARSENSE_WZ_FB_TIMEOUT_MS / (uint32_t)(MF_DT_S * 1000.0f))
+#if (CARSENSE_WZ_FB_TIMEOUT_MS < 10u)
+#error "car_config.h: CARSENSE_WZ_FB_TIMEOUT_MS 不能小于一个控制拍"
+#endif
 
 #endif

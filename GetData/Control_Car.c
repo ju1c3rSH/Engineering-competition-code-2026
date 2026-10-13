@@ -24,7 +24,7 @@ float Car_GetYawDeg(void)
 }
 
 /* 当前 HWT101 Z 轴角速度(deg/s, 0x52 帧直给, 非差分)。用途: ① 观测口径 —— 与"航向差分"并排打, 判后者零阶保持采样伪影(§8.6/§8.11);
- * ② 备选速率反馈源(MF_WZ_RATE_GYRO_FRAME_EN), 但**必须先台架确认符号**(官方没给方向, 反了即正反馈, 反号自检不足替代)。 */
+ * ② 备选速率反馈源(CARSENSE_WZ_SRC_GYRO_EN, car_config.h), 但**必须先台架确认符号**(官方没给方向, 反了即正反馈, 反号自检不足替代)。 */
 float Car_GetGyroWzDps(void)
 {
 	return Hwt101_GetWzDps();

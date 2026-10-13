@@ -12,9 +12,7 @@
 #ifndef MF_CONFIG_H
 #define MF_CONFIG_H
 
-#include <stdint.h>   /* MF_WZ_RATE_FB_TICKS 用 uint32_t 做浮点→整数转换。本文件历史上
-                      * 全文无 include, 靠"包含者恰好先include 了 stdint"才编过 —— 宿主端
-                      * 回归(独立编译单元)换个包含顺序就会报unknown type name */
+#include <stdint.h>   /* 服务 car_config.h 的 CARSENSE_WZ_FB_TICKS 浮点转换, 勿删 */
 
 /* ================= 底盘类型 ================= */
 #define MF_CHASSIS_DIFF     0   /* 双轮差速底盘 */
@@ -47,12 +45,7 @@
 #endif
 
 #ifndef MF_DT_S
-/* 控制周期(panzer TIM4=4ms/250Hz, 2026-10-10 从 5ms 改, 对齐 HWT101 实际 250Hz 帧率)。
- * 改周期必须同步核对 5 处(清单见 §8.13): ① panzer.ioc TIM4.Period
- * (CubeMX 重生成源头, 漏改静默回退) ② MF_WZ_RATE_FB_TICKS ③ MF_REFF_STALE_TICKS(保 1.0s 语义)
- * ④ App/car_units.h 的 CAR_TICK_MS ⑤ GetData/hwt101.h 的 HWT101_FRAME_DT_S(交叉校验分母, 按
- * **模块实际帧率**填, 不随本宏自动变)。CARSENSE_WZ_DIFF_TICKS **不随本宏缩放**(受 Car_Sense.c
- * 固定两样本实现约束, 见该文件注释)。 */
+/* 控制周期 */
 #define MF_DT_S             0.004f
 #endif
 
@@ -97,7 +90,7 @@
 #define MF_ARC_WZ_TRIM      1.042f
 #endif
 
-/* ---- 弧线 ω 前馈的**速度源**（2025 boom_finish 的做法规整回来, 2026 重写时丢了这个机制）----
+/* ---- 弧线 ω 前馈输入的速度源----
  * ω_sp = v_src/R_cmd·TRIM, 而 R_true = v_ground/ω_actual:
  *   v_src = 指令(cur_speed) ⇒ R_true = R_cmd·η/TRIM·(v̂/v_cmd)  ← 车速掉多少, 半径掉多少
  *   v_src = 实测(v̂)         ⇒ R_true = R_cmd·η/TRIM             ← 车速在分子分母里**约掉**
@@ -276,33 +269,7 @@
 #ifndef MF_WZ_RATE_I_MAX
 #define MF_WZ_RATE_I_MAX  20.0f
 #endif
-/* 实测角速度来源: 0=航向差分(默认, 同路 IMU 航向导数, 符号定义上不会错); 1=HWT101 0x52 角速度帧(近零延迟、无差分量化噪声)。
- * 0x52 的字节偏移/量纲/校验已对维特官方协议逐项核实; 只剩**符号方向**文档没给 ⇒ 仍需台架确认:
- * 匀速转 ~90dps, 同时打印 Hwt101_GetWzDps()(0x52) 与航向差分, 同号同量级才置 1(mf_rate.h 反号自检只是兜底)。 */
-#ifndef MF_WZ_RATE_GYRO_FRAME_EN
-#define MF_WZ_RATE_GYRO_FRAME_EN  0
-#endif
-/* 航向差分速率(deg/s)的物理上限: 超过即判为航向阶跃(GYRO_ZERO 置零/协议假同步),
- * 本拍不给反馈并就地重播种。取 400 = 实车转速上限(不是模块量程: HWT101 满量程 ±2000dps) */
-#ifndef MF_WZ_RATE_MEAS_MAX_DPS
-#define MF_WZ_RATE_MEAS_MAX_DPS   400.0f
-#endif
-/* 反馈新鲜度超时(ms): 连续这么久没收到 0x53 帧即判传感器停更, 内环退回纯前馈。
- * 必须容得下"最慢帧率 + 连续丢 2 帧": 出厂 10Hz(100ms) → 丢两帧 = 300ms ⇒ 取 350 */
-#ifndef MF_WZ_RATE_FB_TIMEOUT_MS
-#define MF_WZ_RATE_FB_TIMEOUT_MS  350u
-#endif
-/* 换算成控制拍数。分母由 MF_DT_S 导出而非写死 —— 写死过(10u), 改拍周期而漏改它
- * 会让反馈超时窗口静默缩一半(350ms→175ms), 且不报错 */
-#ifndef MF_WZ_RATE_FB_TICKS
-#define MF_WZ_RATE_FB_TICKS       (MF_WZ_RATE_FB_TIMEOUT_MS / (uint32_t)(MF_DT_S * 1000.0f))
-#endif
-#if (MF_WZ_RATE_FB_TIMEOUT_MS < 10u)
-#error "mf_config.h: MF_WZ_RATE_FB_TIMEOUT_MS 不能小于一个控制拍"
-#endif
-/* 浮点除数恒 ≥1 才安全(否则除零)。#if 里无法对浮点做 (uint32_t) 转换, 只能转成运行时断言;
- * 当前 MF_DT_S = 0.004f: 0.004f*1000 = 4.0000002 同样精确舍入为 4, FB_TICKS = 350/4 = 87
- * (0.005f 时代为 5.0/70 拍, 反汇编 CMP #0x45 确认过; 换 4ms 后应复核为 CMP #0x57) */
+/* 速率反馈源选择/新鲜度/量程闸已迁 car_config.h(CARSENSE_WZ_*): 采样层旋钮, 运动库不消费 */
 /* 一阶低通(Hz): 太狠会吃掉内环相位裕度。15Hz 对应差分噪声 0.5dps -> 约 0.2dps */
 #ifndef MF_WZ_RATE_LPF_HZ
 #define MF_WZ_RATE_LPF_HZ 15.0f
