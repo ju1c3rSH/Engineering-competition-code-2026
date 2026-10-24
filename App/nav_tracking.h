@@ -91,14 +91,19 @@ typedef enum
 #define TRACKING_ERR_SAT_LEVEL          0.95f   /* |e| 到此=量程饱和。实测 found=1 也会长时间给 ±0.96 的
                                                  * 常值(2026-10-09 现场 2.5s), 它既不是"接近速度"、也不是
                                                  * 重捕后的可信起点 ⇒ 与 found=0 同处理: 清窗 */
-/* 定点开火(带符号, >0 启用): 进阈窗(|e|≤THR)的点火采样带 ±半窗帧相位散布, 且相机安装
- * 偏置使"视觉零点 e=0"≠弹着圆心对应的停点 —— 改为 E 过 **−FIRE_PAST_E**(过视觉零点后再
- * 走这么多 ×1e-4 计数)才点火。停点 = −FIRE_PAST_E − C(近靶速 C≈80~150, 实测 ~115),
- * **标定 1:1**: 弹着还早 X 计数 → 本宏 +X, 冲过 → −X, 无斜率猜测。启用后 J1 进阈窗与
- * 预测式同时退位(TRKD 的 THR 行改显开火点幅值); J2 过零兜底保留 */
-#define TRACKING_FIRE_PAST_EN           1u      /* 0 = 回退进阈窗点火 */
-#define TRACKING_FIRE_PAST_E            150u    /* 开火点 150 计数≈2.2cm(1 计数≈0.15mm, S≈1.5m/1.0)。
-                                                 * 首趟顺带标定 C: C = −停点E − 本值, 之后 1:1 修正 */
+/* 定点开火(带符号, >0 启用): E ≤ +FIRE_PAST_E 就点火 —— E>0=靶心仍在车前方,
+ * 天然欠冲。停点 = 点火点 - C(C ≈ 110~115 计数, 近靶速下恒定), 故微调
+ * 永远只需“前进”一个方向。
+ * 视觉侧已做弹着纠偏 ⇒ 目标就是 E→0, 本宏不再背目标偏置,
+ * 只需“够大”保证欠冲。
+ * 标定 1:1: 跑一趟读 TRK:A>S 行的 E_stop —— E_stop<0(过冲) ⇒ 宏 += |E_stop|+40,
+ *        E_stop>+80(欠冲) ⇒ 宏 -= (E_stop-30); 两趟收敛后永不重标。
+ * 启用后 J1 进阀窗与预测式同时退位(TRKD 的 THR 行改显点火点,
+ * 带符号); J2 过零兜底保留 */
+#define TRACKING_FIRE_PAST_EN           1u      /* 0 = 回退进阀窗点火 */
+#define TRACKING_FIRE_PAST_E            150u    /* 点火点 150 计数 = 4.8px ≈ 22mm。首趟顺带标 C:
+                                                 * C = 点火点 - 停点E。入口条件见
+                                                 * TRK:A>S 行的 EF= 字段读法 */
 #if (TRACKING_ERR_WIN < 3u)
 #error "TRACKING_ERR_WIN 必须 >= 3"
 #endif
@@ -107,7 +112,10 @@ typedef enum
 typedef struct { uint8_t state, found, braking, reason, near, settling;
                  int8_t zero_sign;
                  int16_t err_f10k;
-                 int16_t thr_f10k;    /* 当拍实际生效的点火阈(定点): 标定 LAG 与判"预测是否生效"都读它 */
+                 int16_t thr_f10k;    /* 当拍点火点(定点, 带符号): 标定 FIRE_PAST_E 读它, 正常恒 +150 */
+                 int16_t fire_e_f10k; /* 触发制动那一拍的 E(定点): C = E_stop - 本值,
+                                      * 本值只在点火那一拍刷新(见 Tracking_BrakeStart);
+                                      * 0=本轮尚未点火(指令刹停/FAULT 不刷它) */
                  uint16_t frame_age_ms, hold_ms; } Trk_Info_t;
 
 void    Tracking_Start(uint8_t speed_level, uint8_t aim_axis);

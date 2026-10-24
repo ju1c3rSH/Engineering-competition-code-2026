@@ -21,6 +21,8 @@ static struct
 	uint8_t  braking;                      /* 已触发制动的锁存: 不再重判, 只走制动斜坡 */
 	float    brake_thr;                    /* 当拍实际生效的点火阈(观测用; 触发后不再刷新=保留点火值) */
 	float    brake_cap;                    /* 制动斜坡: 当拍允许的段表目标速度上限 */
+	int16_t  fire_e_f10k;                   /* 触发制动那一拍的 E(定点, 观测用): C = E_stop - 本值;
+	                                        * 0=本轮尚未点火(指令刹停/FAULT 不刷它) */
 	uint16_t noconv_ms;                    /* 段表已完 + |e|>阈 的连续累计(FAULT 01) */
 	uint8_t  noconv_latch;                 /* FAULT(01) 闩锁: 防重复上报, START/STOP 清 */
 	uint16_t lost_ms;                      /* 段表已完 + 无测量的连续累计(FAULT 02) */
@@ -229,6 +231,7 @@ void Tracking_Start(uint8_t tracking_speed_level, uint8_t aim_axis)
 	tracking.frame_age_ms = 0u;
 	tracking.target_found_flag = 0u;
 	tracking.horizontal_error_normalized = 0.0f;
+	tracking.fire_e_f10k = 0;       /* 新一轮跟瞄: EF=0 直到本拍真点火 */
 	tracking_error_pending = 0u;    /* 丢弃上轮残帧, 首拍不等旧误差 */
 	tracking.noconv_latch = 0u;     /* START/STOP 清未收敛闩锁, 允许 Brain 的容错计数继续累计 */
 	Tracking_Goto(TRACKING_ARMED);
@@ -248,6 +251,8 @@ static void Tracking_EnterStopped(mf_ctx_t *motion)
 static void Tracking_BrakeStart(mf_ctx_t *motion)
 {
 	tracking.braking = 1u;
+	tracking.fire_e_f10k = (int16_t)(tracking.horizontal_error_normalized
+	                                * TRACKING_ERROR_FIXED_SCALE);
 	tracking.brake_cap = motion->path.cur_speed;
 	tracking.settle_ms = 0u;       /* 停稳计时从制动起点锚定: 制动段 ≤0.45/BRAKE≈112ms,
 	                                * 计入 GIVEUP 预算仍余 ~890ms, 不必另设"目标到零"迁移检测 */
@@ -558,11 +563,18 @@ uint8_t Tracking_ApplyOverlay(void)
 #if (TRACKING_FIRE_PAST_EN != 0u)
 		if (TRACKING_FIRE_PAST_E > 0u)
 		{
-			/* 定点开火: E ≤ −FIRE_PAST_E 才点火。丢检帧 e 被置 0 不满足负过点,
-			 * 比进阈窗更抗丢检; 停点 = −FIRE_PAST_E − C, C 恒定 ⇒ 标定 1:1 */
-			thr = -(float)TRACKING_FIRE_PAST_E / TRACKING_ERROR_FIXED_SCALE;
+			/* 定点开火: E ≤ +FIRE_PAST_E 就点火 —— E>0=靶心仍在车前方, 天然欠冲,
+			 * 故停点 = 点火点 - C(C~110~115 计数, 近靶速下恒定), 微调因此永远只需
+			 * “前进”一个方向。视觉侧已做弹着纠偏 ⇒ 目标就是 E→0,
+			 * 本宏不再背安装偏置, 只需“够大”保证欠冲。
+			 * 标定 1:1: 跑一趟读 TRK:A>S 行的 E_stop —— E_stop<0(过冲) ⇒ 宏 += |E_stop|+40,
+			 *        E_stop>+80(欠冲) ⇒ 宏 -= (E_stop-30); 两趟收敛后永不重标。
+			 * 符号从负过点反转的代价: 旧写法“丢检帧 e 保持旧值即不满足负过点”的抗丢检
+			 * 特性随之消失(旧值已 ≤+150 时 hold_ms 会继续累计) —— 由 hold_ms>=40ms 与
+			 * frame_age>500ms 清 hold 两道闸限制, 最多提前 150 计数点火 */
+			thr = +(float)TRACKING_FIRE_PAST_E / TRACKING_ERROR_FIXED_SCALE;
 			in_win = (uint8_t)((e <= thr) && (Tracking_InSlowZone(motion) != 0u));
-			tracking.brake_thr = -thr;   /* 观测: THR 行显示开火点幅值 */
+			tracking.brake_thr = thr;   /* 观测: THR 行显示点火点(带符号, +150=靶心前方 150 计数) */
 		}
 		else
 #endif
@@ -660,6 +672,7 @@ void Tracking_GetInfo(Trk_Info_t *out)
 	out->zero_sign    = tracking.zero_sign;
 	out->err_f10k     = (int16_t)(tracking.horizontal_error_normalized * TRACKING_ERROR_FIXED_SCALE);
 	out->thr_f10k     = (int16_t)(tracking.brake_thr * TRACKING_ERROR_FIXED_SCALE);
+	out->fire_e_f10k  = tracking.fire_e_f10k;
 	out->frame_age_ms = tracking.frame_age_ms;
 	out->hold_ms      = tracking.hold_ms;
 	__enable_irq();

@@ -303,6 +303,9 @@ void Car_Debug_Stat_Print(void)
 }
 
 /* 跟瞄状态迁移打点(主循环): Tracking_Goto 在 ISR 只登记, 这里打一行。
+ * EF=触发制动那一拍的 E(定点): A>S 行里 E=停点、EF=点火点,
+ * C = E - EF = 本趟实际滑行量(近靶速 ≈110~115 计数); EF=0 表示这次
+ * 迁移不是点火引起的(指令刹停/FAULT/跟眠关停)。
  * 同 D-1: 迁移记录/跟瞄快照/剩余里程分三次取样(基线共用一个窗口), 可能跨拍 */
 void Car_TrkChange_Log(void)
 {
@@ -319,9 +322,9 @@ void Car_TrkChange_Log(void)
 	rs_mm = (uint32_t)(mf_path_remain_m(&mf_app()->path) * 1000.0f);
 	__enable_irq();
 
-	printf("TRK:%c>%c E=%d F=%u AGE=%u RS=%u\r\n",
+	printf("TRK:%c>%c E=%d EF=%d F=%u AGE=%u RS=%u\r\n",
 	       Tracking_StateChar((TrackingState_t)from), Tracking_StateChar((TrackingState_t)to),
-	       (int)tri.err_f10k, (unsigned)tri.found,
+	       (int)tri.err_f10k, (int)tri.fire_e_f10k, (unsigned)tri.found,
 	       (unsigned)tri.frame_age_ms, (unsigned)rs_mm);
 }
 
@@ -333,8 +336,10 @@ void Car_TrkChange_Log(void)
  * 调大 TRACKING_NEAR_E_THR(与 LAG 同款一次标定);
  * W=1 = 目标速度已到零、正在等轮速实测停稳(物理停稳确认) —— DONE 会晚 ~150ms 发,
  * 属预期; 长时间 W=1 说明轮速测速异常(超时 GIVEUP 会兜底放行)
- * THR=当拍点火阈(定点): 恒等于 300 说明预测式没生效(斜率一直没被采信);
- * 标定 TRACKING_LAG_MS 直接读它(见 build_verify/calibrate_lag_ms.py)。
+ * THR=当拍点火点(定点, 带符号): 正常恒等于 +150(定点开火生效, 预测式被
+ * #if 屏蔽)。若 THR 跌到 80~470 = FIRE_PAST_EN 被关或 FIRE_PAST_E=0, 已退回预测式/固定阀;
+ * 标定 FIRE_PAST_E 读 TRK:A>S 行的 E_stop 与 EF: C = E_stop - EF 即本趟实际滑行量
+ * (近靶速 ≈110~115; 跌到 60 或涨到 240 都要先查近靶限速 N= 是否被释放)。
  * 同 D-1: tri 与 wheel 分两次取样(基线共用一个窗口), 可能跨拍 → 上述读法会被误导 */
 void Car_TrkDetail_Log(void)
 {
