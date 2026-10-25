@@ -27,6 +27,7 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->arc_dead_deg     = 0.0f;
     p->arc_dead_ticks   = 0u;
     p->arc_wzsp_peak    = 0.0f;
+    p->arc_soft_min     = 1.0f;
     p->arc_prev_yaw_deg = 0.0f;
     p->slip_gain = 1.0f;
     p->seg_exit_ey_m = 0.0f;
@@ -428,6 +429,27 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
         }
     }
 
+#if MF_ARC_ENTRY_SOFT_EN
+    /* 弧入口软启动: 本段前 LEN 米把**速度**乘 MULT→1 线性放开。wz_ff=v/R 跟着 v 一起缩
+     * ⇒ R 与几何都不变, 只是"破静摩擦那一刻的差速需求"变小 ⇒ 空转窗口 DD 变小(见 mf_config.h)。
+     * 用本段已走轮程判窗口: dist_accum/dist_base_m 在 CARRY 开关的两种口径下都成立。
+     * 放在 creep 下限**之前**: 近完成时窗口早已过去(mult 已回 1), 不会与下限打架 */
+    {
+        float s_in = mf_absf(p->dist_accum - p->dist_base_m);
+        float mult = 1.0f;
+
+        if (s_in < MF_ARC_ENTRY_SOFT_LEN_M)
+        {
+            mult = MF_ARC_ENTRY_SOFT_MULT
+                 + (1.0f - MF_ARC_ENTRY_SOFT_MULT) * (s_in / MF_ARC_ENTRY_SOFT_LEN_M);
+        }
+        target *= mult;
+        if (mult < p->arc_soft_min)     /* 观测: 本弧降到过多少(1.0=没动作), ARC: 的 SE 位 */
+        {
+            p->arc_soft_min = mult;
+        }
+    }
+#endif
     /* 没走完就不许停: v_stop 会把目标减到 0 而 remain_yaw 还大于到位余量 ⇒ 永远走不完。
      * 见 MF_ARC_CREEP_MPS(用运行期比较而非 #if: 预处理器不认浮点字面量) */
     if ((MF_ARC_CREEP_MPS > 0.0f) && (remain_yaw > tol_deg)
@@ -686,6 +708,7 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
             p->arc_dead_deg     = 0.0f;
             p->arc_dead_ticks   = 0u;
             p->arc_wzsp_peak    = 0.0f;
+            p->arc_soft_min     = 1.0f;
             p->arc_prev_yaw_deg = pose->yaw_deg;
         }
         /* 弧线是唯一"全程都在转弯"的段, 滑移亏损也全程都在 —— 给它前馈基线 */
@@ -933,7 +956,16 @@ static float seg_next_entry_speed(const mf_path_ctx_t *p)
     switch(next->type)
     {
         case MF_SEG_MOVE_DIST: return fabsf(next->p.move_dist.speed_mps);
+#if MF_ARC_ENTRY_SOFT_EN
+        case MF_SEG_ARC:
+            /* 弧入口软启动的**前半**: 让**前一段**就按 MULT×弧速收尾。
+             * 只缩弧段自己来不及 —— 减速度被 acc 限着, 破静摩擦那 80ms 里速度根本没降下来
+             * (弧段内部只是把前 LEN 米线性放开到全速, 见 seg_arc)。
+             * 代价: 弧前的那一段要提前减速, 32U→ARC10 这种"高速接弧"约 +0.25s */
+            return fabsf(next->p.arc.speed_mps) * MF_ARC_ENTRY_SOFT_MULT;
+#else
         case MF_SEG_ARC:       return fabsf(next->p.arc.speed_mps);
+#endif
 
         case MF_SEG_TURN_TO:
         case MF_SEG_TURN_REL:
@@ -1016,7 +1048,7 @@ float mf_path_seg_remain_m(const mf_path_ctx_t *p)
 }
 
 void mf_path_get_arc_diag(const mf_path_ctx_t *p, float *wheel_deg, float *dead_deg,
-                          uint16_t *dead_ticks, float *wzsp_peak)
+                          uint16_t *dead_ticks, float *wzsp_peak, float *soft_min)
 {
     if (p == 0)
     {

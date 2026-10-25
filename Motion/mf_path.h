@@ -58,6 +58,7 @@ typedef struct
     float    arc_dead_deg;      /* Σ max(0, 应转-实转): 累计"该转没转"(度) */
     uint16_t arc_dead_ticks;    /* 单拍 应转-实转 > 50%*应转 的拍数 */
     float    arc_wzsp_peak;     /* 本弧 |wz_sp| 峰值: 判有没有顶到 MF_ARC_WZ_MAX_MULT */
+    float    arc_soft_min;      /* 本弧入口软启动的最低倍数(1.0=没动作), ARC: 的 SE 位 */
     float    arc_prev_yaw_deg;  /* 上一拍航向: 求本拍 IMU 实际转角用 */
     float slip_gain;        /* 本段的开环滑移基线（弧线 = MF_ARC_SLIP_GAIN，其余 1.0）。
                              * 速率内环(mf_rate.h)拿它当输出侧前馈；见 mf_config.h */
@@ -191,9 +192,10 @@ float mf_path_get_vsrc(const mf_path_ctx_t *p);
  *
  * 判据: dead_deg*R 就是 delta(mm)。健康弧 delta 5~8mm; 坎后弧可到 20~57mm。
  * 出参均可传 0。进段清零点之后按拍累加, 段完成后保留到下一次 ARC 进段。
+ * soft_min = 本弧入口软启动的最低倍数(MF_ARC_ENTRY_SOFT_EN; 1.0=没动作)
  */
 void mf_path_get_arc_diag(const mf_path_ctx_t *p, float *wheel_deg, float *dead_deg,
-                          uint16_t *dead_ticks, float *wzsp_peak);
+                          uint16_t *dead_ticks, float *wzsp_peak, float *soft_min);
 
 /* ---- 按拍观测（调试口用）：与 mf_path_pop_seg_exit 的区别是"每拍都更新" ---- */
 typedef struct

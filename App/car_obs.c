@@ -462,19 +462,19 @@ void Car_SegExit_Log(void)
 		/* 后四位 = 坎后弧"空转窗口"直读(判读阈值 坑-运动与导航.md §7.3): WD-900=轮上净多计,
 		 * DK=空转拍数, DD=delta(mm, 按名义半径折算), WP=|wz_sp|峰值。新位只许追加在行尾:
 		 * analyze_nav_log.py 的正则行首锚定, 插中间会整行失配 */
-		float    arc_wd, arc_dd, arc_wp;
+		float    arc_wd, arc_dd, arc_wp, arc_se;
 		uint16_t arc_dk;
 
 		__disable_irq();
-		mf_path_get_arc_diag(&mf_app()->path, &arc_wd, &arc_dd, &arc_dk, &arc_wp);
+		mf_path_get_arc_diag(&mf_app()->path, &arc_wd, &arc_dd, &arc_dk, &arc_wp, &arc_se);
 		__enable_irq();
-		printf("ARC:%u EY=%d YE=%d R=%d DY=%d WD=%d DK=%u DD=%d WP=%d\r\n", (unsigned)seg,
+		printf("ARC:%u EY=%d YE=%d R=%d DY=%d WD=%d DK=%u DD=%d WP=%d SE=%d\r\n", (unsigned)seg,
 		       (int)(ey * 1000.0f), (int)(oe * 10.0f),
 		       (int)(mf_exit_radius_m(mf_app()) * 1000.0f),
 		       (int)(mf_exit_dyaw_deg(mf_app()) * 10.0f),
 		       (int)(arc_wd * 10.0f), (unsigned)arc_dk,
 		       (int)(arc_dd * TURN_RADIUS_M * (M_PI_F / 180.0f) * 1000.0f),
-		       (int)(arc_wp * 10.0f));
+		       (int)(arc_wp * 10.0f), (int)(arc_se * 100.0f));
 	}
 	else
 	{
