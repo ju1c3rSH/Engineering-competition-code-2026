@@ -613,6 +613,7 @@ void Car_DebugTask(void)
 	Car_YawZero_Log();     /* 整表重锚: 置零那拍打一行 YAWZERO(基点/开关) */
 	Car_TrkChange_Log();   /* 跟瞄状态迁移: 四态机换态才打一行 TRK:旧>新 */
 	Car_TrkDetail_Log();   /* ARMED/STOPPED 期 10Hz 打点 TRKD: 判"误差卡在哪一环" */
+	Car_TrimLog();         /* trim 微调事件: 进/挪/终态各一行 TRKT(归因, 读后清) */
 	if (trace_f != 0u)
 	{
 		Car_Obs_TraceArm();   /* 't': 武装段内跟踪, 命中弧段自动开窗(见 car_obs.c) */

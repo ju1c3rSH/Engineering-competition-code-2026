@@ -1,5 +1,6 @@
 ﻿#include "car_obs.h"
 #include "car_link.h"
+#include "car_units.h"      /* TURN_RADIUS_M: ARC: 行 DD 位按名义弧半径折 mm */
 #include "main.h"
 #include "Emm_V5.h"
 #include "mf_path.h"
@@ -336,6 +337,12 @@ void Car_TrkChange_Log(void)
  * 调大 TRACKING_NEAR_E_THR(与 LAG 同款一次标定);
  * W=1 = 目标速度已到零、正在等轮速实测停稳(物理停稳确认) —— DONE 会晚 ~150ms 发,
  * 属预期; 长时间 W=1 说明轮速测速异常(超时 GIVEUP 会兜底放行)
+ * 微调(trim, ST=S 期): T= 子相位(E=评估 C=爬行 S=停稳 F=终态 - 未启用);
+ * I=已移动次数; G=在线增益x10(计数/mm, 换算 E↔里程 用它, 每趟实测不写死);
+ * R=终态残余 E; GV=终态成因码(0=收敛, 1=迭代/时长超限 2=等帧超时 3=几何反转
+ * 4=预算耗尽 5=被主控点名刹停) —— 细分只为归因, 逐条事件看 TRKT 行。
+ * 收敛健康判据: ST=S 期 T 从 E→C→S→F 走 1~2 轮即 F 且 GV=0; 长时间停在 C = 堵转/
+ * 打滑(单步超时守卫会切走); GV=1 要对照 R 判断是否可接受
  * THR=当拍点火点(定点, 带符号): 正常恒等于 +150(定点开火生效, 预测式被
  * #if 屏蔽)。若 THR 跌到 80~470 = FIRE_PAST_EN 被关或 FIRE_PAST_E=0, 已退回预测式/固定阀;
  * 标定 FIRE_PAST_E 读 TRK:A>S 行的 E_stop 与 EF: C = E_stop - EF 即本趟实际滑行量
@@ -366,11 +373,31 @@ void Car_TrkDetail_Log(void)
 	sr = (int32_t)(mf_app()->wheel[1].speed_mps * 1000.0f);
 	__enable_irq();
 
-	printf("TRKD:ST=%c E=%d THR=%d ZX=%d HOLD=%u BRK=%u N=%u W=%u CL=%d SL=%d CR=%d SR=%d\r\n",
+	printf("TRKD:ST=%c E=%d THR=%d ZX=%d HOLD=%u BRK=%u N=%u W=%u CL=%d SL=%d CR=%d SR=%d "
+	       "T=%c I=%u G=%d R=%d GV=%u\r\n",
 	       Tracking_StateChar((TrackingState_t)tri.state), (int)tri.err_f10k, (int)tri.thr_f10k,
 	       (int)tri.zero_sign, (unsigned)tri.hold_ms, (unsigned)tri.braking, (unsigned)tri.near,
 	       (unsigned)tri.settling,
-	       (int)cl, (int)sl, (int)cr, (int)sr);
+	       (int)cl, (int)sl, (int)cr, (int)sr,
+	       Tracking_TrimChar(tri.trim_phase), (unsigned)tri.trim_iter,
+	       (int)tri.trim_gain_x10, (int)tri.trim_resid_f10k, (unsigned)tri.trim_gaveup);
+}
+
+/* trim 微调事件(TRKT, §10.18): 事件驱动逐条打点, 一轮 trim ≤6 行 —— 归因"为什么多挪/
+ * 为什么放弃/哪一步异常"的完整黑匣子。读后清, 与 ISR 生产端(Trim_LogPush)环形衔接:
+ * BEGIN(进微调) → MOVED×N(每步: 指令量 vs 实际轮程差 = 真实过冲; X=2 即轮子没跟上)
+ * → END(终态成因 GV + 在线增益 G + 残余 E)。MS= trk_ms 时基(4ms/拍, 只看差值) */
+void Car_TrimLog(void)
+{
+	TrkTrimLog_t rec;
+	static const char type_char[4] = { '?', 'B', 'M', 'E' };   /* 按 TRKT_* 索引 */
+
+	while (Tracking_TakeTrimLog(&rec) != 0u)
+	{
+		printf("TRKT:%c MS=%u E=%d A=%d B=%d X=%u\r\n",
+		       type_char[(rec.type < 4u) ? rec.type : 0u], (unsigned)rec.ms,
+		       (int)rec.e_f10k, (int)rec.f1, (int)rec.f2, (unsigned)rec.aux);
+	}
 }
 
 /* 段切换观测(替代原 mf_path.c 库层内的 printf): 库层打印 + 经 mf_tick 在
@@ -432,10 +459,22 @@ void Car_SegExit_Log(void)
 	}
 	if (kind == 0u)
 	{
-		printf("ARC:%u EY=%d YE=%d R=%d DY=%d\r\n", (unsigned)seg,
+		/* 后四位 = 坎后弧"空转窗口"直读(判读阈值 坑-运动与导航.md §7.3): WD-900=轮上净多计,
+		 * DK=空转拍数, DD=delta(mm, 按名义半径折算), WP=|wz_sp|峰值。新位只许追加在行尾:
+		 * analyze_nav_log.py 的正则行首锚定, 插中间会整行失配 */
+		float    arc_wd, arc_dd, arc_wp;
+		uint16_t arc_dk;
+
+		__disable_irq();
+		mf_path_get_arc_diag(&mf_app()->path, &arc_wd, &arc_dd, &arc_dk, &arc_wp);
+		__enable_irq();
+		printf("ARC:%u EY=%d YE=%d R=%d DY=%d WD=%d DK=%u DD=%d WP=%d\r\n", (unsigned)seg,
 		       (int)(ey * 1000.0f), (int)(oe * 10.0f),
 		       (int)(mf_exit_radius_m(mf_app()) * 1000.0f),
-		       (int)(mf_exit_dyaw_deg(mf_app()) * 10.0f));
+		       (int)(mf_exit_dyaw_deg(mf_app()) * 10.0f),
+		       (int)(arc_wd * 10.0f), (unsigned)arc_dk,
+		       (int)(arc_dd * TURN_RADIUS_M * (M_PI_F / 180.0f) * 1000.0f),
+		       (int)(arc_wp * 10.0f));
 	}
 	else
 	{
