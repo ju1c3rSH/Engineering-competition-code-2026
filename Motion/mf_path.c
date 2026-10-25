@@ -23,6 +23,11 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->arc_sgn = 1.0f;
     p->arc_ey_m = 0.0f;
     p->arc_remain_prev_deg = 0.0f;
+    p->arc_wheel_deg    = 0.0f;
+    p->arc_dead_deg     = 0.0f;
+    p->arc_dead_ticks   = 0u;
+    p->arc_wzsp_peak    = 0.0f;
+    p->arc_prev_yaw_deg = 0.0f;
     p->slip_gain = 1.0f;
     p->seg_exit_ey_m = 0.0f;
     p->seg_exit_yawerr_deg = 0.0f;
@@ -381,7 +386,7 @@ static float seg_arc_wz_ff(const mf_path_ctx_t *p, const mf_arc_t *a)
 /* 定半径弧线: 走够 d_yaw 即完成(判据只用 IMU 转角); 设定值取"名义切线航向"
  * = 圆心→车体方位角 + sgn·90°(由里程计位置推出), 再加横向偏差比例项。旧律对比见 Motion/README.md */
 static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
-                       const mf_pose_t *pose, float dt,
+                       const mf_pose_t *pose, float ds, float dt,
                        mf_body_cmd_t *out)
 {
     const mf_arc_t *a = &s->p.arc;
@@ -444,6 +449,22 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
         float e_psi = mf_wrap_deg((phi + p->arc_sgn * 90.0f) - pose->yaw_deg);
 
         p->arc_ey_m = rho - p->arc_r_abs;       /* 正=弧外 */
+
+        /* ---- delta 的机上直读: 轮子折算转角 vs IMU 实测转角 ----
+         * 空转窗口内轮子走 ds 而车体不转 ⇒ want>0 且 got~0, want-got 累计就是 delta/R。
+         * ds 与 dist_accum 同源(本段轮程); 进段拍的上一段尾巴已由调用方剔成 0。 */
+        {
+            float want = (mf_absf(ds) / p->arc_r_abs) * (180.0f / MF_PI_F);
+            float got  = mf_absf(mf_wrap_deg(pose->yaw_deg - p->arc_prev_yaw_deg));
+
+            p->arc_wheel_deg += want;
+            if ((want > 0.02f) && ((want - got) > (0.5f * want)))
+            {
+                p->arc_dead_deg += (want - got);
+                p->arc_dead_ticks++;
+            }
+            p->arc_prev_yaw_deg = pose->yaw_deg;
+        }
         p->seg_exit_yawerr_deg = e_psi;         /* 出口记录取段完成那一拍的实测值 */
         /* 按拍观测(路线系): 弧的"目标航向"就是本拍的名义切线 */
         seg_obs(p, seg_pose_yaw(p, pose) + e_psi, e_psi, p->arc_ey_m, 0u);
@@ -483,6 +504,12 @@ static uint8_t seg_arc(mf_path_ctx_t *p, const mf_seg_t *s,
             {
                 out->wz_dps = mf_clampf(out->wz_dps, wz_lim);
             }
+        }
+
+        /* 本弧 |wz_sp| 峰值: 顶到 |wz_ff|*MF_ARC_WZ_MAX_MULT 说明段内自限幅在参与 */
+        if (mf_absf(out->wz_dps) > p->arc_wzsp_peak)
+        {
+            p->arc_wzsp_peak = mf_absf(out->wz_dps);
         }
     }
 
@@ -654,6 +681,12 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
             p->arc_ey_m = 0.0f;     /* 进段必然在名义弧上 */
             /* 首拍的"上一拍 remain" = 全程剩余 ⇒ 第一拍的步长 = 本拍实际转角 */
             p->arc_remain_prev_deg = s->p.arc.d_yaw_deg;
+            /* 空转窗口观测清零(见 mf_path.h 结构体注释) */
+            p->arc_wheel_deg    = 0.0f;
+            p->arc_dead_deg     = 0.0f;
+            p->arc_dead_ticks   = 0u;
+            p->arc_wzsp_peak    = 0.0f;
+            p->arc_prev_yaw_deg = pose->yaw_deg;
         }
         /* 弧线是唯一"全程都在转弯"的段, 滑移亏损也全程都在 —— 给它前馈基线 */
         p->slip_gain = MF_ARC_SLIP_GAIN;
@@ -763,7 +796,8 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
     switch (s->type)
     {
     case MF_SEG_MOVE_DIST:  done = seg_move_dist(p, s, pose, dt, out); break;
-    case MF_SEG_ARC:        done = seg_arc(p, s, pose, dt, out);       break;
+    case MF_SEG_ARC:        done = seg_arc(p, s, pose,
+                                           (entered != 0u) ? 0.0f : ds, dt, out); break;
     case MF_SEG_TURN_TO:
     case MF_SEG_TURN_REL:   done = seg_turn(p, s, pose, dt, out);      break;
     case MF_SEG_GOTO_XY:
@@ -956,6 +990,42 @@ float mf_path_remain_m(const mf_path_ctx_t *p)
         }
     }
     return remain;
+}
+
+/* 当前段自身的剩余行程(m, 非 MOVE 段恒 0)。与 mf_path_remain_m 的区别: 不含后续段。
+ * 微调(trim)的预算必须用本段剩余 —— 全路径剩余会被后续位移段稀释, 爬行可越过本段
+ * 端点; 且非 MOVE 段(如 TURN)期间 dist_accum 不累计(mf_path_tick 只记 MOVE/ARC),
+ * 在这些段上微调会把账记丢 —— 返回 0 即调用方的拒绝信号(打靶段架构-刹停与续跑.md §10.18) */
+float mf_path_seg_remain_m(const mf_path_ctx_t *p)
+{
+    const mf_move_dist_t *m;
+    float done, total;
+
+    if (p == NULL || p->path == NULL || p->state != MF_PATH_RUN)
+    {
+        return 0.0f;
+    }
+    if (p->path[p->idx].type != MF_SEG_MOVE_DIST)
+    {
+        return 0.0f;
+    }
+    m = &p->path[p->idx].p.move_dist;
+    done = fabsf(p->dist_accum - p->dist_base_m);   /* 本段已走量(倒车也取正) */
+    total = fabsf(m->dist_m);
+    return (total > done) ? (total - done) : 0.0f;
+}
+
+void mf_path_get_arc_diag(const mf_path_ctx_t *p, float *wheel_deg, float *dead_deg,
+                          uint16_t *dead_ticks, float *wzsp_peak)
+{
+    if (p == 0)
+    {
+        return;
+    }
+    if (wheel_deg != 0)  { *wheel_deg  = p->arc_wheel_deg; }
+    if (dead_deg != 0)   { *dead_deg   = p->arc_dead_deg; }
+    if (dead_ticks != 0) { *dead_ticks = p->arc_dead_ticks; }
+    if (wzsp_peak != 0)  { *wzsp_peak  = p->arc_wzsp_peak; }
 }
 
 float mf_path_get_vsrc(const mf_path_ctx_t *p)

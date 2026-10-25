@@ -51,6 +51,14 @@ typedef struct
     float arc_ey_m;         /* 本拍带符号横向偏差 m，正=弧外（诊断与横向环共用） */
     float arc_remain_prev_deg;  /* 上一拍 remain_yaw: 两者之差=本段实测抽样步长, 到位余量取
                                  * 一半才零系统偏差; 进段置为 d_yaw(见 mf_config.h) */
+    /* ---- 诊断: 弧首"空转窗口"(指令已发/车体不转) —— delta 的机上直读 ----
+     * 恒等式: Σ(应转-实转)·R = delta(mm);  Σ(ds/R)*(180/pi) - 90° = (delta+dA)/R
+     * 判读: DD 即 delta; DK=空转拍数(=tau/DT); WD-900 是轮子净多计的总账(负=健康) */
+    float    arc_wheel_deg;     /* Σ (ds/R)*(180/pi): 轮子折算的总转角(度) */
+    float    arc_dead_deg;      /* Σ max(0, 应转-实转): 累计"该转没转"(度) */
+    uint16_t arc_dead_ticks;    /* 单拍 应转-实转 > 50%*应转 的拍数 */
+    float    arc_wzsp_peak;     /* 本弧 |wz_sp| 峰值: 判有没有顶到 MF_ARC_WZ_MAX_MULT */
+    float    arc_prev_yaw_deg;  /* 上一拍航向: 求本拍 IMU 实际转角用 */
     float slip_gain;        /* 本段的开环滑移基线（弧线 = MF_ARC_SLIP_GAIN，其余 1.0）。
                              * 速率内环(mf_rate.h)拿它当输出侧前馈；见 mf_config.h */
 
@@ -169,6 +177,7 @@ float mf_path_exit_radius_m(const mf_path_ctx_t *p);
 float mf_path_exit_dyaw_deg(const mf_path_ctx_t *p);
 
 float mf_path_remain_m(const mf_path_ctx_t *p);   /* 剩余里程估算(m): 只算位移段, ARC 全额计入 */
+float mf_path_seg_remain_m(const mf_path_ctx_t *p); /* 当前段自身剩余(m); 非 MOVE 段恒 0(拒绝信号) */
 
 /**
  * @brief 弧线 ω 前馈实际使用的速度源(m/s): MF_ARC_VSRC_MEAS=1 为实测值, 否则指令值
@@ -176,6 +185,15 @@ float mf_path_remain_m(const mf_path_ctx_t *p);   /* 剩余里程估算(m): 只�
  * 与指令对比 = 车速亏损比 v̂/v_cmd(指令源时亦即半径亏损比); 持续偏低=车吃不消该弧速
  */
 float mf_path_get_vsrc(const mf_path_ctx_t *p);
+
+/**
+ * @brief 最近一条 ARC 的"空转窗口"观测（delta 的机上直读）
+ *
+ * 判据: dead_deg*R 就是 delta(mm)。健康弧 delta 5~8mm; 坎后弧可到 20~57mm。
+ * 出参均可传 0。进段清零点之后按拍累加, 段完成后保留到下一次 ARC 进段。
+ */
+void mf_path_get_arc_diag(const mf_path_ctx_t *p, float *wheel_deg, float *dead_deg,
+                          uint16_t *dead_ticks, float *wzsp_peak);
 
 /* ---- 按拍观测（调试口用）：与 mf_path_pop_seg_exit 的区别是"每拍都更新" ---- */
 typedef struct
