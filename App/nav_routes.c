@@ -13,13 +13,29 @@
 /* 越障弧低速: 上障瞬间打滑/俯仰使里程虚高+转角亏, 降速给外轮差速留余量。
  * speed_gear≠0 时被 Nav_GearTable 覆盖, 本值仅 gear=0 生效 */
 #define V_ARC_OBST   MF_M_SPEED(Low_speed)    /* 低速0.707: 越障段, 代价约+0.66s */
-/* 越障前直道降速试验已否证(瓶颈不在入障初速), 勿再试 */
+/* 越障前直道降速: 2026-10-10 只试了 V_STRAIGHT 降到 2.60 一档(=0.334m/s 差), 判据取 EY 且被
+ * 弧速变量混淆, 结论不可用。2026-10 复查改用三点剂量-反应(VSRC_MEAS=0, 跨三夜):
+ *   直1.461/弧1.036 => arc5 dA +9.3 / delta 21.2mm;  直1.461/弧0.707 => dA +5.0 / 15.9mm;
+ *   直0.943/弧0.707 => dA -3.0 / 4.6mm (与干净弧同号 = 治好)。只降弧速仅拿 25%, 直道一起降拿 78%。
+ * 机理: 激振幅值∝v²(进坎速度决定) + 衰减时间∝1/v(坎后速度决定), 只有直道速度同时管两头。 */
 #define V_KEEP_MID   MF_M_SPEED(Middle_speed) /* 人质末段保持原速 */
 /* 减速带区拆段: ZONE 中速压里程虚高 δ 的方差, POST 是干净里程; 三段和恒 45, 未标定前与不拆等价。
- * 标定: PRE=D1/32.74, POST=D2/32.74(1单位地面 = π×156.3/15 = 32.74mm), 详见 坑-运动与导航.md §7 */
-#define V_OBST_ZONE  V_STRAIGHT               /* 标定后改 MF_M_SPEED(Middle_speed): 全程仅 +0.1s */
+ * 标定: PRE=D1/32.74, POST=D2/32.74(1单位地面 = π×156.3/15 = 32.74mm), 详见 坑-运动与导航.md §7
+ * ★2026-10-25 有意破掉"三段同档": ZONE 单独降到 0.50(POST/弧仍 0.707)。实测 0.707 过坎横漂
+ * 趟间波动 ±6mm, 进越障弧被 R·Δθ 放大成 61mm 散布; 同车低速段(0.72)只漂 1~4mm。减速距离
+ * (1.461²-0.50²)/(2·2.356·1.414)=283mm 仍在 PRE(628)内做完, 且不改变弧入口速度。代价 +0.13s */
+#define V_OBST_ZONE    MF_M_SPEED(1.06f)      /* 坎带 0.50 m/s: 降速压坎上侧滑, 见上 */
+#define V_OBST_SETTLE  MF_M_SPEED(Low_speed)  /* 出坎段: 保持与 V_ARC_OBST 同档, 见上 */
 #define SEG4_TOTAL_U 45.0f
-#define SEG4_PRE_U   20.0f                    /* TODO(卷尺标定): D1/32.74 */
+/* 2026-10-25 18:14 趟: 坎沿原本落在 PRE 末端(车带速撞坎), 已由**上文段2 缩短**解决,
+ * 实测 PRE 出口航向从 -1.2° 变 0.0°, 坎区三段链 |YE| ≤0.2°(15 趟里最干净), 故此处保持 20.0。
+ * ★不要再把这里也改小: 段2 与 PRE 是**同一件事的两个旋钮**, 一起改 = 边界推早 159mm, 白花 124ms。
+ * 定位依据(供以后重标): PRE 出口航向 15 趟散布 4.2°, 而 ZONE(本该在坎上)只有 0.6°; 且 PRE 有
+ * 7 个航向环时间常数, 能在出口留下 ±2° 的扰动只可能来自最后 1~2τ(90~180mm) => 坎沿在 PRE 末段。
+ * 撞击速度 = 0.50(ZONE 档) + sqrt(2·acc·x), x = 坎沿到边界距离; x=150mm 时已是 0.98m/s,
+ * 能量是最低档的 4 倍。规范做法: PRE = (弧出口到坎沿的真实距离 − 70) / 32.74, 70mm 留给减速
+ * 在坎外做完 —— 若按此式算出来与 20.0 不同, 应同时把段2 改回几何真值, 不要只动一个。 */
+#define SEG4_PRE_U   20.0f
 #define SEG4_POST_U  18.0f                    /* TODO(卷尺标定): D2/32.74; 出弧仍偏外则修此数 */
 #define SEG4_ZONE_U  (SEG4_TOTAL_U - SEG4_PRE_U - SEG4_POST_U)
 #define V_SLOW_ENTRY MF_M_SPEED(Middle_speed) /* 首段过减速带 */
@@ -56,11 +72,16 @@ static const mf_seg_t tbl_bomb[] =        /* NAV_TO_BOMB: 排爆区去程(末段
 {
 	SEG_MOVE(V_SLOW_ENTRY, MF_M_DIST(41.6f)),
 	SEG_ARC(V_ARC,  TURN_RADIUS_M),   /* 左 90 (flag1) */
-	SEG_MOVE(V_STRAIGHT, MF_M_DIST(18.2f)),
+	SEG_MOVE(V_STRAIGHT, MF_M_DIST(15.2f)), //这个是过坎转弯前的直线
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag2) */
 	SEG_MOVE(V_STRAIGHT, MF_M_DIST(SEG4_PRE_U)),
 	SEG_MOVE_CONT(V_OBST_ZONE, MF_M_DIST(SEG4_ZONE_U)), /* 减速带区: 里程虚高 δ 死在本段, 不外传 */
-	SEG_MOVE_CONT(V_STRAIGHT, MF_M_DIST(SEG4_POST_U)),
+	SEG_MOVE_CONT(V_OBST_SETTLE, MF_M_DIST(SEG4_POST_U)), /* 出坎段: 与越障弧同档, 见 V_OBST_SETTLE */
+	/* 越障弧入口重锚(2026-10-25): 直线段的航向残差经 90° 弧按 R·Δθ 放大成**位置**误差
+	 * (A 图实测 1.4° → 23mm, 且 TURN_TO 只纠角不纠位 ⇒ 一路带到末段), 必须在放大前清掉。
+	 * 放 POST 之后而非 PRE 之后: 坎区三段(PRE/ZONE/POST)保持连续不被停车打断, 且此处残差
+	 * 已被 ZONE/POST 吸收到 ±0.5° 量级, 重锚只需转半度、代价最小。 */
+	
 	SEG_ARC(V_ARC_OBST, TURN_RADIUS_M),/* 左 90 (flag4): 越障弧, 见 V_ARC_OBST 注 */
 	SEG_MOVE(V_STRAIGHT, MF_M_DIST(32.0f)),
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag6) */
@@ -84,7 +105,7 @@ static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 
 };
 static const mf_seg_t tbl_hostage[] =     /* NAV_TO_HOSTAGE: flag13~14 人质区(末段直线+重锚移入 rebase 表) */
 {
-	SEG_MOVE(V_STRAIGHT, MF_M_DIST(6.0f)),   /* 48.5 − 38: 与 tbl_target 成对, 见上 */
+	SEG_MOVE(V_STRAIGHT, MF_M_DIST(7.0f)),   /* 48.5 − 38: 与 tbl_target 成对, 见上 */
 	SEG_ARC(V_ARC, -TURN_RADIUS_M),   /* 右 90 (flag14) */
 	SEG_END
 };
