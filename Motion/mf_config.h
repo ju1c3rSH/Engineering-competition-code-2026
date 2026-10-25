@@ -257,7 +257,7 @@
 #ifndef MF_WZ_RATE_I_MAX
 #define MF_WZ_RATE_I_MAX  20.0f
 #endif
-/* 速率反馈源选择/新鲜度/量程闸已迁 car_config.h(CARSENSE_WZ_*): 采样层旋钮, 运动库不消费 */
+
 /* 一阶低通(Hz): 太狠会吃掉内环相位裕度。15Hz 对应差分噪声 0.5dps -> 约 0.2dps */
 #ifndef MF_WZ_RATE_LPF_HZ
 #define MF_WZ_RATE_LPF_HZ 15.0f
