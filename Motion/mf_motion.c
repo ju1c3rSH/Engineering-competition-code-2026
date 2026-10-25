@@ -146,6 +146,18 @@ float mf_exit_dyaw_deg(const mf_ctx_t *m)
     return mf_path_exit_dyaw_deg(&m->path);
 }
 
+/* 最近一次直线段出口的"相对名义路径"横向偏差(m, 正=左): 跨段连续, 不被 entry 归零 */
+float mf_exit_eyg_m(const mf_ctx_t *m)
+{
+    return mf_path_exit_eyg_m(&m->path);
+}
+
+/* 最近一次直线段出口时的横向环航向偏置(deg): 段末收偏置生效的话应≈0 */
+float mf_exit_xt_deg(const mf_ctx_t *m)
+{
+    return mf_path_exit_xt_deg(&m->path);
+}
+
 /* 实测弧半径(m)+新鲜标志(独立观测量): 判"弧在哪条半径上"用它, 不用 ARC:EY(同源, 结构性看不见打滑) */
 float mf_get_reff(const mf_ctx_t *m, uint8_t *valid)
 {

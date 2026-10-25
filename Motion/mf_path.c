@@ -48,8 +48,21 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->obs_target_deg = 0.0f;
     p->obs_yawerr_deg = 0.0f;
     p->obs_ey_m = 0.0f;
+    p->obs_eyg_m = 0.0f;
+    p->obs_xt_corr_deg = 0.0f;
     p->obs_kind = 0u;
     p->v_meas_f = 0.0f;     /* 实测速度源: 从 0 起滤, 弧首拍由下限钳位兜住 */
+    /* 名义位置链 + 直线横向环（MF_LINE_XTRACK_EN） */
+    p->nom_x_m = 0.0f;
+    p->nom_y_m = 0.0f;
+    p->nom_seg_x_m = 0.0f;
+    p->nom_seg_y_m = 0.0f;
+    p->nom_seg_hdg_deg = 0.0f;
+    p->nom_pos_init = 0u;
+    p->xt_ey_f = 0.0f;
+    p->xt_corr_deg = 0.0f;
+    p->seg_exit_eyg_m = 0.0f;
+    p->seg_exit_xt_deg = 0.0f;
 }
 
 /* 整表重锚基点(不变量 P5, 见 mf_path.h): 表里绝对角与 nom_yaw 在路线系(置零车头=0),
@@ -89,6 +102,8 @@ void mf_path_set_heading_ref(mf_path_ctx_t *p, float yaw_deg)
     p->nom_yaw_init = 1u;
     p->heading_ref_locked = 1u;
     p->ref_seq++;
+    /* 名义位置链同样重定锚: 下一次进段用当时的实测位姿当基准(置零那拍位姿=原点) */
+    p->nom_pos_init = 0u;
 }
 
 void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path, const mf_seg_t *next)
@@ -137,6 +152,18 @@ void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path, const mf_seg_t *next)
   #else
     /* 旧行为: 标称航向重定基准 —— 首段进段时用当时的实测航向初始化, 之后纯几何累积 */
     p->nom_yaw_init = 0u;
+  #endif
+#endif
+#if MF_LINE_XTRACK_EN
+    /* 与 nom_yaw 同规则: 基准已由 GYRO_ZERO 显式钉下时, 跨表**不**重定锚 ——
+     * 否则每换一条 nav 表名义链都从当前位姿重新起算, 段间累积的横向误差又看不见了 */
+  #if MF_HEADING_FRAME_EN
+    if (p->heading_ref_locked == 0u)
+    {
+        p->nom_pos_init = 0u;
+    }
+  #else
+    p->nom_pos_init = 0u;
   #endif
 #endif
 }
@@ -285,6 +312,132 @@ static float seg_line_ey(const mf_path_ctx_t *p, const mf_pose_t *pose)
     return (dy * cosf(h)) - (dx * sinf(h));
 }
 
+#if MF_LINE_XTRACK_EN
+/* 直线段横向偏差(名义路径基准): 基准线过**本段名义起点**, 方向 = 本段名义航向(x/y 域)。
+ * 与 seg_line_ey 的唯一区别就是基准点 —— entry 是实测位姿(每段归零), nom_seg 是几何点(跨段连续) */
+static float seg_line_ey_nom(const mf_path_ctx_t *p, const mf_pose_t *pose)
+{
+    float h = p->nom_seg_hdg_deg * (MF_PI_F / 180.0f);
+    float dx = pose->x_m - p->nom_seg_x_m;
+    float dy = pose->y_m - p->nom_seg_y_m;
+
+    return (dy * cosf(h)) - (dx * sinf(h));     /* 正 = 名义线左侧 */
+}
+
+/* 直线横向环单拍: 输入相对名义线的 e_y(m, 正=左) 与本段剩余里程, 返回本拍航向偏置(deg)。
+ * 输出叠进**航向环的误差**, 不是 wz —— 见 mf_config.h 的形式说明 */
+static float seg_line_xtrack_step(mf_path_ctx_t *p, float ey, float v, float dt, float remain)
+{
+    float tgt, e, d;
+
+    /* τ=50ms 一阶低通: 挡履带过齿/单拍打滑尖峰; 对 λ≤1.2 只加 ~3° 相位 */
+    p->xt_ey_f += (ey - p->xt_ey_f) * (dt / (MF_LINE_XTRACK_LPF_TAU_S + dt));
+
+    /* 死区: 编码器量化 0.1~0.3mm/拍, 小抖动不出力(平滑处理, 不在阈值上开关) */
+    e = p->xt_ey_f;
+    if (e > MF_LINE_XTRACK_DEAD_M)
+    {
+        e -= MF_LINE_XTRACK_DEAD_M;
+    }
+    else if (e < -MF_LINE_XTRACK_DEAD_M)
+    {
+        e += MF_LINE_XTRACK_DEAD_M;
+    }
+    else
+    {
+        e = 0.0f;
+    }
+
+    if ((v >= MF_LINE_XTRACK_V_MIN) && (mf_absf(p->xt_ey_f) <= MF_LINE_XTRACK_EY_WIN_M))
+    {
+        /* e_y>0 = 偏左 ⇒ 偏置取负 ⇒ 右打。小偏差下 ė_y = -v·k·e/(k_soft+v) */
+        tgt = -atanf(MF_LINE_XTRACK_K * e / (MF_LINE_XTRACK_K_SOFT + v))
+            * (180.0f / MF_PI_F);
+    }
+    else
+    {
+        tgt = 0.0f;     /* 窗外/低速/倒车: 平滑退出, 不阶跃 */
+    }
+    if (tgt > MF_LINE_XTRACK_CORR_MAX_DEG)
+    {
+        tgt = MF_LINE_XTRACK_CORR_MAX_DEG;
+    }
+    if (tgt < -MF_LINE_XTRACK_CORR_MAX_DEG)
+    {
+        tgt = -MF_LINE_XTRACK_CORR_MAX_DEG;
+    }
+
+    /* 斜率限: 段首带大偏差时也不许一拍拧到位(D 项会看到阶跃)。
+     * 正常工况偏置本身只有 0.5° 量级, 变化率 ~0.3°/s, 本限只是护栏 */
+    d = tgt - p->xt_corr_deg;
+    if (d > (MF_LINE_XTRACK_SLEW_DPS * dt))
+    {
+        d = MF_LINE_XTRACK_SLEW_DPS * dt;
+    }
+    if (d < -(MF_LINE_XTRACK_SLEW_DPS * dt))
+    {
+        d = -(MF_LINE_XTRACK_SLEW_DPS * dt);
+    }
+    p->xt_corr_deg += d;
+
+    /* 段末收偏置: 段末残留的偏置就是"带进下一段的航向误差", 而下一段若是弧, 按 R·Δθ 放大成
+     * **位置**误差(1°@942mm = 16mm)。所以这里用**乘法**衰减(保证段末严格为 0) ——
+     * 不能交给斜率限去收: corr 稍大就来不及, 段末会留半度 */
+    if (remain < MF_LINE_XTRACK_RAMP_M)
+    {
+        p->xt_corr_deg *= (remain > 0.0f) ? (remain / MF_LINE_XTRACK_RAMP_M) : 0.0f;
+    }
+
+    return p->xt_corr_deg;
+}
+
+/* 名义位置链推进(段完成那一拍调用, 必须在 nom_yaw_deg 更新**之前**):
+ * 纯段表几何, 不含任何测量。方向换算 = 几何 + MF_HEADING_BIAS_DEG + frame_base ——
+ * 与 line_hdg_deg 同口径: 基准偏差是**下发航向的整体旋转**, 名义线必须跟着转, 否则
+ * 环会把"故意加的补偿"当成真实横偏去纠(等于自废 bias), 这就是"别用 POSE 的 Y 反解"那条 */
+static float seg_nom_hdg_xy(const mf_path_ctx_t *p, float route_deg)
+{
+    return (route_deg + MF_HEADING_BIAS_DEG + p->frame_base_deg) * (MF_PI_F / 180.0f);
+}
+
+static void seg_nom_advance(mf_path_ctx_t *p, const mf_seg_t *s)
+{
+    float h, d, ch, a;
+
+    switch (s->type)
+    {
+    case MF_SEG_MOVE_DIST:
+        h = (s->p.move_dist.heading_deg != MF_KEEP) ? s->p.move_dist.heading_deg
+                                                    : p->nom_yaw_deg;
+        h = seg_nom_hdg_xy(p, h);
+        p->nom_x_m += s->p.move_dist.dist_m * cosf(h);
+        p->nom_y_m += s->p.move_dist.dist_m * sinf(h);
+        break;
+    case MF_SEG_ARC:
+        /* 弦长 2|R|sin(|Δ|/2), 方向 = 起点名义航向 + Δ/2 (左右通用) */
+        d  = s->p.arc.d_yaw_deg * (MF_PI_F / 180.0f);
+        ch = 2.0f * mf_absf(s->p.arc.radius_m) * sinf(0.5f * mf_absf(d));
+        a  = seg_nom_hdg_xy(p, p->nom_yaw_deg + 0.5f * s->p.arc.d_yaw_deg);
+        p->nom_x_m += ch * cosf(a);
+        p->nom_y_m += ch * sinf(a);
+        break;
+    case MF_SEG_GOTO_XY:
+    case MF_SEG_GOTO_REL:
+        /* GOTO 用绝对位置自纠(误差本来就归零) ⇒ 名义链直接跟到目标, 不参与横向环 */
+        p->nom_x_m = p->target.x_m;
+        p->nom_y_m = p->target.y_m;
+        break;
+    case MF_SEG_TURN_TO:
+    case MF_SEG_TURN_REL:
+        /* 原地转不推进位置(只改 nom_yaw, 由 mf_path_tick 那段负责)。
+         * 物理上原地转会有几毫米的轴心偏移 —— 那正是我们**想看见**的误差, 留给下一段的环 */
+        break;
+    default:
+        break;
+    }
+}
+#endif /* MF_LINE_XTRACK_EN */
+
 /* 增量直线：航向保持 + 剩余行程判完成
  * 下一段要求停稳时按 v=sqrt(2·a·s) 抛物线减速, 段末速度≈0 平滑交棒 */
 static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
@@ -327,8 +480,20 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
     out->vy_mps = 0.0f;
 
     err = mf_wrap_deg(seg_cmd_yaw(seg_move_hold_yaw(p, m)) - seg_pose_yaw(p, pose));
-    out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
     ey = seg_line_ey(p, pose);
+#if MF_LINE_XTRACK_EN
+    /* 名义线横向闭环: 偏置叠进**航向误差**, 不进 wz(形式与理由见 mf_config.h)。
+     * 用带符号的 out->vx_mps: 倒车段自动被 v<V_MIN 挡掉(Stanley 的收敛性只对正向成立) */
+    {
+        float eyg = seg_line_ey_nom(p, pose);
+        float xt  = seg_line_xtrack_step(p, eyg, out->vx_mps, dt, remain);
+
+        err = mf_wrap_deg(err + xt);
+        p->obs_eyg_m = eyg;
+        p->obs_xt_corr_deg = xt;
+    }
+#endif
+    out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
     seg_obs(p, seg_cmd_yaw(seg_move_hold_yaw(p, m)), err, ey, 1u);
 
     /* 失控自保 (test/motion-tuning): 编码器/驱动符号矛盾时反馈为负, remain 沿
@@ -348,6 +513,10 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
         p->seg_exit_seg = p->idx;
         p->seg_exit_kind = 1u;
         p->seg_exit_new = 1u;
+#if MF_LINE_XTRACK_EN
+        p->seg_exit_eyg_m = p->obs_eyg_m;       /* 相对名义路径(跨段连续) */
+        p->seg_exit_xt_deg = p->xt_corr_deg;    /* 段末收偏置后应≈0 */
+#endif
         return 1u;
     }
     return 0u;
@@ -637,6 +806,21 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
     float c, s_yaw, dx, dy;
 
     p->entry = *pose;
+#if MF_LINE_XTRACK_EN
+    /* 名义链: 首次进段(或刚 YAWZERO 之后)拿实测位姿定基准, 之后只在段完成时按几何推进 */
+    if (p->nom_pos_init == 0u)
+    {
+        p->nom_x_m = pose->x_m;
+        p->nom_y_m = pose->y_m;
+        p->nom_pos_init = 1u;
+    }
+    p->nom_seg_x_m = p->nom_x_m;
+    p->nom_seg_y_m = p->nom_y_m;
+    p->xt_ey_f = 0.0f;      /* 进段从 0 起滤: 偏置自然软起(上一段末已收到 0) */
+    p->xt_corr_deg = 0.0f;
+    p->obs_eyg_m = 0.0f;    /* 非直线段没有这条量(ARC 用 arc_ey_m) */
+    p->obs_xt_corr_deg = 0.0f;
+#endif
 #if MF_SEG_NOM_HEADING_EN
     if (p->nom_yaw_init == 0u)
     {
@@ -683,6 +867,10 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
 
             p->line_in_yawerr_deg = mf_wrap_deg(h - seg_pose_yaw(p, pose));
             p->line_hdg_deg = mf_wrap_deg(h + p->frame_base_deg);
+#if MF_LINE_XTRACK_EN
+            /* 名义线方向与 line_hdg_deg 完全同口径(几何 + bias + 基点): 两条线只差基准点 */
+            p->nom_seg_hdg_deg = p->line_hdg_deg;
+#endif
         }
         break;
     case MF_SEG_ARC:
@@ -834,6 +1022,11 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
 
     if (done)
     {
+#if MF_LINE_XTRACK_EN
+        /* 名义位置链推进: 必须在下面 nom_yaw 更新**之前**(MOVE/ARC 的推进方向取的是
+         * 本段**起点**名义航向, 更新后取就晚了一段)。纯几何, 不含任何测量 */
+        seg_nom_advance(p, s);
+#endif
 #if MF_SEG_NOM_HEADING_EN
         /* 标称航向随路径几何推进: ARC 累加其转角, TURN 取其目标角, 其余不变 */
         if (s->type == MF_SEG_ARC)
@@ -901,6 +1094,16 @@ float mf_path_exit_radius_m(const mf_path_ctx_t *p)
 float mf_path_exit_dyaw_deg(const mf_path_ctx_t *p)
 {
     return p->seg_exit_dyaw_deg;
+}
+
+float mf_path_exit_eyg_m(const mf_path_ctx_t *p)
+{
+    return p->seg_exit_eyg_m;
+}
+
+float mf_path_exit_xt_deg(const mf_path_ctx_t *p)
+{
+    return p->seg_exit_xt_deg;
 }
 
 mf_path_state_t mf_path_get_state(const mf_path_ctx_t *p)
@@ -1058,6 +1261,7 @@ void mf_path_get_arc_diag(const mf_path_ctx_t *p, float *wheel_deg, float *dead_
     if (dead_deg != 0)   { *dead_deg   = p->arc_dead_deg; }
     if (dead_ticks != 0) { *dead_ticks = p->arc_dead_ticks; }
     if (wzsp_peak != 0)  { *wzsp_peak  = p->arc_wzsp_peak; }
+    if (soft_min != 0)   { *soft_min   = p->arc_soft_min; }
 }
 
 float mf_path_get_vsrc(const mf_path_ctx_t *p)
@@ -1075,6 +1279,8 @@ void mf_path_get_obs(const mf_path_ctx_t *p, mf_path_obs_t *obs)
     obs->target_deg  = p->obs_target_deg;
     obs->yaw_err_deg = p->obs_yawerr_deg;
     obs->ey_m        = p->obs_ey_m;
+    obs->eyg_m       = p->obs_eyg_m;
+    obs->xt_corr_deg = p->obs_xt_corr_deg;
     obs->kind        = p->obs_kind;
 }
 

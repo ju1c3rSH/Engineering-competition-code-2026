@@ -85,6 +85,22 @@ typedef struct
                                  * 全程只读(跨表也不再重定锚); 见 MF_HEADING_FRAME_EN */
     float line_in_yawerr_deg;   /* 直线段进段航向误差(带进来多少), 供出口记录对比 */
 
+    /* ---- 名义位置链（MF_LINE_XTRACK_EN）: 段完成时按段表**几何**推进, 不含任何测量 ----
+     * 用途: 给直线段横向环一条不随"本段实测起点"归零的基准线。航向早就有这条链(nom_yaw_deg),
+     * 位置一直缺, 所以段间累积的横向误差在架构上不可见(每换一段被 entry 吃掉)
+     * ⚠ 只许按名义长度推进: 改用指令速度积分/实测轮程, 4.2% 轮径刻度差在 6.5m 上变 195mm 纵向,
+     *   过 90° 后整体变成下一段的横向偏差, 环会拿 8° 偏置去纠一个不存在的错误 */
+    float nom_x_m, nom_y_m;         /* 名义链当前点(与 pose.x/y 同一帧: +frame_base 换到 x/y 系) */
+    float nom_seg_x_m, nom_seg_y_m; /* 本段名义起点(= 横向偏差基准线所过的点) */
+    float nom_seg_hdg_deg;          /* 本段名义线方向(x/y 域 deg), 仅 MOVE 填写 */
+    uint8_t nom_pos_init;           /* 0=还没定过基准(首次进段用实测位姿补上) */
+
+    /* ---- 直线段横向环状态（进段清零） ---- */
+    float xt_ey_f;                  /* e_y 低通状态 m */
+    float xt_corr_deg;              /* 本拍注入的航向偏置 deg */
+    float seg_exit_eyg_m;           /* 出口"相对名义路径"的横向偏差 m(正=左) */
+    float seg_exit_xt_deg;          /* 出口时的航向偏置 deg(段末收偏置后应≈0) */
+
     /* ---- 整表重锚基点（不变量 P5, 见 Motion/README.md「单基准航向架构」）----
      * 表里绝对角与 nom_yaw 一律在**路线系**(置零那一刻车头=0); pose.yaw 是读数域,
      * 换算只许走 seg_pose_yaw() 一处。缺它: 置零前车被转过 yaw0 ⇒ 首绝对段后全段整体偏 yaw0 */
@@ -97,6 +113,8 @@ typedef struct
     float obs_target_deg;   /* 本段航向目标(路线系) */
     float obs_yawerr_deg;   /* 本拍航向误差(环内实际用的那个值) */
     float obs_ey_m;         /* 横向偏差: 直线=名义线左侧正 / ARC=弧外正 */
+    float obs_eyg_m;        /* 横向偏差(名义路径基准, 正=左): 跨段连续, 不被 entry 归零 */
+    float obs_xt_corr_deg;  /* 直线横向环本拍注入的航向偏置 deg */
     uint8_t obs_kind;       /* 0=ARC 1=直线MOVE 2=TURN_TO 3=TURN_REL 4=GOTO */
 
     /* 由运动层注入的控制器（所有权在 mf_motion） */
@@ -177,6 +195,15 @@ float mf_path_exit_radius_m(const mf_path_ctx_t *p);
  */
 float mf_path_exit_dyaw_deg(const mf_path_ctx_t *p);
 
+/** @brief 最近一次直线段出口的"相对名义路径"横向偏差(m, 正=左; MF_LINE_XTRACK_EN)
+ *
+ * 与 mf_path_pop_seg_exit 的 ey_m 的区别: 后者基准是**本段实测起点**(段内净漂移),
+ * 本值基准是段表几何名义路径 ⇒ 段间累积的误差不会在换段时消失 */
+float mf_path_exit_eyg_m(const mf_path_ctx_t *p);
+
+/** @brief 最近一次直线段出口时的横向环航向偏置(deg): 段末收偏置生效的话应≈0 */
+float mf_path_exit_xt_deg(const mf_path_ctx_t *p);
+
 float mf_path_remain_m(const mf_path_ctx_t *p);   /* 剩余里程估算(m): 只算位移段, ARC 全额计入 */
 float mf_path_seg_remain_m(const mf_path_ctx_t *p); /* 当前段自身剩余(m); 非 MOVE 段恒 0(拒绝信号) */
 
@@ -204,6 +231,8 @@ typedef struct
     float   yaw_err_deg;    /* 本拍航向误差（环内实际用的那个值 deg） */
     float   ey_m;           /* 横向偏差: 直线=本段名义线左侧正 / ARC=弧外正 */
     uint8_t kind;           /* 0=ARC 1=直线MOVE 2=TURN_TO 3=TURN_REL 4=GOTO */
+    float   eyg_m;          /* 相对**名义路径**的横向偏差(正=左): 跨段连续, 不被 entry 归零 */
+    float   xt_corr_deg;    /* 直线横向环本拍注入的航向偏置 deg */
 } mf_path_obs_t;
 
 /** @brief 本拍的目标航向/误差/横向偏差（只读, 不参与控制）

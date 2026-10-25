@@ -478,8 +478,13 @@ void Car_SegExit_Log(void)
 	}
 	else
 	{
-		printf("LN:%u IE=%d YE=%d EY=%d\r\n", (unsigned)seg,
-		       (int)(ie * 10.0f), (int)(oe * 10.0f), (int)(ey * 1000.0f));
+		/* EYG = 相对**名义路径**的横向偏差(跨段连续, 不被本段实测起点归零);
+		 * XT  = 横向环在本段出口注入的航向偏置(x100, 段末收偏置生效时应≈0)。
+		 * 新位只许追加在行尾: 分析脚本的正则行首锚定, 插中间会整行失配 */
+		printf("LN:%u IE=%d YE=%d EY=%d EYG=%d XT=%d\r\n", (unsigned)seg,
+		       (int)(ie * 10.0f), (int)(oe * 10.0f), (int)(ey * 1000.0f),
+		       (int)(mf_exit_eyg_m(mf_app()) * 1000.0f),
+		       (int)(mf_exit_xt_deg(mf_app()) * 100.0f));
 	}
 }
 

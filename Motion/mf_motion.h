@@ -108,6 +108,10 @@ uint8_t mf_pop_seg_exit(mf_ctx_t *m, uint16_t *seg_index, uint8_t *kind,
 float mf_exit_radius_m(const mf_ctx_t *m);
 /* 最近一次 ARC 的实际转角(deg, 恒正; 名义 90), 见 mf_path.h:mf_path_exit_dyaw_deg */
 float mf_exit_dyaw_deg(const mf_ctx_t *m);
+/* 最近一次直线段出口的"相对名义路径"横向偏差(m, 正=左), 见 mf_path.h:mf_path_exit_eyg_m */
+float mf_exit_eyg_m(const mf_ctx_t *m);
+/* 最近一次直线段出口时的横向环航向偏置(deg), 见 mf_path.h:mf_path_exit_xt_deg */
+float mf_exit_xt_deg(const mf_ctx_t *m);
 /* 实测弧半径(m, 恒正, *valid 可 NULL): 只供观测(RAD: 行); 判据认它或卷尺, 不认 ARC:EY */
 float mf_get_reff(const mf_ctx_t *m, uint8_t *valid);
 /* 当前生效的里程计形状来源(0/1): 调试口回报, 免得"跑在哪个分支"只能靠猜 */

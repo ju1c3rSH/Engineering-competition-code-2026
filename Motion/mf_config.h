@@ -149,6 +149,56 @@
 #define MF_ARC_ENTRY_SOFT_LEN_M 0.12f
 #endif
 
+/* ================= 直线段横向环（名义线基准；0 = 回旧行为） =================
+ * 形式: Stanley 差速版 —— 横向偏差折成**航向偏置**叠进航向环误差, 不是 wz += K·e_y:
+ *     dpsi = -atan(k·e_y/(k_soft+v))        e_y>0=车在名义线左侧 ⇒ 负 ⇒ 右打
+ * 不直加 wz 的理由: 那是无阻尼二阶(ë_y=-vK·e_y), 阻尼全压在航向环上整定不出来, 且峰值 wz
+ * 随 K 线性涨。基准必须换成名义线: 原基准 p->entry 是**本段实测起点** ⇒ 段首带进来的 15mm
+ * 在换段那一刻被吃掉, 环永远看不见。推导/实测/收益边界见 docs/分析-过坎横向偏移.md
+ * 治不了: 纯横推(零信号)、航向零偏(共模)、起点摆放 */
+#ifndef MF_LINE_XTRACK_EN
+#define MF_LINE_XTRACK_EN       1
+#endif
+/* 收敛速率 λ=v·k/(k_soft+v) [1/s]: 0.8 @1.46m/s ⇒ 0.66/s ⇒ 坎后到坑前 3m 吃 86%。
+ * 收敛距离 L≈v/k: 0.8@1.46 ⇒ 1.8m。别贪大: 回路纯延迟 0.2~0.25s, k>1.5 只是跟延迟打架 */
+#ifndef MF_LINE_XTRACK_K
+#define MF_LINE_XTRACK_K        0.8f
+#endif
+/* 低速软化(m/s): v→0 时 λ→0, 不要写成 1/v(那会在停点附近炸)。不许设 0 */
+#ifndef MF_LINE_XTRACK_K_SOFT
+#define MF_LINE_XTRACK_K_SOFT   0.3f
+#endif
+/* 偏置限幅(deg, 不是 wz 限幅): 再大就不是纠偏是"斜着开", 段末航向残差会被顶大 */
+#ifndef MF_LINE_XTRACK_CORR_MAX_DEG
+#define MF_LINE_XTRACK_CORR_MAX_DEG  6.0f
+#endif
+/* 偏置斜率限(deg/s): 段首带 30mm 时也不许一拍拧到位(D 项会看到阶跃).
+ * 正常工况偏置变化率只有 ~0.3°/s, 本值只是护栏 */
+#ifndef MF_LINE_XTRACK_SLEW_DPS
+#define MF_LINE_XTRACK_SLEW_DPS 10.0f
+#endif
+/* 进环窗(m): 超窗说明不是侧滑(摆位/异常), 不纠; 窗外平滑退出不阶跃 */
+#ifndef MF_LINE_XTRACK_EY_WIN_M
+#define MF_LINE_XTRACK_EY_WIN_M 0.12f
+#endif
+/* 死区(m): 挡编码器量化(0.1~0.3mm/拍). 别设到 20mm —— 会把该修的一起死掉 */
+#ifndef MF_LINE_XTRACK_DEAD_M
+#define MF_LINE_XTRACK_DEAD_M   0.002f
+#endif
+/* 低于此速不纠(m/s): 0 速出力会把车原地拧头; 倒车段(dist<0)自动被这个门挡掉 */
+#ifndef MF_LINE_XTRACK_V_MIN
+#define MF_LINE_XTRACK_V_MIN    0.20f
+#endif
+/* 段末收偏置(m): 段末的偏置 = 带进下一段的航向误差, 而弧按 R·Δθ 把它放大成**位置**误差
+ * (0.5°×942=8mm) ⇒ 末段这么多米内线性收到 0 */
+#ifndef MF_LINE_XTRACK_RAMP_M
+#define MF_LINE_XTRACK_RAMP_M   0.12f
+#endif
+/* e_y 一阶低通(时间常数 s): 挡履带过齿/单拍打滑尖峰, 对 λ≤1.2 只加 ~3° 相位 */
+#ifndef MF_LINE_XTRACK_LPF_TAU_S
+#define MF_LINE_XTRACK_LPF_TAU_S  0.05f
+#endif
+
 /* ============ 弧线滑移基线（角速度内环的开环前馈，实车标定项）============ */
 /* 履带转弯实测角速度只有差速指令的 k 倍(k<1), 弧线**全程**吃这亏损, 属确定性前馈, 不能只靠反馈慢补。
  * 本值=速率内环输出侧基线, **只作用于弧线**(直线段为 1.0: 直线纠偏仅几 dps, 其环 kp=16 按未补偿 k 标定,
