@@ -6,6 +6,7 @@
 #include "mf_math.h"
 #include "mf_kinematics.h"
 #include "car_link.h"
+#include <math.h>           /* sqrtf: trim 滑行预算二次方程(同 mf_path.c) */
 
 static struct
 {
@@ -51,6 +52,98 @@ static struct
 } trk_rate;
 
 static uint32_t trk_ms;   /* 每拍 +CAR_TICK_MS; 只用差值, 不拍回绕 */
+
+/* ---- 刹停后微调(trim)状态: 见 TRACKING_TRIM_* (nav_tracking.h) 与 §10.18 ----
+ * 律与 build_verify/trim_loop_sim.py 一一对应(该脚本全参数扫 100% 收敛后才落的固件)。
+ * 里程与滞后全部在线学习, 不写死任何 px↔mm 换算(旧注释两套口径矛盾已删) */
+static struct
+{
+	uint8_t  phase;        /* TRIM_PHASE_* */
+	uint8_t  iter;         /* 已执行的移动次数 */
+	uint8_t  outcome;      /* 终态成因: TRIM_OUTCOME_*(0=收敛, 1~5=护栏细分) */
+	int16_t  resid_f10k;   /* 终态那拍的 E(定点), 进 EVT echo 折算 + TRKD 的 R= */
+	float    gain_cpmm;    /* E->里程增益(计数/mm), 在线学习 */
+	float    lag_s;        /* 停令后滑行滞后(s), 在线学习 = over/v */
+	float    v_mps;        /* 当前移动的爬行速度(带符号) */
+	float    dcmd_mm;      /* 当前移动的指令里程(恒正幅值, 方向在 v_mps) */
+	float    dcut_mm;      /* 停令那拍的累计轮程幅值(-1=未切割): 滑行学习的分界 */
+	float    travel0_mm;   /* 当前移动起点的累计轮程(带符号) */
+	float    travel_mm;    /* STOPPED 期累计轮程(带符号, wheel delta 累加) */
+	float    budget_mm;    /* 前向预算 = 段表剩余里程 - margin(不许吃穿名义端点) */
+	int16_t  estart_f10k;  /* 当前移动起点的 E(学习用) */
+	uint32_t t0_ms;        /* trim 总计时起点(GIVEUP_MS) */
+	uint32_t eval_t0_ms;   /* 本轮 EVAL 等帧计时起点(FIRST_WAIT_MS) */
+	uint32_t move_t0_ms;   /* 当前移动起点(单步超时守卫) */
+	uint32_t frame_seen_ms;/* 最近一次真误差帧的 trk_ms。STOPPED 态 frame_age_ms 无人
+	                        * 递增(递增在 ARMED 分支), 断流时旧值恒"新鲜" —— trim 的
+	                        * 新鲜判据只能用这个独立时戳, 不归零(跨态有效) */
+} trim;
+
+static void Trim_ResetAll(void)
+{
+	trim.phase = TRIM_PHASE_IDLE;
+	trim.iter = 0u;
+	trim.outcome = TRIM_OUTCOME_CONV;
+	trim.resid_f10k = 0;
+	trim.gain_cpmm = 0.0f;
+	trim.lag_s = 0.0f;
+	trim.v_mps = 0.0f;
+	trim.dcmd_mm = 0.0f;
+	trim.dcut_mm = -1.0f;
+	trim.travel0_mm = 0.0f;
+	trim.travel_mm = 0.0f;
+	trim.budget_mm = 0.0f;
+	trim.estart_f10k = 0;
+	trim.t0_ms = 0u;
+	trim.eval_t0_ms = 0u;
+	trim.move_t0_ms = 0u;
+	/* frame_seen_ms 不清: 测量时戳归零会伪造"刚见过帧" */
+}
+
+/* ---- trim 事件环形缓冲: 归因黑匣子(TRKT 行, §10.18) ----
+ * ISR 生产(TrimTick), 主循环读后清(Car_TrimLog)。一轮 trim ≤6 条, 环 12 条够两轮
+ * 完整历史; 满则覆盖最旧 —— 终态(END)记录不可丢, 丢早期 MOVE 记录可以接受 */
+#define TRIM_LOG_DEPTH  12u
+static TrkTrimLog_t trim_log[TRIM_LOG_DEPTH];
+static volatile uint8_t trim_log_head, trim_log_count;
+
+static void Trim_LogPush(uint8_t type, float e_counts, int16_t f1, int16_t f2, uint8_t aux)
+{
+	TrkTrimLog_t *r;
+
+	__disable_irq();
+	if (trim_log_count >= TRIM_LOG_DEPTH)
+	{
+		trim_log_head = (uint8_t)((trim_log_head + 1u) % TRIM_LOG_DEPTH);   /* 覆盖最旧 */
+		trim_log_count--;
+	}
+	r = &trim_log[(uint8_t)((trim_log_head + trim_log_count) % TRIM_LOG_DEPTH)];
+	r->ms = trk_ms;
+	r->e_f10k = (int16_t)e_counts;
+	r->f1 = f1;
+	r->f2 = f2;
+	r->type = type;
+	r->aux = aux;
+	trim_log_count++;
+	__enable_irq();
+}
+
+/* 读后清(主循环 Car_TrimLog 消费): 返回 0 = 无记录 */
+uint8_t Tracking_TakeTrimLog(TrkTrimLog_t *out)
+{
+	uint8_t has;
+
+	__disable_irq();
+	has = (uint8_t)((trim_log_count != 0u) ? 1u : 0u);
+	if (has != 0u)
+	{
+		*out = trim_log[trim_log_head];
+		trim_log_head = (uint8_t)((trim_log_head + 1u) % TRIM_LOG_DEPTH);
+		trim_log_count--;
+	}
+	__enable_irq();
+	return has;
+}
 
 static void Trk_RateClear(void)
 {
@@ -141,6 +234,7 @@ static void Tracking_Goto(TrackingState_t next)
 	tracking.lost_ms = 0u;
 	tracking.error_fresh = 0u;
 	Trk_RateClear();
+	Trim_ResetAll();   /* trim 字段一并复位; TrimBegin/Goto(STOPPED) 之后会重填初值 */
 	/* 注意**不清** noconv_latch —— 它由 START/STOP 专门清(见 Tracking_Start/Stop),
 	 * 好让 Brain 的容错计数能在每次重开后重新累计 */
 	__disable_irq();
@@ -158,6 +252,19 @@ char Tracking_StateChar(TrackingState_t s)
 	case TRACKING_STOPPED: return 'S';
 	case TRACKING_FAULT:   return 'F';
 	default:                return 'O';
+	}
+}
+
+/* trim 子相位字母(TRKD 行的 T= 字段) */
+char Tracking_TrimChar(uint8_t trim_phase)
+{
+	switch (trim_phase)
+	{
+	case TRIM_PHASE_EVAL:     return 'E';
+	case TRIM_PHASE_CREEP:    return 'C';
+	case TRIM_PHASE_SETTLE:   return 'S';
+	case TRIM_PHASE_FINISHED: return 'F';
+	default:                  return '-';
 	}
 }
 
@@ -237,13 +344,15 @@ void Tracking_Start(uint8_t tracking_speed_level, uint8_t aim_axis)
 	Tracking_Goto(TRACKING_ARMED);
 }
 
-/* 立即暂停本段并上报"已刹停可发射": cmd 全零 + 泄放段内斜坡 -> STOPPED, 发一次 DONE */
+/* 指令刹停(0x07 mode0)的 STOPPED 入口: 全零驻停 + 登记终态。
+ * DONE 由 STOPPED 分支统一发出(≤1 拍), echo/reason=0 与旧版逐字节一致。
+ * 与自动刹停路径(Tracking_TrimBegin)的分工同 SettleCheck 先例: 主控点名要停的
+ * 不做微调 —— DONE 即时语义不变 */
 static void Tracking_EnterStopped(mf_ctx_t *motion)
 {
 	Tracking_HoldStill(motion);
-	Tracking_Goto(TRACKING_STOPPED);   /* Goto 含清 stop_done, 故闩锁在 Goto 之后置 */
-	tracking.stop_done = 1u;
-	Car_Event_Send(CAR_EVT_TRACKING_DONE, 0u, 0x00u);
+	Tracking_Goto(TRACKING_STOPPED);   /* Goto 含清 stop_done, 闩锁由 STOPPED 分支发送时置 */
+	trim.phase = TRIM_PHASE_FINISHED;  /* 指令路径无微调: 直接终态, 残余/护栏均为 0 */
 }
 
 /* 触发制动(锁存): 记下当拍速度作为制动斜坡起点。制动不是瞬间压零 —— 段表按固定减速
@@ -284,12 +393,12 @@ static uint8_t Tracking_BrakeRamp(mf_ctx_t *motion)
 	return (uint8_t)((tracking.brake_cap <= 0.02f) && (tracking.brake_cap >= -0.02f));
 }
 
-#if (TRACKING_SETTLE_EN != 0u)
 /* 物理停稳确认: 制动**目标**到零 ≠ 车停了 —— 低速轮速环制动偏软(0.15m/s 下实测等效
  * ~0.6m/s², 远低于 BRAKE 4), 目标零后还要滑 ~10mm, 此刻报 DONE 会让 Brain 开火时
  * 枪口还在滑, 弹着点系统性早于停点(现场"擦边"根因之一)。轮速实测 ≤ 阈驻留
  * SETTLE_MS 才放行; GIVEUP 兜底防测速异常导致 DONE 永不来。
- * 只挂在"打靶制动完成"路径; STOP 指令的立即刹停(FireStop)不走这里 —— 主控要的是即时响应 */
+ * 主刹停路径按 TRACKING_SETTLE_EN 开关走这里; trim 的 SETTLE 相位无条件走
+ * (滑行没停完就学习 L/gain 会把估计污染, 且 trim 自有总时长护栏兜底) */
 static uint8_t Tracking_SettleCheck(mf_ctx_t *motion)
 {
 	float sp = mf_absf(motion->wheel[0].speed_mps);
@@ -316,7 +425,255 @@ static uint8_t Tracking_SettleCheck(mf_ctx_t *motion)
 	return (uint8_t)((tracking.settle_ms >= TRACKING_SETTLE_MS) ||
 	                 (tracking.settle_to_ms >= TRACKING_SETTLE_GIVEUP_MS));
 }
-#endif
+
+/* ---- 微调(trim): 终态登记 / 入口 / 每拍相位机 ----
+ * 只在自动刹停(点火制动+停稳)路径启用; 指令刹停(Tracking_Stop(0))即时终态不进微调。
+ * 里程货币 = wheel[].delta_m 自累计(与 mf_path 的 dist_accum 同源同号, 段表按实际轮程
+ * 自动入账, STOP(1) 放行补完的剩余里程自动扣除微调量 —— 无需任何新接口) */
+
+/* 微调终态登记(不动 stop_done 闩锁 —— 发送统一在 STOPPED 分支)。
+ * outcome 见 TRIM_OUTCOME_*: 0=收敛, 1~5=护栏细分(归因用, EVT reason 透传) */
+static void Tracking_TrimEnd(mf_ctx_t *motion, uint8_t outcome, float e_counts)
+{
+	Tracking_HoldStill(motion);
+	trim.phase = TRIM_PHASE_FINISHED;
+	trim.outcome = outcome;
+	trim.resid_f10k = (int16_t)e_counts;
+	Trim_LogPush(TRKT_END, e_counts, (int16_t)outcome,
+	             (int16_t)(trim.gain_cpmm * 10.0f), trim.iter);
+}
+
+/* 自动刹停路径的 STOPPED 入口: 进微调评估。前进预算 = 段表剩余里程 - margin,
+ * 微调的全部前进量都从段表账面走(轮程自动入账), 不许把累计器推过名义端点 ——
+ * 否则段表在微调中途自完成(path DONE 与 trim 交错) */
+static void Tracking_TrimBegin(mf_ctx_t *motion)
+{
+	float budget;
+
+	Tracking_HoldStill(motion);
+	Tracking_Goto(TRACKING_STOPPED);       /* 复位全部判据与 trim 字段 */
+	/* 必须用本段剩余: 全路径剩余会被后续位移段稀释; 非 MOVE 段返回 0 = 拒绝微调
+	 * (TURN 期间 dist_accum 不入账, 在那爬行会把账记丢, 见 mf_path_seg_remain_m) */
+	budget = mf_path_seg_remain_m(&motion->path) * 1000.0f
+	         - (TRACKING_TRIM_BUDGET_MARGIN_M * 1000.0f);
+	trim.gain_cpmm = TRACKING_TRIM_GAIN_DEF;
+	trim.lag_s = TRACKING_TRIM_L_INIT_S;
+	trim.budget_mm = (budget > 0.0f) ? budget : 0.0f;
+	trim.t0_ms = trk_ms;
+	trim.eval_t0_ms = trk_ms;
+	trim.phase = TRIM_PHASE_EVAL;
+	{
+		int32_t b10 = (int32_t)(trim.budget_mm * 10.0f);
+
+		if (b10 > 30000) { b10 = 30000; }   /* int16 限幅(防御; 本段剩余不会到 3m) */
+		Trim_LogPush(TRKT_BEGIN,
+		             tracking.horizontal_error_normalized * TRACKING_ERROR_FIXED_SCALE,
+		             (int16_t)b10, 0, 0u);
+	}
+}
+
+/* STOPPED 态每拍的微调相位机。分支头部已 HoldStill(全零驻停), 只有 CREEP 覆写 cmd。
+ * 前置: Tracking_ConsumeErrorFrame 本拍已跑(nav_task/ApplyOverlay 头部), 误差新鲜 */
+static void Tracking_TrimTick(mf_ctx_t *motion)
+{
+	float e, abs_e;
+	uint8_t fresh;
+
+	trim.travel_mm += (motion->wheel[0].delta_m + motion->wheel[1].delta_m) * 500.0f;
+	fresh = (uint8_t)((tracking.target_found_flag != 0u) &&
+	                  ((trk_ms - trim.frame_seen_ms) <= TRACKING_FRAME_TIMEOUT_MS));
+
+	switch (trim.phase)
+	{
+	case TRIM_PHASE_EVAL:
+	{
+		uint8_t usable = fresh;
+
+		e = tracking.horizontal_error_normalized * TRACKING_ERROR_FIXED_SCALE;
+		abs_e = (e < 0.0f) ? -e : e;
+		if ((usable != 0u) && (abs_e >= TRACKING_ERR_SAT_LEVEL * TRACKING_ERROR_FIXED_SCALE))
+		{
+			usable = 0u;   /* found=1 但钉在量程沿(现场实测连续 2.5s): 与 ARMED 同判不可用,
+			                * 否则按它规划会走出 budget 级的巨步 */
+		}
+		if (usable == 0u)
+		{
+			if ((trk_ms - trim.eval_t0_ms) >= TRACKING_TRIM_FIRST_WAIT_MS)
+			{
+				/* 视觉死/断流/饱和: 车已物理停稳, 护栏放行(残余 = 最后一次测量, 观测用) */
+				Tracking_TrimEnd(motion, TRIM_OUTCOME_NOFRAME, e);
+			}
+			break;
+		}
+		if (abs_e <= (float)TRACKING_TRIM_TOL_E)
+		{
+			Tracking_TrimEnd(motion, TRIM_OUTCOME_CONV, e);   /* 已在窗内: 收敛 */
+			break;
+		}
+		if ((trim.iter >= TRACKING_TRIM_MAX_ITER) ||
+		    ((trk_ms - trim.t0_ms) >= TRACKING_TRIM_GIVEUP_MS))
+		{
+			Tracking_TrimEnd(motion, TRIM_OUTCOME_CAP, e);    /* 护栏放行, 残余照报 */
+			break;
+		}
+		/* 规划(与 trim_loop_sim.py 逐式对应): d_need=|E|/gain;
+		 * 滑行预算=min(d_need/2, 3mm); v 解 "L·v+v²/2a=预算"(小修正自动慢爬);
+		 * 再约束步时长 >= 1 名义帧(否则整步在两帧之间完成, E 背停无采样机会);
+		 * d_cmd = d_need - slide: 瞄短一个滑行量, 停稳正好落在靶心 */
+		{
+			float d_need      = abs_e / trim.gain_cpmm;
+			float slide_budget = ((d_need * 0.5f) < 3.0f) ? (d_need * 0.5f) : 3.0f;
+			float al          = TRACKING_BRAKE_MPS2 * trim.lag_s;
+			float v           = sqrtf(al * al + 2.0f * TRACKING_BRAKE_MPS2
+			                                 * slide_budget * 0.001f) - al;
+			float d_cmd       = d_need;
+			uint8_t i;
+
+			v = (v < TRACKING_TRIM_V_MIN_MPS) ? TRACKING_TRIM_V_MIN_MPS : v;
+			v = (v > TRACKING_TRIM_V_MAX_MPS) ? TRACKING_TRIM_V_MAX_MPS : v;
+			for (i = 0u; i < 2u; i++)
+			{
+				float slide = (v * trim.lag_s + v * v / (2.0f * TRACKING_BRAKE_MPS2)) * 1000.0f;
+				float v_cap;
+
+				d_cmd = d_need - slide;
+				if (d_cmd < TRACKING_TRIM_MIN_STEP_MM) { d_cmd = TRACKING_TRIM_MIN_STEP_MM; }
+				v_cap = d_cmd * 0.001f / TRACKING_TRIM_FRAME_S;
+				if (v > v_cap) { v = v_cap; }   /* 单向钳位(步时长>=1帧), 与仿真逐式一致 */
+				v = (v < TRACKING_TRIM_V_MIN_MPS) ? TRACKING_TRIM_V_MIN_MPS : v;
+				v = (v > TRACKING_TRIM_V_MAX_MPS) ? TRACKING_TRIM_V_MAX_MPS : v;
+			}
+			if (e > 0.0f)
+			{
+				/* E>0 = 靶心仍在车前方: 前进, 受段表剩余预算钳位(防吃穿名义端点) */
+				if (d_cmd > trim.budget_mm) { d_cmd = trim.budget_mm; }
+			}
+			else
+			{
+				float cap = TRACKING_TRIM_MAX_MOVE_M * 1000.0f;
+
+				if (d_cmd > cap) { d_cmd = cap; }    /* 后退: 单步上限(remain 只增不减, 安全) */
+			}
+			if (d_cmd < TRACKING_TRIM_MIN_STEP_MM)
+			{
+				Tracking_TrimEnd(motion, TRIM_OUTCOME_BUDGET, e); /* 预算/上限吃光 */
+				break;
+			}
+			trim.v_mps       = (e > 0.0f) ? v : -v;
+			trim.dcmd_mm     = d_cmd;
+			trim.estart_f10k = (int16_t)e;
+			trim.travel0_mm  = trim.travel_mm;
+			trim.move_t0_ms  = trk_ms;
+			trim.dcut_mm     = -1.0f;
+			trim.phase       = TRIM_PHASE_CREEP;
+		}
+		break;
+	}
+
+	case TRIM_PHASE_CREEP:
+	{
+		float moved     = trim.travel_mm - trim.travel0_mm;
+		float moved_abs = (moved < 0.0f) ? -moved : moved;
+		float cmd_abs   = (trim.dcmd_mm < 0.0f) ? -trim.dcmd_mm : trim.dcmd_mm;
+		float v_abs     = (trim.v_mps < 0.0f) ? -trim.v_mps : trim.v_mps;
+		uint32_t timeout_ms = (uint32_t)(cmd_abs / v_abs) + 500u;   /* mm/(m/s)=ms; 堵转守卫 */
+		uint8_t cut = 0u;      /* 0=未停 1=走满指令量 2=E窗背停 3=单步超时 4=总时长到 */
+		uint8_t cut_reason = 0u;
+
+		motion->cmd.vx_mps = trim.v_mps;
+		motion->cmd.vy_mps = 0.0f;
+		motion->cmd.wz_dps = 0.0f;
+		/* 钉住执行器速度状态保持账实一致(收尾 HoldStill 归零, 放行从 0 起坡) */
+		motion->path.cur_speed = trim.v_mps;
+
+		e = tracking.horizontal_error_normalized * TRACKING_ERROR_FIXED_SCALE;
+		abs_e = (e < 0.0f) ? -e : e;
+		if (moved_abs >= cmd_abs)
+		{
+			cut = 1u; cut_reason = 0u;                   /* 走满指令量: 滑行自此开始 */
+		}
+		else if ((fresh != 0u) && (abs_e <= (float)TRACKING_TRIM_TOL_E))
+		{
+			cut = 1u; cut_reason = 1u;                   /* E 窗背停: 提前收令 */
+		}
+		else if ((trk_ms - trim.move_t0_ms) >= timeout_ms)
+		{
+			cut = 1u; cut_reason = 2u;                   /* 打滑/堵转: 别在一小步上吊死 */
+		}
+		if (timeout_ms < 2000u) { timeout_ms = 2000u; }   /* 下限: 低速步给轮速环爬静摩擦的时间 */
+		if ((trk_ms - trim.t0_ms) >= TRACKING_TRIM_GIVEUP_MS)
+		{
+			cut = 1u; cut_reason = 3u;                   /* 总时长到: 停稳后 EVAL 必然 CAP 终态 */
+		}
+		if (cut != 0u)
+		{
+			trim.dcut_mm = moved_abs;
+			tracking.settle_ms = 0u;
+			tracking.settle_to_ms = 0u;
+			trim.phase = TRIM_PHASE_SETTLE;
+			/* 归因记录: 指令量 vs 实际轮程差 = 本步真实过冲, X=2(超时)说明轮子没跟上 */
+			Trim_LogPush(TRKT_MOVED, e, (int16_t)(trim.dcmd_mm * 10.0f),
+			             (int16_t)(moved_abs * 10.0f), cut_reason);
+		}
+		break;
+	}
+
+	case TRIM_PHASE_SETTLE:
+	{
+		if (Tracking_SettleCheck(motion) == 0u)
+		{
+			break;                                       /* 还在滑: 学习窗口没关 */
+		}
+		{
+			float moved     = trim.travel_mm - trim.travel0_mm;
+			float moved_abs = (moved < 0.0f) ? -moved : moved;
+			float dcut      = (trim.dcut_mm < 0.0f) ? moved_abs : trim.dcut_mm;
+			float e_prev    = (float)trim.estart_f10k;
+			float de;
+
+			e = tracking.horizontal_error_normalized * TRACKING_ERROR_FIXED_SCALE;
+			/* 增益带符号: 朝 sign(E) 方向走而 E 反向显著增大 = 几何假设不成立, 别跟物理打架 */
+			de = (trim.v_mps >= 0.0f) ? (e_prev - e) : (e - e_prev);
+			if ((moved_abs >= 0.8f) && (de <= -8.0f))
+			{
+				Tracking_TrimEnd(motion, TRIM_OUTCOME_SIGN, e);
+				break;
+			}
+			if ((moved_abs >= 0.8f) && (de >= 8.0f))
+			{
+				float g = de / moved_abs;
+
+				trim.gain_cpmm = (g < 2.0f) ? 2.0f : ((g > 500.0f) ? 500.0f : g);
+			}
+			/* 学滞后必须轮程 >=0.8mm(与 gain 同门): 堵转步 over≈0 会把 lag 伪学到下限,
+			 * 后续滑行补偿少算 -> 系统性偏短。超时切(reason 2/3)但轮子真动了仍照学 */
+			if ((moved_abs >= 0.8f) && (moved_abs >= dcut))
+			{
+				float v_abs = (trim.v_mps < 0.0f) ? -trim.v_mps : trim.v_mps;
+				float over  = moved_abs - dcut;
+				float l;
+
+				if (over >= 0.0f)
+				{
+					l = over / (v_abs * 1000.0f);
+					trim.lag_s = (l < 0.02f) ? 0.02f : ((l > 0.30f) ? 0.30f : l);
+				}
+				if (trim.v_mps > 0.0f)
+				{
+					trim.budget_mm -= moved_abs;         /* 前向步计入预算(后退不返还, 保守) */
+				}
+			}
+			trim.iter++;
+			trim.eval_t0_ms = trk_ms;
+			trim.phase = TRIM_PHASE_EVAL;
+		}
+		break;
+	}
+
+	default:   /* IDLE/FINISHED: 无事可做 */
+		break;
+	}
+}
 
 /* 原子消费误差帧: 有新帧更新误差并喂狗, 无新帧不碰 frame_age_ms */
 void Tracking_ConsumeErrorFrame(void)
@@ -372,7 +729,7 @@ void Tracking_LimitApproachSpeed(void)
 	/* 近靶二级限速: 按**帧龄**持有, 不按 found —— found=0 的窄窗闪断帧会让限速释放、
 	 * 车速在点火前爬回高速, 实测停车消耗 C 在 60~241 计数双峰(2026-10-10 两趟),
 	 * 固定点火阈无法两头兼顾; 闪断帧沿用最后 e 爬行, 盲爬上限=TIMEOUT×NEAR_MPS=7.5cm,
-	 * 比闪断即加速回 0.45 安全。本函数跑在 ConsumeErrorFrame 之前, 用上一拍帧, 差一拍无害 */
+	 * 比闪断即加速回 0.45 安全。本函数用上一拍已消费的帧(nav_task 每拍先消费), 差一拍无害 */
 	if ((tracking.braking == 0u) &&
 	    (tracking.frame_age_ms <= TRACKING_FRAME_TIMEOUT_MS) &&
 	    (mf_absf(tracking.horizontal_error_normalized) < TRACKING_ERR_SAT_LEVEL) &&
@@ -400,6 +757,15 @@ void Tracking_Stop(uint8_t tracking_stop_mode)
 		{
 			Tracking_EnterStopped(mf_app());
 		}
+#if (TRACKING_TRIM_EN != 0u)
+		else if (trim.phase != TRIM_PHASE_FINISHED)
+		{
+			/* 微调中途主控点名刹停: 放弃微调立即终态(同 SettleCheck 的即时响应先例),
+			 * 残余照报 —— Brain 要的是"停", 不是"最优停" */
+			Tracking_TrimEnd(mf_app(), TRIM_OUTCOME_ABORT,
+			                 tracking.horizontal_error_normalized * TRACKING_ERROR_FIXED_SCALE);
+		}
+#endif
 	}
 	else
 	{
@@ -429,36 +795,62 @@ uint8_t Tracking_ApplyOverlay(void)
 	{
 		return 0u;                     /* 段表全权(不变量 I1) */
 	}
-	/* 已刹停/故障: 全零驻停, 等主控(0x07/0x05)。STOPPED 只报一次 DONE; START 重发会
-	 * 清 stop_done 闩锁 => 下拍补发一次(主控的 done 标志被那次 START 清掉了) */
-	if ((tracking.state == TRACKING_STOPPED) || (tracking.state == TRACKING_FAULT))
-	{
-		Tracking_HoldStill(motion);
-		if ((tracking.state == TRACKING_STOPPED) && (tracking.stop_done == 0u))
-		{
-			tracking.stop_done = 1u;
-			Car_Event_Send(CAR_EVT_TRACKING_DONE, 0u, 0x00u);   /* 已刹停可发射 */
-		}
-		return 1u;
-	}
-
-	/* ==== ARMED: 段表全权驱动, 这里只评估刹停判据/上报故障, 不改 cmd ==== */
+	/* 误差帧消费提到状态分支之前: trim 在 STOPPED 态也读 E, 且新鲜判据用的是
+	 * frame_seen_ms 时戳(STOPPED 无人递增 frame_age_ms, 断流时旧值恒"新鲜")。
+	 * 与 nav_task 每拍的那次调用重复, 幂等(帧已消费, 这里 no-op) */
 	Tracking_ConsumeErrorFrame();
 	if (tracking.error_fresh != 0u)
 	{
 		tracking.error_fresh = 0u;
-		if ((tracking.target_found_flag != 0u) &&
-		    (mf_absf(tracking.horizontal_error_normalized) < TRACKING_ERR_SAT_LEVEL))
+		trim.frame_seen_ms = trk_ms;
+		if (tracking.state == TRACKING_ARMED)
 		{
-			Trk_RateFeed(tracking.horizontal_error_normalized);
-		}
-		else
-		{
-			/* 两种"有帧但不可用": 丢检(found=0, e 被置 0) 与 量程饱和(found=1 但 e 钉在 ±0.96)。
-			 * 前者让 |de/dt| 恒 0, 后者让重捕那一帧的跳变(实测 -9594 -> +9588)进窗 —— 都得清 */
-			Trk_RateClear();
+			if ((tracking.target_found_flag != 0u) &&
+			    (mf_absf(tracking.horizontal_error_normalized) < TRACKING_ERR_SAT_LEVEL))
+			{
+				Trk_RateFeed(tracking.horizontal_error_normalized);
+			}
+			else
+			{
+				/* 两种"有帧但不可用": 丢检(found=0, e 被置 0) 与 量程饱和(found=1 但 e 钉在 ±0.96)。
+				 * 前者让 |de/dt| 恒 0, 后者让重捕那一帧的跳变(实测 -9594 -> +9588)进窗 —— 都得清 */
+				Trk_RateClear();
+			}
 		}
 	}
+
+	/* 已刹停: STOPPED 分支。终态(FINISHED)且闩锁未置 → 发 DONE: echo=|残余E|/40,
+	 * reason=护栏标志(Brain 对 DONE 只置标志不读这两字节, 纯前向兼容的观测通道)。
+	 * STOPPED 只报一次; START 重发会清 stop_done 闩锁 => 下拍补发一次(主控的 done
+	 * 标志被那次 START 清掉了)。微调中途(phase 未到 FINISHED)不发 —— DONE 只在
+	 * 收敛/护栏后出, trim 的总时长护栏(GIVEUP_MS)保证它总会到 */
+	if (tracking.state == TRACKING_STOPPED)
+	{
+		Tracking_HoldStill(motion);
+#if (TRACKING_TRIM_EN != 0u)
+		Tracking_TrimTick(motion);            /* 可能覆写 cmd 为爬行速度 */
+#endif
+		if ((tracking.stop_done == 0u) && (trim.phase == TRIM_PHASE_FINISHED))
+		{
+			int32_t echo = trim.resid_f10k;
+
+			if (echo < 0) { echo = -echo; }
+			echo /= 40;                       /* 1 单位 ≈ 1px(1px=31.25 计数), 饱和 255 */
+			if (echo > 255) { echo = 255; }
+			tracking.stop_done = 1u;
+			Car_Event_Send(CAR_EVT_TRACKING_DONE, (uint8_t)echo, trim.outcome);
+		}
+		return 1u;
+	}
+	/* 故障: 全零驻停, 等主控(START 重开 / 容错) */
+	if (tracking.state == TRACKING_FAULT)
+	{
+		Tracking_HoldStill(motion);
+		return 1u;
+	}
+	/* ==== ARMED: 段表全权驱动, 这里只评估刹停判据/上报故障, 不改 cmd ====
+	 * (I1 的例外只有 STOPPED 的 trim 爬行: overlay 持有 cmd, 位移由段表账本按
+	 *  实际轮程入账, 记账论证见 §10.18 —— "跟瞄一个字节不写"的旧说法已过期) */
 	if (tracking.frame_age_ms < (uint16_t)(0xFFFFu - CAR_TICK_MS))
 	{
 		tracking.frame_age_ms = (uint16_t)(tracking.frame_age_ms + CAR_TICK_MS);
@@ -483,7 +875,11 @@ uint8_t Tracking_ApplyOverlay(void)
 			}
 			tracking.settling = 0u;
 #endif
-			Tracking_EnterStopped(motion);
+#if (TRACKING_TRIM_EN != 0u)
+			Tracking_TrimBegin(motion);     /* 自动刹停: 进微调评估, DONE 推迟到收敛/护栏 */
+#else
+			Tracking_EnterStopped(motion);  /* TRIM_EN=0: 回旧行为(停稳即发 DONE) */
+#endif
 			return 1u;
 		}
 		return 0u;   /* 本拍只压段表 target, 制动下一拍 mf_tick 起坡生效, cmd 未改 */
@@ -675,6 +1071,11 @@ void Tracking_GetInfo(Trk_Info_t *out)
 	out->fire_e_f10k  = tracking.fire_e_f10k;
 	out->frame_age_ms = tracking.frame_age_ms;
 	out->hold_ms      = tracking.hold_ms;
+	out->trim_phase   = trim.phase;
+	out->trim_iter    = trim.iter;
+	out->trim_gaveup  = trim.outcome;   /* 终态成因码(TRIM_OUTCOME_*), 0=收敛 */
+	out->trim_resid_f10k = trim.resid_f10k;
+	out->trim_gain_x10   = (int16_t)(trim.gain_cpmm * 10.0f);
 	__enable_irq();
 }
 

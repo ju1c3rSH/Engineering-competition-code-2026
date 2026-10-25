@@ -4,7 +4,11 @@
  *
  * 不变量: 段表全程是**唯一**位移来源(跟瞄态一个字节的 vx/wz 都不写), 视觉只回答"是否已到
  * 靶位"。START 武装(ARMED)后底盘每拍只**评估**刹停判据, 成立则按固定减速度把段表当拍目标
- * 速度压到 0 -> STOPPED 报 DONE; 发射后 STOP(1) 回 OFF, 段表从 cur_speed=0 起坡补完剩余里程,
+ * 速度压到 0 -> STOPPED; 自动刹停路径再走 trim 子流程(E 闭环低速爬行微调, 收敛才发 DONE,
+ * 见 TRACKING_TRIM_* 与 docs/打靶段架构-刹停与续跑.md §10.18), 指令刹停(0x07 mode0)即时发
+ * DONE。"段表是唯一位移来源"指 ARMED 态一个字节不写; trim 爬行(STOPPED 态)是**唯一例外**
+ * —— overlay 持有 cmd, 位移由段表账本按实际轮程入账, 终点不变量由 §10.18 的预算护栏保住。
+ * 发射后 STOP(1) 回 OFF, 段表从 cur_speed=0 起坡补完剩余里程,
  * 终点仍 = 进段位置 + 段表里程 ⇒ 零标定零污染。规格: docs/打靶段架构-刹停与续跑.md
  * 本模块不 include Control_Car.h(会成环); 协议码统一取 App/car_protocol.h。
  */
@@ -72,6 +76,29 @@ typedef enum
 #define TRACKING_NOCONV_MS              500u    /* 段表已完 + |e|>阈 持续这么久 → FAULT(01) */
 #define TRACKING_LOST_DONE_MS           1500u   /* 段表已完 + 无测量 持续这么久 → FAULT(02) */
 
+/* ---- 刹停后微调(trim): STOPPED 内 E 闭环低速爬行, 收敛才发 DONE ----
+ * 动机: FIRE_PAST 标定只消系统性停点偏差, 趟间随机分量(帧量化/E噪声/地面变化)与标定
+ * 漂移治不了。STOPPED 进 EVAL: |E|<=TOL 直接 DONE; 窗外按在线估计的增益/滞后做带滑行
+ * 补偿的比例步(爬行速度由滑行预算二次方程解出, 保证小修正也跨 >=1 帧有采样机会),
+ * 收敛/超限才发 DONE。全程不依赖 px↔mm 换算(旧注释两套口径矛盾已删); 微调里程由段表
+ * dist_accum 按实际轮程自动入账, STOP(1) 放行补完的剩余里程自动扣除, 下游成对常数不受
+ * 影响。收敛性: build_verify/trim_loop_sim.py(gain 5~80 计数/mm × L 0.04~0.15s 全扫 100%)。
+ * 规格: docs/打靶段架构-刹停与续跑.md §10.18 */
+#define TRACKING_TRIM_EN                1u      /* 0 = 回旧行为(停稳即发 DONE) */
+#define TRACKING_TRIM_TOL_E             40      /* DONE 窗: |E|<=此值(计数x1e-4) ≈1.3px */
+#define TRACKING_TRIM_V_MAX_MPS         0.030f  /* 爬行速度上限; 下限见 trim_loop_sim.py 推导 */
+#define TRACKING_TRIM_V_MIN_MPS         0.004f  /* 速度下限: 小修正也保证 >=1 帧采样机会 */
+#define TRACKING_TRIM_GAIN_DEF          30.0f   /* 增益初值(计数/mm), 仅第一迭代用, 之后实测 */
+#define TRACKING_TRIM_L_INIT_S          (TRACKING_LAG_MS * 0.001f)  /* 滞后初值, 之后实测 */
+#define TRACKING_TRIM_MAX_ITER          4u      /* 迭代上限, 超限 GIVEUP */
+#define TRACKING_TRIM_GIVEUP_MS         5000u   /* 总时长上限(EVAL/CREEP 都查); 最坏 ≈5s+末步停稳
+                                                 * ≈6s; Brain nav_ms=30s, TARGET_PROBE=8s 兼容 */
+#define TRACKING_TRIM_FIRST_WAIT_MS     300u    /* 每次 EVAL 等新帧上限(视觉死 -> GIVEUP) */
+#define TRACKING_TRIM_FRAME_S           0.060f  /* 名义帧周期(规划用, 保守取 16.7Hz) */
+#define TRACKING_TRIM_MIN_STEP_MM       0.2f    /* 最小指令步(防御: 理论上规划不会给出更小值) */
+#define TRACKING_TRIM_MAX_MOVE_M        0.060f  /* 单步上限(后退方向; 前进由段表剩余里程管) */
+#define TRACKING_TRIM_BUDGET_MARGIN_M   0.005f  /* 前进预算余量: 微调不许吃穿段表名义端点 */
+
 /* ---- 预测式提前制动(斜率外推) ----
  * 车还要走 v·L + v²/(2a) 才停; 用误差帧的 |de/dt| 把这距离折算到 e 域(不必标相机几何 S,
  * v 与 S 同时消掉): 触发阈 = |de/dt|·(L + v/(2a))。该阈与固定阈**取大者** ⇒ 斜率不可用、
@@ -79,10 +106,11 @@ typedef enum
  * 标定 L: 跑一趟读停车那拍的 |E|(定点), 停点冲过靶心就加大、没到靶心就减小, 一次即定。
  * 实测口径与反解见 docs/打靶段架构-刹停与续跑.md §10.15 */
 #define TRACKING_PRED_EN                1u      /* 0 = 关(回退现状) */
-#define TRACKING_LAG_MS                 69u     /* L: 视觉取像推理+转发+拍对齐(不含制动段); 标定=跑一趟读停点E。
-                                                 * 2026-10-10 相机重装后三点实测(80,-46)/(125,+275)/(72,-124),
-                                                 * 局部响应 ≈8 计数/ms; 72→69 = 再前进 ~25 计数(用户要求)。
-                                                 * 修正规则 ΔL=ΔE/8 ms; 步长 <5ms 会淹没在帧量化噪声里 */
+#define TRACKING_LAG_MS                 69u     /* L: 视觉取像推理+转发+拍对齐(不含制动段)。
+                                                 * 标定=跑一趟读停点E: 停点冲过靶心就加大、没到就减小,
+                                                 * 一次即定; 标定步长别小于帧量化噪声(约±5ms)。
+                                                 * (旧注释的"计数↔ms↔mm"换算与 FIRE_PAST_E 口径矛盾且
+                                                 * 无法推导, 2026-10-25 删 —— E↔里程换算一律现场实测) */
 #define TRACKING_ERR_WIN                6u      /* 斜率窗口(帧)。两点差分噪声达均值 ±40%, 必须最小二乘 */
 #define TRACKING_ERR_MIN_DT_MS          12u     /* 相邻样本最小间隔: 更密的重复帧不喂进窗口 */
 #define TRACKING_ERR_MIN_SPAN_MS        40u     /* 窗口最小跨度: 不足则判据不可用, 走固定阈 */
@@ -101,12 +129,45 @@ typedef enum
  * 启用后 J1 进阀窗与预测式同时退位(TRKD 的 THR 行改显点火点,
  * 带符号); J2 过零兜底保留 */
 #define TRACKING_FIRE_PAST_EN           1u      /* 0 = 回退进阀窗点火 */
-#define TRACKING_FIRE_PAST_E            150u    /* 点火点 150 计数 = 4.8px ≈ 22mm。首趟顺带标 C:
-                                                 * C = 点火点 - 停点E。入口条件见
-                                                 * TRK:A>S 行的 EF= 字段读法 */
+#define TRACKING_FIRE_PAST_E            150u    /* 点火点(计数, >0 启用)。停点 = 点火点 - C, C 现场标:
+                                                 * 跑一趟读 TRK:A>S 行的 EF 与 E_stop, C = EF - E_stop。
+                                                 * (旧注释"150计数=4.8px≈22mm"的 px↔mm 换算无法推导, 已删) */
 #if (TRACKING_ERR_WIN < 3u)
 #error "TRACKING_ERR_WIN 必须 >= 3"
 #endif
+
+/* trim 子相位(TRKD 行 T= 字段, Tracking_TrimChar 给字母) */
+#define TRIM_PHASE_IDLE     0u  /* 未启用(TRIM_EN=0 / 未进 STOPPED); 指令刹停直接置 FINISHED */
+#define TRIM_PHASE_EVAL     1u  /* 读 E 判收敛/规划下一步 */
+#define TRIM_PHASE_CREEP    2u  /* 低速爬行中 */
+#define TRIM_PHASE_SETTLE   3u  /* 移动后等物理停稳 */
+#define TRIM_PHASE_FINISHED 4u  /* 终态: DONE 已发(或待补发) */
+
+/* trim 终态成因(EVT reason / TRKD 的 GV= / TRKT 终态记录): 0=收敛, 非 0=护栏放行。
+ * 细分成因只为归因 —— Brain 对 DONE 的 reason 字节不解析, 逐字节前向兼容 */
+#define TRIM_OUTCOME_CONV      0u  /* |E| 进窗收敛 */
+#define TRIM_OUTCOME_CAP       1u  /* 迭代(4)或总时长(5s)超限 */
+#define TRIM_OUTCOME_NOFRAME   2u  /* 等新帧超时(视觉死/断流) */
+#define TRIM_OUTCOME_SIGN      3u  /* 几何反转: 朝 sign(E) 方向走而 E 反向显著增大 */
+#define TRIM_OUTCOME_BUDGET    4u  /* 前向预算/单步上限吃光, 无法再进 */
+#define TRIM_OUTCOME_ABORT     5u  /* 微调中途被主控 0x07 mode0 点名刹停 */
+
+/* trim 事件记录(TRKT 行, 归因黑匣子): ISR 生产(TrimTick), 主循环读后清(Car_TrimLog)。
+ * 一轮 trim ≤ BEGIN + 4×MOVED + END = 6 条, 环满覆盖最旧(终态记录不可丢) */
+typedef struct
+{
+	uint32_t ms;        /* trk_ms 时基(4ms/拍, 只用差值) */
+	int16_t  e_f10k;    /* 事件拍的 E(定点) */
+	int16_t  f1, f2;    /* 类型相关, 见 TRKT_* 注释 */
+	uint8_t  type;      /* TRKT_* */
+	uint8_t  aux;       /* 类型相关 */
+} TrkTrimLog_t;
+#define TRKT_BEGIN  1u  /* 进微调: f1=前向预算x10(mm) */
+#define TRKT_MOVED  2u  /* 一步完成: f1=指令里程x10(mm), f2=实际轮程x10(mm),
+                         * aux=停止原因(0=走满指令量 1=E窗背停提前收令 2=单步超时/堵转
+                         *            3=总时长到, 停稳后 EVAL 必然 CAP 终态) */
+#define TRKT_END    3u  /* 终态: f1=终态成因(TRIM_OUTCOME_*), f2=在线增益x10(计数/mm),
+                         * aux=已移动次数; e_f10k=残余 E */
 
 /* 跟瞄观测快照(仅调试显示用) */
 typedef struct { uint8_t state, found, braking, reason, near, settling;
@@ -114,9 +175,13 @@ typedef struct { uint8_t state, found, braking, reason, near, settling;
                  int16_t err_f10k;
                  int16_t thr_f10k;    /* 当拍点火点(定点, 带符号): 标定 FIRE_PAST_E 读它, 正常恒 +150 */
                  int16_t fire_e_f10k; /* 触发制动那一拍的 E(定点): C = E_stop - 本值,
-                                      * 本值只在点火那一拍刷新(见 Tracking_BrakeStart);
-                                      * 0=本轮尚未点火(指令刹停/FAULT 不刷它) */
-                 uint16_t frame_age_ms, hold_ms; } Trk_Info_t;
+                                       * 本值只在点火那一拍刷新(见 Tracking_BrakeStart);
+                                       * 0=本轮尚未点火(指令刹停/FAULT 不刷它) */
+                 uint16_t frame_age_ms, hold_ms;
+                 uint8_t trim_phase, trim_iter, trim_gaveup;
+                 int16_t trim_resid_f10k;  /* 发 DONE 那拍的 E(定点) */
+                 int16_t trim_gain_x10;    /* 在线增益×10(计数/mm), 观测换算率用 */ } Trk_Info_t;
+/* trim_gaveup 字段实为终态成因码(0=收敛, 1~5=护栏细分, 见 TRIM_OUTCOME_*) */
 
 void    Tracking_Start(uint8_t speed_level, uint8_t aim_axis);
 void    Tracking_Stop(uint8_t mode);
@@ -125,12 +190,14 @@ uint8_t Tracking_IsHolding(void);             /* STOPPED/FAULT: 有意停(NAV �
 void    Car_Tracking_ErrorPush(int16_t error_fixed, uint8_t found);
 void    Tracking_ConsumeErrorFrame(void);     /* Car_Nav_Task 每拍消费一次误差帧 */
 char    Tracking_StateChar(TrackingState_t s);
+char    Tracking_TrimChar(uint8_t trim_phase);                       /* TRKD 行 T= 字段 */
 /* 契约: 必须早于 mf_tick —— 只压 path.cur_speed, 轮速环每拍只算一次 */
 void    Tracking_LimitApproachSpeed(void);
 /* 契约: 必须晚于 mf_tick —— 压的是下一拍起坡起点; 返 1 需重解轮速环 */
 uint8_t Tracking_ApplyOverlay(void);
 void    Tracking_RecomputeWheels(void);
 uint8_t Tracking_TakeChangeLog(uint8_t *from, uint8_t *to);   /* 读后清, 内部关中断 */
+uint8_t Tracking_TakeTrimLog(TrkTrimLog_t *out);              /* 读后清, 返回 0=无; 内部关中断 */
 void    Tracking_GetInfo(Trk_Info_t *out);                    /* 内部关中断一次拷完 */
 
 #endif /* _NAV_TRACKING_H_ */
