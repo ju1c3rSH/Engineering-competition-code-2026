@@ -25,6 +25,8 @@ static struct
 	uint8_t    nav_id;
 	uint8_t    chain_to;    /* 本表跑完将自动续跑的 nav_id; NAV_ID_NONE=不续 */
 	uint8_t    last_done;   /* 已跑完但因链续未进 NAV_DONE 态的 nav_id; NAV_ID_NONE=无 */
+	uint8_t    gear;        /* 本次起跑生效的档位(REQ_NAV arg1): ≠0 时段表里所有 MOVE/ARC 速度
+	                         * 被 Nav_GearTable 统一改写 ⇒ 段表里单独降速(如 V_OBST_ZONE)会失效 */
 	uint16_t   stall_ms;
 } nav;
 
@@ -79,6 +81,7 @@ static void Nav_DoRequest(uint8_t navigation_target_id, uint8_t speed_gear)
 	                    (chain_to != NAV_ID_NONE) ? nav_routes[chain_to] : 0);
 	nav.state = NAV_RUN;
 	nav.nav_id = navigation_target_id;
+	nav.gear = speed_gear;
 	nav.chain_to = chain_to;
 	nav.last_done = NAV_ID_NONE;
 	nav.stall_ms = 0u;
@@ -247,6 +250,11 @@ void Car_Nav_Task(void)
 uint8_t Nav_GetState(void)
 {
 	return (uint8_t)nav.state;
+}
+
+uint8_t Nav_GetGear(void)
+{
+	return nav.gear;
 }
 
 uint8_t Nav_GetId(void)

@@ -63,6 +63,15 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->xt_corr_deg = 0.0f;
     p->seg_exit_eyg_m = 0.0f;
     p->seg_exit_xt_deg = 0.0f;
+    p->seg_ms = 0u;
+    p->seg_exit_ms = 0u;
+    p->xt_peak_deg = 0.0f;
+    p->eyg_peak_m = 0.0f;
+    p->eyg_at_p75_m = 0.0f;
+    p->eyg_at_p50_m = 0.0f;
+    p->eyg_at_p25_m = 0.0f;
+    p->xt_over_ticks = 0u;
+    p->eyg_prog_mask = 0u;
 }
 
 /* 整表重锚基点(不变量 P5, 见 mf_path.h): 表里绝对角与 nom_yaw 在路线系(置零车头=0),
@@ -356,7 +365,13 @@ static float seg_line_xtrack_step(mf_path_ctx_t *p, float ey, float v, float dt,
     }
     else
     {
-        tgt = 0.0f;     /* 窗外/低速/倒车: 平滑退出, 不阶跃 */
+        /* 窗外/低速/倒车: 平滑退出, 不阶跃。但"有速度却超窗"是**环整段不工作**的工况
+         * (换图打滑后弧出口一次带进 150~200mm 就是这样), 必须留痕迹, 否则静默失效 */
+        if ((v >= MF_LINE_XTRACK_V_MIN) && (mf_absf(p->xt_ey_f) > MF_LINE_XTRACK_EY_WIN_M))
+        {
+            p->xt_over_ticks++;
+        }
+        tgt = 0.0f;
     }
     if (tgt > MF_LINE_XTRACK_CORR_MAX_DEG)
     {
@@ -438,6 +453,29 @@ static void seg_nom_advance(mf_path_ctx_t *p, const mf_seg_t *s)
 }
 #endif /* MF_LINE_XTRACK_EN */
 
+/* 段内进度采样(剩余 75/50/25% 各一次): 段末只有一个数, 分不开"段首台阶"与"全程漂移"。
+ * 倒车段 remain 按行进方向算, 与 len=|dist| 同号, 门限通用 */
+#if MF_LINE_XTRACK_EN
+static void seg_line_prog(mf_path_ctx_t *p, float eyg, float remain, float len)
+{
+    if ((p->eyg_prog_mask & 0x01u) == 0u && (remain <= (0.75f * len)))
+    {
+        p->eyg_at_p75_m = eyg;
+        p->eyg_prog_mask |= 0x01u;
+    }
+    if ((p->eyg_prog_mask & 0x02u) == 0u && (remain <= (0.50f * len)))
+    {
+        p->eyg_at_p50_m = eyg;
+        p->eyg_prog_mask |= 0x02u;
+    }
+    if ((p->eyg_prog_mask & 0x04u) == 0u && (remain <= (0.25f * len)))
+    {
+        p->eyg_at_p25_m = eyg;
+        p->eyg_prog_mask |= 0x04u;
+    }
+}
+#endif /* MF_LINE_XTRACK_EN */
+
 /* 增量直线：航向保持 + 剩余行程判完成
  * 下一段要求停稳时按 v=sqrt(2·a·s) 抛物线减速, 段末速度≈0 平滑交棒 */
 static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
@@ -491,6 +529,16 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
         err = mf_wrap_deg(err + xt);
         p->obs_eyg_m = eyg;
         p->obs_xt_corr_deg = xt;
+        /* 段内统计: 段末 XT 结构性为 0, 只有峰值能说明"环干过多少活/顶没顶限幅" */
+        if (mf_absf(xt) > p->xt_peak_deg)
+        {
+            p->xt_peak_deg = mf_absf(xt);
+        }
+        if (mf_absf(eyg) > p->eyg_peak_m)
+        {
+            p->eyg_peak_m = mf_absf(eyg);
+        }
+        seg_line_prog(p, eyg, remain, mf_absf(m->dist_m));
     }
 #endif
     out->wz_dps = mf_pid_calc(p->pid_yaw, err, dt);
@@ -513,6 +561,7 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
         p->seg_exit_seg = p->idx;
         p->seg_exit_kind = 1u;
         p->seg_exit_new = 1u;
+        p->seg_exit_ms = p->seg_ms;
 #if MF_LINE_XTRACK_EN
         p->seg_exit_eyg_m = p->obs_eyg_m;       /* 相对名义路径(跨段连续) */
         p->seg_exit_xt_deg = p->xt_corr_deg;    /* 段末收偏置后应≈0 */
@@ -816,10 +865,18 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
     }
     p->nom_seg_x_m = p->nom_x_m;
     p->nom_seg_y_m = p->nom_y_m;
+    p->seg_ms = 0u;         /* 段时长从进段起算(段均速 = 段长/本值) */
     p->xt_ey_f = 0.0f;      /* 进段从 0 起滤: 偏置自然软起(上一段末已收到 0) */
     p->xt_corr_deg = 0.0f;
     p->obs_eyg_m = 0.0f;    /* 非直线段没有这条量(ARC 用 arc_ey_m) */
     p->obs_xt_corr_deg = 0.0f;
+    p->xt_peak_deg = 0.0f;  /* 段内统计(见 mf_path_get_line_diag) */
+    p->eyg_peak_m = 0.0f;
+    p->eyg_at_p75_m = 0.0f;
+    p->eyg_at_p50_m = 0.0f;
+    p->eyg_at_p25_m = 0.0f;
+    p->xt_over_ticks = 0u;
+    p->eyg_prog_mask = 0u;
 #endif
 #if MF_SEG_NOM_HEADING_EN
     if (p->nom_yaw_init == 0u)
@@ -974,6 +1031,7 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
     }
 
     p->time_ms += (uint32_t)(dt * 1000.0f);
+    p->seg_ms   = (uint16_t)(p->seg_ms + (uint16_t)(dt * 1000.0f + 0.5f));
 
     /* 实测前向速度(弧线 ω 前馈的速度源, MF_ARC_VSRC_MEAS): ds/dt 逐拍差分噪声大, 一阶低通。
      * 必须在段分支**之前**更新 —— 段内读到的才是本拍值。dt 恒为 MF_DT_S(>0), 无需防零 */
@@ -1065,6 +1123,7 @@ uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
             p->seg_exit_seg = p->idx;
             p->seg_exit_kind = 0u;
             p->seg_exit_new = 1u;
+            p->seg_exit_ms = p->seg_ms;
         }
         p->idx++;
         p->started = 0;     /* 下一段下拍重新进段 */
@@ -1104,6 +1163,26 @@ float mf_path_exit_eyg_m(const mf_path_ctx_t *p)
 float mf_path_exit_xt_deg(const mf_path_ctx_t *p)
 {
     return p->seg_exit_xt_deg;
+}
+
+uint16_t mf_path_exit_ms(const mf_path_ctx_t *p)
+{
+    return p->seg_exit_ms;
+}
+
+void mf_path_get_line_diag(const mf_path_ctx_t *p, float *peak_deg, float *exc_m,
+                           uint16_t *over_ticks)
+{
+    if (peak_deg != 0)   { *peak_deg   = p->xt_peak_deg; }
+    if (exc_m != 0)      { *exc_m      = p->eyg_peak_m; }
+    if (over_ticks != 0) { *over_ticks = p->xt_over_ticks; }
+}
+
+void mf_path_get_line_prog(const mf_path_ctx_t *p, float *p75, float *p50, float *p25)
+{
+    if (p75 != 0) { *p75 = ((p->eyg_prog_mask & 0x01u) != 0u) ? p->eyg_at_p75_m : 0.0f; }
+    if (p50 != 0) { *p50 = ((p->eyg_prog_mask & 0x02u) != 0u) ? p->eyg_at_p50_m : 0.0f; }
+    if (p25 != 0) { *p25 = ((p->eyg_prog_mask & 0x04u) != 0u) ? p->eyg_at_p25_m : 0.0f; }
 }
 
 mf_path_state_t mf_path_get_state(const mf_path_ctx_t *p)

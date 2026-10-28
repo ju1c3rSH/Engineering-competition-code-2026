@@ -99,7 +99,23 @@ typedef struct
     float xt_ey_f;                  /* e_y 低通状态 m */
     float xt_corr_deg;              /* 本拍注入的航向偏置 deg */
     float seg_exit_eyg_m;           /* 出口"相对名义路径"的横向偏差 m(正=左) */
-    float seg_exit_xt_deg;          /* 出口时的航向偏置 deg(段末收偏置后应≈0) */
+    float seg_exit_xt_deg;          /* 出口时的航向偏置 deg(段末收偏置后应≈0, 结构性恒 0 ⇒ 无信息量) */
+    uint16_t seg_ms;                /* 本段已用时 ms(进段清零) */
+    uint16_t seg_exit_ms;           /* 最近一次段出口的段时长 ms: 段长/时长 = 段均速,
+                                     * 是"改了速度有没有真的生效"唯一的日志证据(旧日志只能靠上位机时间戳) */
+
+    /* ---- 段内观测（进段清零）: 补 XT 段末恒 0 丢掉的信息 ----
+     * XT 因段末乘法收偏置**结构上必然是 0**, 只能用来看"收没收干净", 看不出环干过多少活;
+     * 峰值/进度采样才是调 K 时真正要看的两个量 */
+    float xt_peak_deg;              /* 本段 |偏置| 峰值 deg(限幅 6°, 顶到就是环在满力追) */
+    float eyg_peak_m;               /* 本段 |EYG| 峰值 m(摆幅/超调) */
+    float eyg_at_p75_m;             /* 剩余 75%/50%/25% 处的 EYG: 判"台阶发生在段首还是段中" */
+    float eyg_at_p50_m;
+    float eyg_at_p25_m;
+    uint16_t xt_over_ticks;         /* 有速度但偏差超出 EY_WIN ⇒ 环**静默退出**的拍数。
+                                     * 打滑换图后弧出口可能一次带进 150~200mm(见分析文档 §2.6),
+                                     * 那一段环整段不工作且不留痕迹 —— 本计数就是它的告警位 */
+    uint8_t eyg_prog_mask;          /* bit0/1/2 = 已采 75/50/25, 单段只采一次 */
 
     /* ---- 整表重锚基点（不变量 P5, 见 Motion/README.md「单基准航向架构」）----
      * 表里绝对角与 nom_yaw 一律在**路线系**(置零那一刻车头=0); pose.yaw 是读数域,
@@ -203,6 +219,27 @@ float mf_path_exit_eyg_m(const mf_path_ctx_t *p);
 
 /** @brief 最近一次直线段出口时的横向环航向偏置(deg): 段末收偏置生效的话应≈0 */
 float mf_path_exit_xt_deg(const mf_path_ctx_t *p);
+
+/** @brief 最近一次段出口的段时长(ms); 段长/时长 = 段均速, 用来核对速度档位改动 */
+uint16_t mf_path_exit_ms(const mf_path_ctx_t *p);
+
+/**
+ * @brief 本段直线横向环的段内统计(进段清零, 只对 MOVE 段有效)
+ *
+ * 为什么需要: XT 因"段末乘法收偏置"结构上恒为 0, 只能证明收干净了, **看不出环干过多少活**。
+ * peak = 本段 |偏置| 峰值(顶到 MF_LINE_XTRACK_CORR_MAX_DEG = 环在满力追);
+ * exc  = 本段 |EYG| 峰值(超调/摆幅); 出参均可传 0
+ */
+void mf_path_get_line_diag(const mf_path_ctx_t *p, float *peak_deg, float *exc_m,
+                           uint16_t *over_ticks);
+
+/**
+ * @brief 本段进度 75%/50%/25% 处的 EYG(m, 正=左), 未采到处返回 0
+ *
+ * 用途: 判"横向台阶发生在段首还是段中" —— 只靠段末一个数分不开
+ * (注入型台阶 P75 已接近终值; 全程匀速漂移三点近似线性)
+ */
+void mf_path_get_line_prog(const mf_path_ctx_t *p, float *p75, float *p50, float *p25);
 
 float mf_path_remain_m(const mf_path_ctx_t *p);   /* 剩余里程估算(m): 只算位移段, ARC 全额计入 */
 float mf_path_seg_remain_m(const mf_path_ctx_t *p); /* 当前段自身剩余(m); 非 MOVE 段恒 0(拒绝信号) */

@@ -187,10 +187,10 @@ void Car_Debug_Stat_Print(void)
 	hdg_kind = (obs.kind <= 4u) ? "ALTRG"[obs.kind] : '?';
 	__enable_irq();
 
-	printf("CHASSIS:NAV=%c ID=%02u SEG=%u/%u TRK=%c E=%d F=%u AGE=%u HOLD=%u\r\n",
+	printf("CHASSIS:NAV=%c ID=%02u SEG=%u/%u TRK=%c E=%d F=%u AGE=%u HOLD=%u GEAR=%u\r\n",
 	       "IRD"[nav_state & 0x03u], (unsigned)nav_id, (unsigned)seg_idx, (unsigned)seg_done,
 	       Tracking_StateChar((TrackingState_t)trk_state), err_f10k, (unsigned)trk_found,
-	       (unsigned)trk_frame_age, (unsigned)trk_hold);
+	       (unsigned)trk_frame_age, (unsigned)trk_hold, (unsigned)Nav_GetGear());
 	/* ST 四态 O/A/S/F; ZX=已确认误差符号(+1/-1/0); RS=段表剩余里程(mm); FR=FAULT reason */
 	printf("TRK2:ST=%c ZX=%d HOLD=%u RS=%u FR=%u E=%d F=%u AGE=%u\r\n",
 	       Tracking_StateChar((TrackingState_t)trk_state), (int)trk_zx,
@@ -411,6 +411,7 @@ void Car_SegChange_Log(void)
 	mf_ctx_t *m;
 	const mf_status_t *st;
 	const mf_pose_t *pose;
+	mf_path_obs_t obs;
 	uint16_t seg_now;
 	uint8_t  state_now;
 	int32_t  x_mm, y_mm, yaw_d10;
@@ -424,6 +425,7 @@ void Car_SegChange_Log(void)
 	x_mm   = (int32_t)(pose->x_m * 1000.0f);
 	y_mm   = (int32_t)(pose->y_m * 1000.0f);
 	yaw_d10 = (int32_t)(pose->yaw_deg * 10.0f);
+	mf_path_get_obs(&m->path, &obs);   /* 进段第一拍的 EYG = 上一段**带进来**的横偏 */
 	__enable_irq();
 
 	if ((seg_now == seg_last) && (state_now == state_last))
@@ -432,9 +434,9 @@ void Car_SegChange_Log(void)
 	}
 	seg_last   = seg_now;
 	state_last = state_now;
-	printf("SEG:%u ST=%u X=%d Y=%d YAW=%d\r\n",
+	printf("SEG:%u ST=%u X=%d Y=%d YAW=%d EYG=%d\r\n",
 	       (unsigned)seg_now, (unsigned)state_now,
-	       (int)x_mm, (int)y_mm, (int)yaw_d10);
+	       (int)x_mm, (int)y_mm, (int)yaw_d10, (int)(obs.eyg_m * 1000.0f));
 }
 
 /* 段出口质量(每跑完一段打一行): ARC: EY=出口横向偏差(正=弧外); YE=出口航向残差;
@@ -468,23 +470,40 @@ void Car_SegExit_Log(void)
 		__disable_irq();
 		mf_path_get_arc_diag(&mf_app()->path, &arc_wd, &arc_dd, &arc_dk, &arc_wp, &arc_se);
 		__enable_irq();
-		printf("ARC:%u EY=%d YE=%d R=%d DY=%d WD=%d DK=%u DD=%d WP=%d SE=%d\r\n", (unsigned)seg,
+		printf("ARC:%u EY=%d YE=%d R=%d DY=%d WD=%d DK=%u DD=%d WP=%d SE=%d T=%u\r\n", (unsigned)seg,
 		       (int)(ey * 1000.0f), (int)(oe * 10.0f),
 		       (int)(mf_exit_radius_m(mf_app()) * 1000.0f),
 		       (int)(mf_exit_dyaw_deg(mf_app()) * 10.0f),
 		       (int)(arc_wd * 10.0f), (unsigned)arc_dk,
 		       (int)(arc_dd * TURN_RADIUS_M * (M_PI_F / 180.0f) * 1000.0f),
-		       (int)(arc_wp * 10.0f), (int)(arc_se * 100.0f));
+		       (int)(arc_wp * 10.0f), (int)(arc_se * 100.0f), (unsigned)mf_path_exit_ms(&mf_app()->path));
 	}
 	else
 	{
 		/* EYG = 相对**名义路径**的横向偏差(跨段连续, 不被本段实测起点归零);
-		 * XT  = 横向环在本段出口注入的航向偏置(x100, 段末收偏置生效时应≈0)。
+		 * XT  = 横向环在本段出口注入的航向偏置(x100, **结构性恒 0** —— 段末乘法收偏置保证的);
+		 * XTM = 本段 |偏置| 峰值(x100): 顶到 600 说明环在满力追, ≈0 说明环没出力(不是"纠得好");
+		 * EXC = 本段 |EYG| 峰值(mm): 与 EYG 不同号/更大 = 段内超调后收回来;
+		 * P75/P50/P25 = 剩余 75/50/25% 处的 EYG(mm): 判"台阶发生在段首还是段中"
+		 * (注入型: P75 就接近终值; 全程漂移: 三点近似线性);
+		 * XTO = 有速度但 |e_y|>EY_WIN ⇒ 环整段静默退出的拍数(非 0 = 这段环根本没工作,
+		 * 典型是换图打滑后弧一次带进 150~200mm, 见分析文档 §7)。
 		 * 新位只许追加在行尾: 分析脚本的正则行首锚定, 插中间会整行失配 */
-		printf("LN:%u IE=%d YE=%d EY=%d EYG=%d XT=%d\r\n", (unsigned)seg,
+		float xt_pk, eyg_exc, e75, e50, e25;
+		uint16_t xt_ov;
+
+		__disable_irq();
+		mf_path_get_line_diag(&mf_app()->path, &xt_pk, &eyg_exc, &xt_ov);
+		mf_path_get_line_prog(&mf_app()->path, &e75, &e50, &e25);
+		__enable_irq();
+		printf("LN:%u IE=%d YE=%d EY=%d EYG=%d XT=%d XTM=%d EXC=%d P75=%d P50=%d P25=%d XTO=%u T=%u\r\n",
+		       (unsigned)seg,
 		       (int)(ie * 10.0f), (int)(oe * 10.0f), (int)(ey * 1000.0f),
 		       (int)(mf_exit_eyg_m(mf_app()) * 1000.0f),
-		       (int)(mf_exit_xt_deg(mf_app()) * 100.0f));
+		       (int)(mf_exit_xt_deg(mf_app()) * 100.0f),
+		       (int)(xt_pk * 100.0f), (int)(eyg_exc * 1000.0f),
+		       (int)(e75 * 1000.0f), (int)(e50 * 1000.0f), (int)(e25 * 1000.0f),
+		       (unsigned)xt_ov, (unsigned)mf_path_exit_ms(&mf_app()->path));
 	}
 }
 

@@ -25,5 +25,6 @@ void Car_Nav_MailPush(uint8_t cmd, uint8_t a0, uint8_t a1);
 /* 观测用: 单字节读, 主循环无需关中断 */
 uint8_t Nav_GetState(void);
 uint8_t Nav_GetId(void);
+uint8_t Nav_GetGear(void);   /* 本次起跑生效的档位: ≠0 会覆盖段表里的逐段速度 */
 
 #endif /* _NAV_TASK_H_ */
