@@ -95,7 +95,8 @@ static const mf_seg_t tbl_bucket[] =      /* NAV_TO_BUCKET: 桶与作业点同�
 /* 停点 213 单位(让车走到靶心): 与 tbl_hostage 首段成对改, 净和 223.5 不变; 推导见 坑-运动与导航.md §6 */
 /* 重锚角 = 几何真值; 补偿统一走 MF_HEADING_BIAS_DEG, 勿在此塞常数 */
 #define NAV_REBASE_BOMB_YAW_DEG     (-90.0f)
-#define NAV_REBASE_TARGET_YAW_DEG   (-90.2f)
+//打靶如果油偏移，可以改这里
+#define NAV_REBASE_TARGET_YAW_DEG   (-90.4f)
 static const mf_seg_t tbl_target[] =      /* NAV_TO_TARGET: flag11~12 打靶区 */
 {
 	/* 入口重锚: 原地纠回作业期静止漂移, 只清 IE; 系统性横偏靠 MF_HEADING_BIAS_DEG */
