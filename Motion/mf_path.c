@@ -968,18 +968,27 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
 #if MF_SEG_CARRY_EN
         p->carry_link = 0u;     /* 转弯后方向变了, 标量残差没有意义 -> 重新对齐 */
 #endif
-        /* 名义圆弧解算到世界系: 圆心 = 进段位姿 + R·左法线。radius 带符号, 左转圆心在车体
-         * 左侧、右转在右侧, 一条式子两向通用。用进段位姿定圆心 = "车此刻正站在名义弧上且
-         * 切线对齐", 是本段自己的参考系, 与后续位姿误差无关 */
+        /* radius 带符号: 左转圆心在车体左侧、右转在右侧, 一条式子两向通用。
+         * 圆心基准见 mf_config.h: MF_ARC_NOM_CENTER_EN —— 取实测位姿时 arc_ey 恒 0。 */
         {
             float r = s->p.arc.radius_m;
+#if MF_ARC_NOM_CENTER_EN
+            float yaw_rad = seg_nom_hdg_xy(p, p->nom_yaw_deg);   /* 必须过 bias+frame_base */
+
+            p->arc_sgn = (s->p.arc.d_yaw_deg >= 0.0f) ? 1.0f : -1.0f;
+            p->arc_r_abs = fabsf(r);
+            p->arc_cx_m = p->nom_x_m - r * sinf(yaw_rad);
+            p->arc_cy_m = p->nom_y_m + r * cosf(yaw_rad);
+            p->arc_ey_m = 0.0f;     /* 下一拍由 rho−R 给真值 */
+#else
             float yaw_rad = pose->yaw_deg * (MF_PI_F / 180.0f);
 
             p->arc_sgn = (s->p.arc.d_yaw_deg >= 0.0f) ? 1.0f : -1.0f;
             p->arc_r_abs = fabsf(r);
             p->arc_cx_m = pose->x_m - r * sinf(yaw_rad);
             p->arc_cy_m = pose->y_m + r * cosf(yaw_rad);
-            p->arc_ey_m = 0.0f;     /* 进段必然在名义弧上 */
+            p->arc_ey_m = 0.0f;
+#endif
             /* 首拍的"上一拍 remain" = 全程剩余 ⇒ 第一拍的步长 = 本拍实际转角 */
             p->arc_remain_prev_deg = s->p.arc.d_yaw_deg;
             /* 空转窗口观测清零(见 mf_path.h 结构体注释) */

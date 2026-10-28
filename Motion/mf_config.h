@@ -212,6 +212,12 @@
 #ifndef MF_LINE_XTRACK_LPF_TAU_S
 #define MF_LINE_XTRACK_LPF_TAU_S  0.05f
 #endif
+/* 弧心取名义链(1) 还是进段实测位姿(0)。取实测位姿时圆心由车自己定位 ⇒ arc_ey 结构上恒 0,
+ * 整条弧被摆歪看不见(9-20: 入口偏 0.9° → 出口横移 24mm, ARC 三个量全正常)。语义变化:
+ * 弧段 ARC:/HDG: 的 EY 从此是绝对值。追因与验收 docs/缺陷报告-弧心取实测位姿.md */
+#ifndef MF_ARC_NOM_CENTER_EN
+#define MF_ARC_NOM_CENTER_EN   1
+#endif
 
 /* ============ 弧线滑移基线（角速度内环的开环前馈，实车标定项）============ */
 /* 履带转弯实测角速度只有差速指令的 k 倍(k<1), 弧线**全程**吃这亏损, 属确定性前馈, 不能只靠反馈慢补。
@@ -369,6 +375,12 @@
 /* ============ 直线段航向基准（置 1 = 走路径标称航向，置 0 = 保持进段实测航向） ============ */
 #ifndef MF_SEG_NOM_HEADING_EN
 #define MF_SEG_NOM_HEADING_EN   1
+#endif
+#if (MF_ARC_NOM_CENTER_EN != 0) && (MF_LINE_XTRACK_EN == 0)
+#error "mf_config.h: MF_ARC_NOM_CENTER_EN 需要 MF_LINE_XTRACK_EN —— nom_x/nom_y 只在后者里推进"
+#endif
+#if (MF_ARC_NOM_CENTER_EN != 0) && (MF_SEG_NOM_HEADING_EN == 0)
+#error "mf_config.h: MF_ARC_NOM_CENTER_EN 需要 MF_SEG_NOM_HEADING_EN —— 名义切向来自 nom_yaw_deg"
 #endif
 
 /* ============ 全程单基准航向（MF_HEADING_FRAME_EN）============ */
