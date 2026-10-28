@@ -10,6 +10,23 @@
 #include "mf_types.h"
 #include "mf_pid.h"
 
+/* 直线段横向环的段内统计(进段清零)。存在的理由: 偏置 XT 因"段末乘法收偏置"结构上恒 0,
+ * 只能证明收干净了, 说明不了环干过多少活 —— 这一组才是"环起了什么作用"的可读量 */
+typedef struct
+{
+    float peak_deg;             /* |偏置| 峰值: 顶到 CORR_MAX = 环在满力追 */
+    float exc_m;                /* |EYG| 峰值: 比出口值更大且异号 = 段内超调后收回 */
+    float p75_m, p50_m, p25_m;  /* 剩余 75/50/25% 处的 EYG: 判台阶在段首还是全程漂 */
+    float shift_m;              /* ∫v·sin(xt)dt = 环把车搬了多少 m(正=往左, 与 EYG 同号);
+                                 * 出口 EYG − 本值 ≈ "没有环时这段会剩多少"(一阶分解) */
+    uint16_t over_ticks;        /* 有速度但 |e_y|>EY_WIN 的拍数: 非 0 = 环整段静默退出 */
+    uint16_t v_ticks;           /* 有速度的拍数: (v−over)/v = 环在线率, 占空比分母 */
+    uint8_t prog_mask;          /* bit0/1/2 = 已采 75/50/25; 必须在本结构里, 否则快照拷不走,
+                                 * 段末读出会被下一段的清零门掉(等于白采) */
+    uint8_t fb_lock;            /* 1 = 本段检到**反号**(环在把车往远离线的方向搬) ⇒ 已停环,
+                                 * 退化成无环。LN: 的 FBL 位; 正常工况恒 0 */
+} mf_line_diag_t;
+
 typedef struct
 {
     const mf_seg_t *path;   /* 当前路径数组 */
@@ -104,18 +121,12 @@ typedef struct
     uint16_t seg_exit_ms;           /* 最近一次段出口的段时长 ms: 段长/时长 = 段均速,
                                      * 是"改了速度有没有真的生效"唯一的日志证据(旧日志只能靠上位机时间戳) */
 
-    /* ---- 段内观测（进段清零）: 补 XT 段末恒 0 丢掉的信息 ----
-     * XT 因段末乘法收偏置**结构上必然是 0**, 只能用来看"收没收干净", 看不出环干过多少活;
-     * 峰值/进度采样才是调 K 时真正要看的两个量 */
-    float xt_peak_deg;              /* 本段 |偏置| 峰值 deg(限幅 6°, 顶到就是环在满力追) */
-    float eyg_peak_m;               /* 本段 |EYG| 峰值 m(摆幅/超调) */
-    float eyg_at_p75_m;             /* 剩余 75%/50%/25% 处的 EYG: 判"台阶发生在段首还是段中" */
-    float eyg_at_p50_m;
-    float eyg_at_p25_m;
-    uint16_t xt_over_ticks;         /* 有速度但偏差超出 EY_WIN ⇒ 环**静默退出**的拍数。
-                                     * 打滑换图后弧出口可能一次带进 150~200mm(见分析文档 §2.6),
-                                     * 那一段环整段不工作且不留痕迹 —— 本计数就是它的告警位 */
-    uint8_t eyg_prog_mask;          /* bit0/1/2 = 已采 75/50/25, 单段只采一次 */
+    /* ---- 段内观测（进段清零）: 补 XT 段末恒 0 丢掉的信息 ---- */
+    mf_line_diag_t ln_diag;         /* 本段实时统计(见 mf_line_diag_t) */
+    /* 出口快照: 段完成那拍 idx++ 且 started=0, **下一拍**(4ms 后) seg_enter 就把它清零,
+     * 而 LN: 行由主循环轮询打印(中间可能夹一次 printf 忙等) ⇒ 直接读 live 是竞态,
+     * 会打出下一段的 0。必须在出口那一拍整份拷走 */
+    mf_line_diag_t ln_exit;
 
     /* ---- 整表重锚基点（不变量 P5, 见 Motion/README.md「单基准航向架构」）----
      * 表里绝对角与 nom_yaw 一律在**路线系**(置零那一刻车头=0); pose.yaw 是读数域,
@@ -168,7 +179,7 @@ uint8_t mf_path_pop_chain(mf_path_ctx_t *p);
  * @param pose   当前位姿（里程计输出）
  * @param ds     本周期车体前向位移（m，带符号）
  * @param dt     控制周期 s
- * @param out    输出车体速度指令（执行完毕输出全零）
+ * @param out    输出车体速度指令。未运行/DONE 时全零；跨表链续的那一拍沿用上一段输出过渡（见 mf_path.c 的 END 分支）
  * @return 1=当前段刚完成（供上层在段间插入动作），0=未完成/未运行
  */
 uint8_t mf_path_tick(mf_path_ctx_t *p, const mf_pose_t *pose,
@@ -224,20 +235,21 @@ float mf_path_exit_xt_deg(const mf_path_ctx_t *p);
 uint16_t mf_path_exit_ms(const mf_path_ctx_t *p);
 
 /**
- * @brief 本段直线横向环的段内统计(进段清零, 只对 MOVE 段有效)
+ * @brief 最近一次直线段出口的段内统计(**快照**, 出口那一拍整份拷走, 不受后继段清零影响)
  *
  * 为什么需要: XT 因"段末乘法收偏置"结构上恒为 0, 只能证明收干净了, **看不出环干过多少活**。
- * peak = 本段 |偏置| 峰值(顶到 MF_LINE_XTRACK_CORR_MAX_DEG = 环在满力追);
- * exc  = 本段 |EYG| 峰值(超调/摆幅); 出参均可传 0
+ * 判读: peak 顶到 MF_LINE_XTRACK_CORR_MAX_DEG = 满力追; shift 是环搬回来的横向位移(mm),
+ * 出口 EYG − shift ≈ 无环时的残差; (v_ticks−over_ticks)/v_ticks = 环在线率。出参均可传 0
  */
 void mf_path_get_line_diag(const mf_path_ctx_t *p, float *peak_deg, float *exc_m,
-                           uint16_t *over_ticks);
+                           uint16_t *over_ticks, float *shift_m, uint16_t *v_ticks,
+                           uint8_t *fb_lock);
 
 /**
- * @brief 本段进度 75%/50%/25% 处的 EYG(m, 正=左), 未采到处返回 0
+ * @brief 最近一次直线段出口时, 段进度 75%/50%/25% 处的 EYG(m, 正=左), 未采到处返回 0
  *
  * 用途: 判"横向台阶发生在段首还是段中" —— 只靠段末一个数分不开
- * (注入型台阶 P75 已接近终值; 全程匀速漂移三点近似线性)
+ * (注入型台阶 P75 已接近终值; 全程匀速漂移三点近似线性)。同样是出口快照
  */
 void mf_path_get_line_prog(const mf_path_ctx_t *p, float *p75, float *p50, float *p25);
 

@@ -24,13 +24,12 @@ HAL (电机/编码器/IMU)
 |---|---|
 | `mf_config.h` | 编译期宏：底盘类型 / 电机模式 / 航向源，切换底盘只改这里 |
 | `mf_types.h` | 位姿、车体指令、声明式段类型（MOVE_DIST/ARC/TURN_TO/TURN_REL/GOTO_XY/GOTO_REL/WAIT/END） |
-| `mf_hal.h` | 硬件抽象：motor_cmd / encoder_dist_m / imu_yaw_deg / tick_ms |
+| `GetData/Car_Sense.h` | 采样/执行层：编码器+航向 -> `mf_state_in_t` 快照；`wheel[].out` -> DIR+PWM（HAL 在库外） |
 | `mf_pid.h/.c` | 位置式 PID（航向环、点到点、轮速环共用） |
 | `mf_odom.h/.c` | 里程计（差速/履带/麦轮分支编译，IMU 优先） |
 | `mf_kinematics.h/.c` | 逆运动学 |
 | `mf_path.h/.c` | 段执行器 |
 | `mf_motion.h/.c` | 顶层 API：mf_init / mf_tick / 路径与手动模式 / 单步便捷指令 |
-| `mf_hal_panzer.c` | panzer HAL 适配 + 示例路线（模板，含台架核对清单） |
 
 ## 底盘切换
 
@@ -63,16 +62,19 @@ const mf_seg_t route[] =
     { .type = MF_SEG_END }
 };
 
-mf_start_path(&mf, route);   /* 10ms 中断里跑 mf_tick() */
+mf_start_path(&mf, route);   /* 4ms/250Hz 控制拍里跑 mf_tick() */
 if (mf_is_done(&mf)) { ... } /* 段间插入动作（转盘/抓取/等主控） */
 ```
 
 ## 接入 panzer 的步骤
 
-1. Keil 工程加上 `Motion/*.c`（`mf_hal_panzer.c` 里的工程头文件取消注释后加入）。
-2. `mf_hal_panzer.c` 顶部 TODO 三件事必须在台架上核对：
-   符号（前进位移为正）、方向电平（value>0 前进）、驱动轮直径 WHEEL_DIA_M。
-3. 标定等效轨距 `track_width_m`：原地转 90°，调到编码器差分航向与 IMU 一致。
+1. Keil 工程加入 `Motion/*.c`。HAL 不在库里——采样/执行在 `GetData/Car_Sense.c`：
+   `CarSense_Sample()` 填 `mf_state_in_t` 快照（seq 递增），`CarSense_Output(mf)` 把
+   `wheel[].out` 写 DIR+PWM；`mf_tick(mf_app(), CarSense_Get())` 由 `Car_Control()` 每拍调用。
+2. 台架上核对符号与电平：前进位移为正、方向电平（value>0 前进）、驱动轮直径
+   `WHEEL_DIA_M`（`App/car_units.h`）。
+3. 标定等效轨距 `track_width_m`（`App/motion_app.c`）：原地转 90°，调到编码器差分航向与 IMU 一致；
+   它同时是转向链全局增益、不可当半径旋钮 —— 见「track_width_m 的四处作用链与禁忌」。
 4. 把 `Car_Drive_route()` 的 flag 状态机逐段翻译成段表
    （原 Car_Pos 是"圈数×15"，需按驱动轮周长换算成米）。
 5. 主控握手点（等 Boss_State / 打靶 / 人质区）保留在上层状态机，
@@ -116,13 +118,14 @@ x/y 走的是打滑已修正的 `ds_for_xy`，但段进度走的是没修正的�
 半径带符号，左/右转一条式子通用），段内设定值取**名义切线航向** = 圆心→车体方位角 +
 sgn·90°。它由里程计位置推出，位置积分用的是 `ds_for_xy`，所以设定值的偏航速率天然等于
 "真实车体位移/R"。
-注意：**横向项 `MF_ARC_XTRACK_K` 现为 0.0**（`MF_ODOM_ARC_SRC=1` 之后它的输入从"轮速环跟踪误差"
-变成真横向距离，量程/回路增益全变，必须先重标：文档要求从 60~70 dps/m 起）⇒ **现在弧上只有
-航向前馈+PID，没有横向闭环**："离弧多远"这一维要开它才有反馈。旧律对与弧等半径的纯横向平移
-是完全不可见的（误差恒为 0，永不纠正），这一点现在仍然成立。
+注意：横向项 `MF_ARC_XTRACK_K` 现为 **80 dps/m**（`MF_ODOM_ARC_SRC=1` 之后它的输入从"轮速环
+跟踪误差"变成真横向距离，量程/回路增益全变；`f0d5035` 起由 0 改为 80）⇒ **横向闭环是开着的**：
+"离弧多远"这一维进 wz。旧律对与弧等半径的纯横向平移完全不可见（误差恒为 0，永不纠正），
+这一项开着才看得见并纠得动。
 完成判据仍用 IMU 实测航向差，抗打滑且与"转 d_yaw 度"语义严格一致。
 
-量化（`build_verify/mf_path_test/arc_xtrack_sim.py`、`arc_route_sim.py`）：
+量化（`build_verify/mf_path_test/arc_xtrack_sim.py`、`arc_route_sim.py`；下表"新律"列取
+`MF_ARC_XTRACK_K=0`，即只验几何跟踪，出广固件的 80 dps/m 横向项未计入）：
 
 | 履带打滑 | 旧律每条弧出口横向偏差 | 新律 |
 |---|---|---|
@@ -140,9 +143,9 @@ sgn·90°。它由里程计位置推出，位置积分用的是 `ds_for_xy`，�
 
 ## 转段/停车误差：到位容差与进段丢一拍
 
-段完成判据有两条（`mf_config.h`）：直线用 `MF_TOL_ARRIVE_M = 8mm`（`remain <= tol`），
-弧线判 IMU 航向差（就是串口 `ARC:` 行的 `YE`），余量**按实测每拍步长运行期取 `step/2`**
-（历史值写死 `1.0°` 时窗口均值 +0.79° ⇒ 四条弧系统性少转 52mm，见 `docs/坑-编码器与里程.md` §8.8）。
+段完成判据有两条：直线用剩余行程与**本拍步长之半**比较（`remain <= 0.5*|vx|*dt`，见 `mf_path.c`
+的 `seg_move_dist`），弧线判 IMU 航向差（就是串口 `ARC:` 行的 `YE`），余量同样**按实测每拍步长运行期
+取 `step/2`**（历史值写死 `1.0°` 时窗口均值 +0.79° ⇒ 四条弧系统性少转 52mm，见 `docs/坑-编码器与里程.md` §8.8）。
 这两条**只决定
 什么时候宣布到点**，不参与轨迹生成。沿路径方向另有两处系统性偏差，量级比容差本身更值得看
 （`build_verify/mf_path_test/seg_handoff_sim.py`，直线链 10 段 × 2.112m = 21.1m）：
@@ -538,5 +541,5 @@ P5  段表里声明的绝对角与 nom_yaw 都在**路线系**(置零那一刻�
 | `TURNTABLE_BOOT_DEG` 别改成 90（即使收车后转台停在回正位） | 码 3 是 57°，会出现"目标 < 零点"的负脉冲，绝对模式表达不了；那种情况必须改用相对模式 |
 | 返程腿 `SEG_MOVE_HD` 的绝对角与表尾 `TURN_TO` **必须同值** | 不同值 = 车先斜着走到点位、到位后再原地掰正（多一次行为，横向不再对称） |
 | `MF_STOP_DECEL_SCALE=0.6` 必须配 `MF_SEG_NOM_HEADING_EN=1` | 单独开反而更差（159→170mm）：它治"段末速度收不住"，而段末高速留下的航向漂移要靠标称航向才不被后续长直线锁死 |
-| ARC 完成判据只看 IMU 转角（`remain_yaw ≤ 1.0°`） | 半径误差**不会**变成航向误差，只会变成位置误差 ⇒ 现场看不到任何告警，表现为"贴内道/出线"；每条弧还允许欠 1.0° 就判完成（弧长 16.4mm） |
+| ARC 完成判据只看 IMU 转角（`remain_yaw ≤ 运行期 tol = step/2`） | 半径误差**不会**变成航向误差，只会变成位置误差 ⇒ 现场看不到任何告警，表现为"贴内道/出线"；每条弧还允许欠约半拍步进就判完成（250Hz 下约 0.1°） |
 | 转台上电零点对齐必须在 TIM5 启动之前、驱动器自检完成之后（约 1s） | 顺序错了零点不恒等，第一条命令可能转好几圈 |

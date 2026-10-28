@@ -3,6 +3,21 @@
 #include <math.h>
 static float seg_next_entry_speed(const mf_path_ctx_t *p);
 
+/* 段内统计清零: 字段多且分散, 统一走这里, 免得加字段时漏一处(漏了 = 统计跨段累加, 读数虚高) */
+static void line_diag_clear(mf_line_diag_t *d)
+{
+    d->peak_deg = 0.0f;
+    d->exc_m = 0.0f;
+    d->p75_m = 0.0f;
+    d->p50_m = 0.0f;
+    d->p25_m = 0.0f;
+    d->shift_m = 0.0f;
+    d->over_ticks = 0u;
+    d->v_ticks = 0u;
+    d->prog_mask = 0u;
+    d->fb_lock = 0u;
+}
+
 void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
 {
     p->path = 0;
@@ -65,13 +80,8 @@ void mf_path_init(mf_path_ctx_t *p, mf_pid_t *pid_yaw, mf_pid_t *pid_point_v)
     p->seg_exit_xt_deg = 0.0f;
     p->seg_ms = 0u;
     p->seg_exit_ms = 0u;
-    p->xt_peak_deg = 0.0f;
-    p->eyg_peak_m = 0.0f;
-    p->eyg_at_p75_m = 0.0f;
-    p->eyg_at_p50_m = 0.0f;
-    p->eyg_at_p25_m = 0.0f;
-    p->xt_over_ticks = 0u;
-    p->eyg_prog_mask = 0u;
+    line_diag_clear(&p->ln_diag);
+    line_diag_clear(&p->ln_exit);
 }
 
 /* 整表重锚基点(不变量 P5, 见 mf_path.h): 表里绝对角与 nom_yaw 在路线系(置零车头=0),
@@ -142,7 +152,7 @@ void mf_path_start(mf_path_ctx_t *p, const mf_seg_t *path, const mf_seg_t *next)
     p->chain_new = 0u;
     p->idx = 0;
     p->state = MF_PATH_RUN;
-    p->started = 0;     /* 第一拍做进段快照 */
+    p->started = 0;
     /* 段间累积量：新路径从零起算（MF_SEG_CARRY_EN 下 dist_accum 是全程里程） */
     p->dist_accum = 0.0f;
     p->dist_target_m = 0.0f;
@@ -357,6 +367,30 @@ static float seg_line_xtrack_step(mf_path_ctx_t *p, float ey, float v, float dt,
         e = 0.0f;
     }
 
+    /* 占空比分母: 有速度的拍(低速/倒车段环本来就不该出力, 不能算它"没工作") */
+    if (v >= MF_LINE_XTRACK_V_MIN)
+    {
+        p->ln_diag.v_ticks++;
+    }
+
+#if MF_LINE_XTRACK_FB_LOCK
+    /* 反号自锁: 环累计搬移与 e_yg 同号 ⇒ 在往远离线的方向出力 ⇒ 正反馈, 会斜着出赛道。
+     * 正常恒反号; 段首 shift≈0 时乘积≈0, 由门限挡掉噪声。检到即本段永久停环 */
+    if ((p->ln_diag.shift_m * ey) > 0.0f)
+    {
+        if ((mf_absf(p->ln_diag.shift_m) > MF_LINE_XTRACK_FBL_SHIFT_M)
+            && (mf_absf(ey) > MF_LINE_XTRACK_FBL_EY_M))
+        {
+            p->ln_diag.fb_lock = 1u;
+        }
+    }
+    if (p->ln_diag.fb_lock != 0u)
+    {
+        p->xt_corr_deg = 0.0f;      /* 立刻归零, 不等斜率限 */
+        return 0.0f;
+    }
+#endif
+
     if ((v >= MF_LINE_XTRACK_V_MIN) && (mf_absf(p->xt_ey_f) <= MF_LINE_XTRACK_EY_WIN_M))
     {
         /* e_y>0 = 偏左 ⇒ 偏置取负 ⇒ 右打。小偏差下 ė_y = -v·k·e/(k_soft+v) */
@@ -369,7 +403,7 @@ static float seg_line_xtrack_step(mf_path_ctx_t *p, float ey, float v, float dt,
          * (换图打滑后弧出口一次带进 150~200mm 就是这样), 必须留痕迹, 否则静默失效 */
         if ((v >= MF_LINE_XTRACK_V_MIN) && (mf_absf(p->xt_ey_f) > MF_LINE_XTRACK_EY_WIN_M))
         {
-            p->xt_over_ticks++;
+            p->ln_diag.over_ticks++;
         }
         tgt = 0.0f;
     }
@@ -458,20 +492,20 @@ static void seg_nom_advance(mf_path_ctx_t *p, const mf_seg_t *s)
 #if MF_LINE_XTRACK_EN
 static void seg_line_prog(mf_path_ctx_t *p, float eyg, float remain, float len)
 {
-    if ((p->eyg_prog_mask & 0x01u) == 0u && (remain <= (0.75f * len)))
+    if ((p->ln_diag.prog_mask & 0x01u) == 0u && (remain <= (0.75f * len)))
     {
-        p->eyg_at_p75_m = eyg;
-        p->eyg_prog_mask |= 0x01u;
+        p->ln_diag.p75_m = eyg;
+        p->ln_diag.prog_mask |= 0x01u;
     }
-    if ((p->eyg_prog_mask & 0x02u) == 0u && (remain <= (0.50f * len)))
+    if ((p->ln_diag.prog_mask & 0x02u) == 0u && (remain <= (0.50f * len)))
     {
-        p->eyg_at_p50_m = eyg;
-        p->eyg_prog_mask |= 0x02u;
+        p->ln_diag.p50_m = eyg;
+        p->ln_diag.prog_mask |= 0x02u;
     }
-    if ((p->eyg_prog_mask & 0x04u) == 0u && (remain <= (0.25f * len)))
+    if ((p->ln_diag.prog_mask & 0x04u) == 0u && (remain <= (0.25f * len)))
     {
-        p->eyg_at_p25_m = eyg;
-        p->eyg_prog_mask |= 0x04u;
+        p->ln_diag.p25_m = eyg;
+        p->ln_diag.prog_mask |= 0x04u;
     }
 }
 #endif /* MF_LINE_XTRACK_EN */
@@ -530,14 +564,17 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
         p->obs_eyg_m = eyg;
         p->obs_xt_corr_deg = xt;
         /* 段内统计: 段末 XT 结构性为 0, 只有峰值能说明"环干过多少活/顶没顶限幅" */
-        if (mf_absf(xt) > p->xt_peak_deg)
+        if (mf_absf(xt) > p->ln_diag.peak_deg)
         {
-            p->xt_peak_deg = mf_absf(xt);
+            p->ln_diag.peak_deg = mf_absf(xt);
         }
-        if (mf_absf(eyg) > p->eyg_peak_m)
+        if (mf_absf(eyg) > p->ln_diag.exc_m)
         {
-            p->eyg_peak_m = mf_absf(eyg);
+            p->ln_diag.exc_m = mf_absf(eyg);
         }
+        /* 环的"作用量": 偏置就是车体横向速度指令(v·sin xt), 逐拍积分 = 把车搬了多少 m。
+         * 小角线性化(≤6° 误差 0.2%)省一次 sinf; 出口 EYG 减本值 ≈ 无环时的残差 */
+        p->ln_diag.shift_m += out->vx_mps * (xt * (MF_PI_F / 180.0f)) * dt;
         seg_line_prog(p, eyg, remain, mf_absf(m->dist_m));
     }
 #endif
@@ -565,6 +602,7 @@ static uint8_t seg_move_dist(mf_path_ctx_t *p, const mf_seg_t *s,
 #if MF_LINE_XTRACK_EN
         p->seg_exit_eyg_m = p->obs_eyg_m;       /* 相对名义路径(跨段连续) */
         p->seg_exit_xt_deg = p->xt_corr_deg;    /* 段末收偏置后应≈0 */
+        p->ln_exit = p->ln_diag;                /* 段内统计整份快照: 下一拍 seg_enter 就清零了 */
 #endif
         return 1u;
     }
@@ -855,6 +893,9 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
     float c, s_yaw, dx, dy;
 
     p->entry = *pose;
+    /* 段时长从进段起算(段均速 = 段长/本值): 与横向环无关, 不许关在 MF_LINE_XTRACK_EN 里
+     * —— 否则 EN=0 时 seg_ms 永不归零, T= 变成上电以来的累计值 */
+    p->seg_ms = 0u;
 #if MF_LINE_XTRACK_EN
     /* 名义链: 首次进段(或刚 YAWZERO 之后)拿实测位姿定基准, 之后只在段完成时按几何推进 */
     if (p->nom_pos_init == 0u)
@@ -865,18 +906,11 @@ static void seg_enter(mf_path_ctx_t *p, const mf_seg_t *s,
     }
     p->nom_seg_x_m = p->nom_x_m;
     p->nom_seg_y_m = p->nom_y_m;
-    p->seg_ms = 0u;         /* 段时长从进段起算(段均速 = 段长/本值) */
     p->xt_ey_f = 0.0f;      /* 进段从 0 起滤: 偏置自然软起(上一段末已收到 0) */
     p->xt_corr_deg = 0.0f;
     p->obs_eyg_m = 0.0f;    /* 非直线段没有这条量(ARC 用 arc_ey_m) */
     p->obs_xt_corr_deg = 0.0f;
-    p->xt_peak_deg = 0.0f;  /* 段内统计(见 mf_path_get_line_diag) */
-    p->eyg_peak_m = 0.0f;
-    p->eyg_at_p75_m = 0.0f;
-    p->eyg_at_p50_m = 0.0f;
-    p->eyg_at_p25_m = 0.0f;
-    p->xt_over_ticks = 0u;
-    p->eyg_prog_mask = 0u;
+    line_diag_clear(&p->ln_diag);   /* 段内统计(出口快照见 mf_path_get_line_diag) */
 #endif
 #if MF_SEG_NOM_HEADING_EN
     if (p->nom_yaw_init == 0u)
@@ -1171,18 +1205,22 @@ uint16_t mf_path_exit_ms(const mf_path_ctx_t *p)
 }
 
 void mf_path_get_line_diag(const mf_path_ctx_t *p, float *peak_deg, float *exc_m,
-                           uint16_t *over_ticks)
+                           uint16_t *over_ticks, float *shift_m, uint16_t *v_ticks,
+                           uint8_t *fb_lock)
 {
-    if (peak_deg != 0)   { *peak_deg   = p->xt_peak_deg; }
-    if (exc_m != 0)      { *exc_m      = p->eyg_peak_m; }
-    if (over_ticks != 0) { *over_ticks = p->xt_over_ticks; }
+    if (peak_deg != 0)   { *peak_deg   = p->ln_exit.peak_deg; }
+    if (exc_m != 0)      { *exc_m      = p->ln_exit.exc_m; }
+    if (over_ticks != 0) { *over_ticks = p->ln_exit.over_ticks; }
+    if (shift_m != 0)    { *shift_m    = p->ln_exit.shift_m; }
+    if (v_ticks != 0)    { *v_ticks    = p->ln_exit.v_ticks; }
+    if (fb_lock != 0)    { *fb_lock    = p->ln_exit.fb_lock; }
 }
 
 void mf_path_get_line_prog(const mf_path_ctx_t *p, float *p75, float *p50, float *p25)
 {
-    if (p75 != 0) { *p75 = ((p->eyg_prog_mask & 0x01u) != 0u) ? p->eyg_at_p75_m : 0.0f; }
-    if (p50 != 0) { *p50 = ((p->eyg_prog_mask & 0x02u) != 0u) ? p->eyg_at_p50_m : 0.0f; }
-    if (p25 != 0) { *p25 = ((p->eyg_prog_mask & 0x04u) != 0u) ? p->eyg_at_p25_m : 0.0f; }
+    if (p75 != 0) { *p75 = ((p->ln_exit.prog_mask & 0x01u) != 0u) ? p->ln_exit.p75_m : 0.0f; }
+    if (p50 != 0) { *p50 = ((p->ln_exit.prog_mask & 0x02u) != 0u) ? p->ln_exit.p50_m : 0.0f; }
+    if (p25 != 0) { *p25 = ((p->ln_exit.prog_mask & 0x04u) != 0u) ? p->ln_exit.p25_m : 0.0f; }
 }
 
 mf_path_state_t mf_path_get_state(const mf_path_ctx_t *p)

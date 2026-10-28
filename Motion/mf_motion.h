@@ -73,7 +73,6 @@ typedef struct
     uint32_t in_seq;            /* 上次已消费的采样序号（去重：快照未更新则跳过） */
 } mf_ctx_t;
 
-/** @brief 初始化 */
 void mf_init(mf_ctx_t *m, const mf_cfg_t *cfg);
 
 /**
@@ -130,7 +129,7 @@ void mf_set_mode(mf_ctx_t *m, mf_mode_t mode);
 void mf_set_velocity(mf_ctx_t *m, float vx, float vy, float wz);
 
 /* ---------- 位姿 ---------- */
-void mf_set_pose(mf_ctx_t *m, float x, float y, float yaw);     /* 重定位/标定 */
+void mf_set_pose(mf_ctx_t *m, float x, float y, float yaw);
 const mf_pose_t *mf_get_pose(const mf_ctx_t *m);
 
 /* ---------- 航向基准（单基准架构，见 mf_config.h 的 MF_HEADING_FRAME_EN） ---------- */

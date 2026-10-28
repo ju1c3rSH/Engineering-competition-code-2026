@@ -487,23 +487,32 @@ void Car_SegExit_Log(void)
 		 * P75/P50/P25 = 剩余 75/50/25% 处的 EYG(mm): 判"台阶发生在段首还是段中"
 		 * (注入型: P75 就接近终值; 全程漂移: 三点近似线性);
 		 * XTO = 有速度但 |e_y|>EY_WIN ⇒ 环整段静默退出的拍数(非 0 = 这段环根本没工作,
-		 * 典型是换图打滑后弧一次带进 150~200mm, 见分析文档 §7)。
+		 * 典型是换图打滑后弧一次带进 150~200mm, 见分析文档 §7);
+		 * XTW = 环把车搬回来的横向位移(mm, 正=往左, 与 EYG 同号): **这是"环起了什么作用"的唯一直接读数**
+		 * —— 出口 EYG − XTW ≈ 无环时的残差(一阶分解), 同一趟日志内即可自证, 不必等 A/B;
+		 * XTD = 环在线率(%): (有速度拍 − 超窗拍)/有速度拍。0 = 整段没上线, 100 且 XTW≈0 = 在线但没活干;
+		 * FBL = 反号自锁触发(正常恒 0): 1 = 检到环在往远离线的方向出力(正反馈), 本段已停环。
+		 * 出现 1 说明符号/基准错, 必须查 —— 再跑下去会斜着冲出赛道。
 		 * 新位只许追加在行尾: 分析脚本的正则行首锚定, 插中间会整行失配 */
-		float xt_pk, eyg_exc, e75, e50, e25;
-		uint16_t xt_ov;
+		float xt_pk, eyg_exc, e75, e50, e25, xtw;
+		uint16_t xt_ov, xtv;
+		uint8_t fbl;
 
 		__disable_irq();
-		mf_path_get_line_diag(&mf_app()->path, &xt_pk, &eyg_exc, &xt_ov);
+		mf_path_get_line_diag(&mf_app()->path, &xt_pk, &eyg_exc, &xt_ov, &xtw, &xtv, &fbl);
 		mf_path_get_line_prog(&mf_app()->path, &e75, &e50, &e25);
 		__enable_irq();
-		printf("LN:%u IE=%d YE=%d EY=%d EYG=%d XT=%d XTM=%d EXC=%d P75=%d P50=%d P25=%d XTO=%u T=%u\r\n",
+		printf("LN:%u IE=%d YE=%d EY=%d EYG=%d XT=%d XTM=%d EXC=%d P75=%d P50=%d P25=%d XTO=%u T=%u XTW=%d XTD=%u FBL=%u\r\n",
 		       (unsigned)seg,
 		       (int)(ie * 10.0f), (int)(oe * 10.0f), (int)(ey * 1000.0f),
 		       (int)(mf_exit_eyg_m(mf_app()) * 1000.0f),
 		       (int)(mf_exit_xt_deg(mf_app()) * 100.0f),
 		       (int)(xt_pk * 100.0f), (int)(eyg_exc * 1000.0f),
 		       (int)(e75 * 1000.0f), (int)(e50 * 1000.0f), (int)(e25 * 1000.0f),
-		       (unsigned)xt_ov, (unsigned)mf_path_exit_ms(&mf_app()->path));
+		       (unsigned)xt_ov, (unsigned)mf_path_exit_ms(&mf_app()->path),
+		       (int)(xtw * 1000.0f),
+		       (unsigned)((xtv > xt_ov) ? (((uint32_t)(xtv - xt_ov) * 100u) / xtv) : 0u),
+		       (unsigned)fbl);
 	}
 }
 

@@ -15,7 +15,7 @@ void mf_init(mf_ctx_t *m, const mf_cfg_t *cfg)
 
     mf_odom_init(&m->odom, cfg->track_width_m,
                  cfg->half_length_m, cfg->half_width_m);
-    m->odom.arc_src = cfg->odom_arc_src;    /* 形状来源可由 cfg 覆盖宏默认值 */
+    m->odom.arc_src = cfg->odom_arc_src;
     m->pose.x_m = 0.0f;
     m->pose.y_m = 0.0f;
     m->pose.yaw_deg = 0.0f;
@@ -291,14 +291,12 @@ void mf_tick(mf_ctx_t *m, const mf_state_in_t *in)
     uint8_t i;
     uint8_t cmd_idle;       /* 本拍外环是否要求停（内环之前取，见第 4 步注释） */
 
-    /* 若无新的采样快照，则不做处理 */
     if ((in == NULL) || (in->seq == m->in_seq))
     {
         return;
     }
     m->in_seq = in->seq;
 
-    /* 更新轮子状态 */
     for (i = 0; i < MF_WHEEL_COUNT; i++)
     {
         m->wheel[i].last_dist_m = m->wheel[i].dist_m;
@@ -307,7 +305,6 @@ void mf_tick(mf_ctx_t *m, const mf_state_in_t *in)
         m->wheel[i].speed_mps = m->wheel[i].delta_m / dt;
     }
 
-    /* 2. 更新 航向 和 里程计 */
 #if (MF_YAW_SOURCE == MF_YAW_SRC_IMU)
     yaw_imu = in->yaw_deg;
 #else
@@ -316,7 +313,6 @@ void mf_tick(mf_ctx_t *m, const mf_state_in_t *in)
     mf_odom_update(&m->odom, m->wheel, yaw_imu, in->yaw_seq);
     m->pose = m->odom.pose;
 
-    /* 3. 车体指令：声明式路径 或 手动 */
     if (m->mode == MF_MODE_PATH)
     {
         ds_body = (m->wheel[0].delta_m + m->wheel[1].delta_m) * 0.5f;
@@ -328,7 +324,6 @@ void mf_tick(mf_ctx_t *m, const mf_state_in_t *in)
         m->cmd = m->manual_cmd;
     }
 
-    /* 速度限幅 */
     m->cmd.vx_mps = mf_clampf(m->cmd.vx_mps, m->cfg.max_vx_mps);
     m->cmd.wz_dps = mf_clampf(m->cmd.wz_dps, m->cfg.max_wz_dps);
 #if (MF_CHASSIS_TYPE == MF_CHASSIS_MECANUM)
@@ -352,12 +347,10 @@ void mf_tick(mf_ctx_t *m, const mf_state_in_t *in)
     }
 #endif
 
-    /* 5. 逆解 -> 轮速目标 */
     mf_inverse_kinematics(&m->cmd, m->cfg.track_width_m,
                           m->cfg.half_length_m, m->cfg.half_width_m,
                           wheel_cmd);
 
-    /* 6. 轮速环计算得到理论输出值 */
 #if MF_WZ_RATE_EN
     if (cmd_idle != 0u)
     {

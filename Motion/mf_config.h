@@ -189,6 +189,20 @@
 #ifndef MF_LINE_XTRACK_V_MIN
 #define MF_LINE_XTRACK_V_MIN    0.20f
 #endif
+/* 反号自锁(1=开): e_yg 与"环累计搬移"同号 ⇒ 环在**远离**线的方向出力(符号/基准错),
+ * 那是正反馈, 几十拍就能顶到 CORR_MAX 然后 153mm/s 横移一路冲出赛道, 而 EY_WIN 那道闸
+ * 只在 12cm 外才关、来不及。检到即**本段永久停环**, 退化成无环(宁可少纠, 不许出界)。
+ * 正常工况两者必然反号(往线上搬), 不会误触发 —— 段首 shift≈0 时乘积也≈0, 门限挡住噪声 */
+#ifndef MF_LINE_XTRACK_FB_LOCK
+#define MF_LINE_XTRACK_FB_LOCK  1
+#endif
+/* 自锁门限: |累计搬移| 与 |e_y| 同时超过才算(挡段首/噪声的瞬时同号) */
+#ifndef MF_LINE_XTRACK_FBL_SHIFT_M
+#define MF_LINE_XTRACK_FBL_SHIFT_M  0.005f
+#endif
+#ifndef MF_LINE_XTRACK_FBL_EY_M
+#define MF_LINE_XTRACK_FBL_EY_M     0.010f
+#endif
 /* 段末收偏置(m): 段末的偏置 = 带进下一段的航向误差, 而弧按 R·Δθ 把它放大成**位置**误差
  * (0.5°×942=8mm) ⇒ 末段这么多米内线性收到 0 */
 #ifndef MF_LINE_XTRACK_RAMP_M
