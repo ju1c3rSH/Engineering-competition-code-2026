@@ -22,6 +22,7 @@ void Car_TrkDetail_Log(void);      /* 主循环: ARMED/STOPPED 期 10Hz 打点 T
 void Car_TrimLog(void);            /* 主循环: trim 事件打点 TRKT(归因黑匣子, 读后清) */
 void Car_Obs_TraceArm(void);       /* 't': 武装段内瞬时跟踪(命中弧/转向段自动开窗) */
 void Car_Obs_TraceTask(void);      /* 主循环每圈调: 武装态/采集态才有输出, 其余立即返回 */
+void Car_HdgFast_Task(void);       /* 主循环每圈调: |ERR|>0.3° 自动开窗, 窗内 50ms 一行 HDGF */
 void Car_ImuProbe_Arm(void);       /* 'i': 启动 3s 陀螺仪观测窗口(轮读零偏/校准开关/峰峰/模式) */
 void Car_ImuProbe_Task(void);      /* 主循环每圈调: 窗口期内 5Hz 打一行 IMU */
 void Car_ImuBootCalib_Log(void);   /* main 上电: Hwt101_BootCalib() 之后打一行 BIA: 快照校准结果 */

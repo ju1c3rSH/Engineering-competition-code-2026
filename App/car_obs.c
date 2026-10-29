@@ -24,6 +24,19 @@
 #define CAR_OBS_TRACE_PERIOD_MS   50u     /* 20Hz: 能分辨 5Hz 级的振荡 */
 #define CAR_OBS_TRACE_TRIG_DPS    30.0f
 
+/* 航向瞬态追踪: |ERR| 超阈自动开窗, 窗内 50ms 一行 HDGF。触发用**现象**不用段号
+ * (段表一改段号就失效)。常规 HDG 1Hz 只给端点值, 分不出"停在稳态误差上"(该调 kp)
+ * 还是"还在收敛"(该降速/加长段) —— 出坎 0.9° 残差正卡在这个分岔上。 */
+#define CAR_OBS_HDGF_ARM_DEG      0.30f   /* 正常直段 |ERR|<0.15, 0.3 只抓真瞬态 */
+#define CAR_OBS_HDGF_PERIOD_MS    50u
+#define CAR_OBS_HDGF_WIN_MS       3000u   /* 单窗上限: 3s 还不收敛就不是瞬态了 */
+#define CAR_OBS_HDGF_COOL_MS      3000u   /* 窗尾后冷却, 防长期偏航刷屏 */
+
+static uint8_t  hf_active;                 /* 1=窗口内 */
+static uint32_t hf_t0_ms;
+static uint32_t hf_win_end_ms;
+static uint32_t hf_last_ms;
+
 static uint8_t  tr_state;                  /* 0=空闲 1=武装(等弧/转向段) 2=采集 */
 static uint32_t tr_end_ms;
 static uint32_t tr_last_ms;
@@ -87,6 +100,61 @@ void Car_Obs_TraceTask(void)
 		tr_state = 0u;
 		printf("TRC:END\r\n");
 	}
+}
+
+void Car_HdgFast_Task(void)
+{
+	const mf_pose_t *pose;
+	const mf_status_t *st;
+	mf_path_obs_t obs;
+	mf_ctx_t *m = mf_app();
+	uint32_t now = HAL_GetTick();
+	float fb, route;
+	uint16_t seg;
+	char kind;
+
+	if ((hf_active == 0u) && ((uint32_t)(now - hf_win_end_ms) < CAR_OBS_HDGF_COOL_MS))
+	{
+		return;                                             /* 冷却期: 不取快照, 只判一次 */
+	}
+
+	__disable_irq();
+	mf_path_get_obs(&m->path, &obs);
+	pose = mf_get_pose(m);
+	st   = mf_get_status(m);
+	fb   = mf_path_get_frame_base(&m->path);
+	seg  = st->seg_index;
+	__enable_irq();
+
+	if (hf_active == 0u)
+	{
+		if (mf_absf(obs.yaw_err_deg) <= CAR_OBS_HDGF_ARM_DEG)
+		{
+			return;
+		}
+		hf_active    = 1u;
+		hf_t0_ms     = now;
+		hf_win_end_ms = now + CAR_OBS_HDGF_WIN_MS;
+		hf_last_ms   = now - CAR_OBS_HDGF_PERIOD_MS;        /* 首行紧跟触发拍 */
+	}
+	if ((uint32_t)(now - hf_win_end_ms) < 0x80000000u)      /* 模块化比较: 已过窗尾 */
+	{
+		hf_active = 0u;
+		printf("HDGF:END %ums\r\n", (unsigned)(now - hf_t0_ms));
+		return;
+	}
+	if ((uint32_t)(now - hf_last_ms) < CAR_OBS_HDGF_PERIOD_MS)
+	{
+		return;
+	}
+	hf_last_ms = now;
+
+	kind  = (obs.kind <= 4u) ? "ALTRG"[obs.kind] : '?';
+	route = mf_wrap_deg(pose->yaw_deg - fb);
+	printf("HDGF:T=%u SEG=%u K=%c TGT=%d YAW=%d ERR=%d EY=%d\r\n",
+	       (unsigned)(now - hf_t0_ms), (unsigned)seg, kind,
+	       (int)(obs.target_deg * 10.0f), (int)(route * 10.0f),
+	       (int)(obs.yaw_err_deg * 10.0f), (int)(obs.ey_m * 1000.0f));
 }
 
 /* "这一拍到底谁在写 vx" —— 段表出没出速度 / 跟瞄有没有压零。

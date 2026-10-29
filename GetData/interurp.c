@@ -619,6 +619,7 @@ void Car_DebugTask(void)
 		Car_Obs_TraceArm();   /* 't': 武装段内跟踪, 命中弧段自动开窗(见 car_obs.c) */
 	}
 	Car_Obs_TraceTask();      /* 段内瞬时跟踪: 未武装/未命中时立即返回 */
+	Car_HdgFast_Task();       /* 航向瞬态: |ERR| 超阈自动开窗, 其余立即返回 */
 	if (imu_f != 0u)
 	{
 		Car_ImuProbe_Arm();     /* 'i': 开 3s 陀螺仪观测窗口(纯只读回读, 无副作用) */
